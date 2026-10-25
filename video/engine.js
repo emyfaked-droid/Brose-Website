@@ -176,6 +176,7 @@ class Fig {
       yaw: o.yaw, pf: 0, pl: 0, pz: 0, lean: 3, slump: 0, roll: 0, twist: 0,
       head: 0, headRoll: 0, shDrop: 0, breath: 1, dance: 0, laugh: 0, idle: 1, bounce: 0, settle: 1,
       ox: 0, od: 0,   // pelvis offset in world axes (skeleton units), e.g. a child being lifted
+      hyaw: 0, pant: 0,   // head yaw (deg, looking around) and fast breathing on top of the slow one (px, after a run)
       aSwL: 4, aOutL: 9, aElL: 12, aSwR: 4, aOutR: 9, aElR: 12,
     };
     for (const k in defaults) tr[k] = new Track(defaults[k]);
@@ -287,6 +288,96 @@ class Fig {
     return wk.t1;
   }
 
+  // A walk that changes gait on the way: the first n1 steps in mood m1 (e.g. one slow heavy step), the rest in m2.
+  // The speed eases from m1's to m2's over the next step, and bob, posture and arm swing blend with it.
+  // Every step is still planned from the distance travelled, so the planted feet stay locked.
+  walkMix(t0, to, m1, n1, m2, lead = 'R') {
+    to = [to[0] / this.s, to[1] / this.s];
+    const from = this.rootAt(t0);
+    const dx = to[0] - from[0], dd = to[1] - from[1], D = Math.hypot(dx, dd);
+    const dir = [dx / D, dd / D], yaw = Math.atan2(dd, dx) / D2R;
+    const L1 = m1.L, N2 = Math.max(2, Math.round((D - n1 * L1) / m2.L)), L2 = (D - n1 * L1) / N2, N = n1 + N2;
+    const Lk = k => k <= n1 ? L1 : L2, Mk = k => k <= n1 ? m1 : m2;
+    const Pk = k => k <= 0 ? 0 : k <= n1 ? k * L1 : n1 * L1 + (k - n1) * L2;
+    const v1 = L1 * m1.cad, v2 = L2 * m2.cad;
+    const Ta = m1.ta ?? 0.95 / m1.cad, Tb = 0.9 / m2.cad;
+    const sB = Pk(n1) - 0.45 * L1;                 // the speed starts to build just after the last m1 step lands
+    // speed profile: ease up to v1, hold, ease v1 -> v2, hold; tabulated, then an exact cosine stop at D
+    const dt = 1 / 1200, S = [0], V = [0], Td0 = m2.td ?? 1.05 / m2.cad;
+    let tb = null, tdec = null, Td = Td0;
+    for (let i = 0; i < 400000 && tdec === null; i++) {
+      const tau = (i + 1) * dt, s = S[i];
+      if (tb === null && s >= sB && tau >= Ta) tb = tau;
+      let v = tb === null ? v1 * (1 - Math.cos(PI * clamp(tau / Ta))) / 2 : lerp(v1, v2, (1 - Math.cos(PI * clamp((tau - tb) / Tb))) / 2);
+      S.push(s + (V[i] + v) / 2 * dt); V.push(v);
+      if (tb !== null && tau >= tb + Tb && S[i + 1] >= D - v2 * Td0 / 2) { tdec = tau; Td = 2 * (D - S[i + 1]) / v2; }
+    }
+    const Tt = tdec + Td;
+    const sAt = t => {
+      const tau = t - t0;
+      if (tau <= 0) return 0;
+      if (tau >= Tt) return D;
+      if (tau < tdec) { const f = tau / dt, i = Math.floor(f); return lerp(S[i], S[i + 1], f - i); }
+      const r = Tt - tau;
+      return D - v2 * (r / 2 - Td / (2 * PI) * Math.sin(PI * r / Td));
+    };
+    const acc = t => {
+      const tau = t - t0;
+      if (tau <= 0 || tau >= Tt) return 0;
+      if (tau < tdec) { const i = Math.min(V.length - 2, Math.floor(tau / dt)); return (V[i + 1] - V[i]) / dt; }
+      return -v2 * PI / (2 * Td) * Math.sin(PI * (Tt - tau) / Td);
+    };
+    const tOf = s => { let a = t0, b = t0 + Tt; for (let i = 0; i < 50; i++) { const c = (a + b) / 2; if (sAt(c) < s) a = c; else b = c; } return (a + b) / 2; };
+    // mood blend over the switch
+    const tB = t0 + tb, keys = Object.keys(m2).filter(k => typeof m2[k] === 'number');
+    const mAt = t => {
+      const b = (1 - Math.cos(PI * inv(tB, tB + Tb, t))) / 2;
+      if (b >= 1) return m2;
+      const m = { ...m2, name: b < 0.5 ? m1.name : m2.name };
+      for (const k of keys) m[k] = lerp(m1[k] ?? m2[k], m2[k], b);
+      return m;
+    };
+    // step phase for the bob: 0 at each heel contact
+    const sc = k => k <= 0 ? -0.6 * L1 : k <= N ? Pk(k) - 0.6 * Lk(k) : Pk(N) - 0.6 * L2 + (k - N) * L2;
+    const phase = s => { let k = 0; while (k < N + 4 && sc(k + 1) <= s) k++; return clamp((s - sc(k)) / (sc(k + 1) - sc(k)), 0, 0.9999); };
+    const wk = { t0, t1: t0 + Tt, from, to, dir, yaw, D, L: L2, N, v: v2, Ta, Td, T: Tt, sAt, acc, tOf, m: m2, mAt, phase, lead, back: false };
+    this.moves.push(wk);
+    const yNow = this.tr.yaw.at(t0);
+    const yTarget = yNow + (((yaw - yNow + 540) % 360) - 180);
+    if (Math.abs(yTarget - yNow) > 0.5) this.tr.yaw.to(t0 - 0.1, t0 + 0.25, yTarget, E.io);
+    wk.yaw = yTarget;
+    const R = rgt(yTarget), hOff = -DIM.heel;
+    const heelAt = (P, side) => { const sg = side === 'R' ? 1 : -1; return [from[0] + dir[0] * (P + hOff) + R[0] * sg * DIM.footW, from[1] + dir[1] * (P + hOff) + R[1] * sg * DIM.footW]; };
+    const rPitch = (P, rl, lp, L, m) => t => {
+      const r = sAt(t) - P; let th = 0;
+      if (rl !== null) th += lp * (1 - sstep(rl, rl + 0.2 * L, r));
+      th -= m.heelOff * Math.pow(sstep(0.06 * L, 0.6 * L, r), 1.5);
+      return th;
+    };
+    for (const side of ['L', 'R']) {
+      const cur = this.plants[side][this.plants[side].length - 1];
+      const P = (cur.pos[0] - from[0]) * dir[0] + (cur.pos[1] - from[1]) * dir[1] - hOff;
+      cur.pitch.push({ from: t0, fn: rPitch(P, null, 0, L1, m1) });
+    }
+    const trail = lead === 'R' ? 'L' : 'R';
+    const steps = [];
+    for (let k = 1; k <= N; k++) steps.push({ k, side: k % 2 ? lead : trail, P: Pk(k), sLand: Pk(k) - 0.6 * Lk(k), sLift: k === 1 ? 0.02 * L1 : Pk(k - 2) + 0.6 * Lk(k), close: false });
+    steps.push({ k: N + 1, side: N % 2 ? trail : lead, P: D, sLand: D, sLift: D - 0.4 * L2, close: true });
+    for (const st of steps) {
+      const m = Mk(Math.min(st.k, N)), L = Lk(Math.min(st.k, N));
+      const tl = tOf(st.sLift), ta = st.close ? t0 + Tt - 0.04 : tOf(st.sLand);
+      const list = this.plants[st.side], prev = list[list.length - 1];
+      prev.t1 = tl;
+      const np = mkPlant(ta, heelAt(st.P, st.side), yTarget);
+      if (st.close) { const lp = m.landPitch * 0.35; np.pitch = [{ from: -Infinity, fn: t => lp * (1 - sstep(ta, ta + 0.16, t)) }]; }
+      else np.pitch = [{ from: -Infinity, fn: rPitch(st.P, st.sLand - st.P, m.landPitch, L, m) }];
+      np.swing = { h: m.lift * (st.close ? 0.55 : 1) };
+      list.push(np);
+      this.cues.push({ t: ta, type: st.close ? 'settle' : 'step', fig: this.id, side: st.side, mood: m.name });
+    }
+    return wk.t1;
+  }
+
   // turn on the spot with small shuffle steps (no foot ever slides)
   turn(t0, t1, yawTo, o = {}) {
     const y0 = this.tr.yaw.at(t0), dy = yawTo - y0;
@@ -350,6 +441,7 @@ class Fig {
     J.F = F; J.R = R; J.yaw = yaw;
     const root = this.rootAt(t);
     const wk = this.walkAt(t), gw = this.gaitW(t);
+    const wm = wk ? (wk.mAt ? wk.mAt(t) : wk.m) : null;   // the walk's mood (a blend while walkMix switches gait)
     const feet = { L: this.footAt('L', t), R: this.footAt('R', t) };
     for (const side of ['L', 'R']) for (const g of this.footGoals[side]) {
       const w = g.w.at(t);
@@ -373,14 +465,14 @@ class Fig {
     pz += tr.bounce.at(t) * 3 * Math.sin(TAU * 2.2 * t);
     let bob = 0;
     if (wk) {
-      const m = wk.m, s = wk.sAt(t), L = wk.L;
+      const m = wm, s = wk.sAt(t), L = wk.L;
       const ws = sstep(0, 0.5 * L, s) * (1 - sstep(wk.D - 0.55 * L, wk.D, s));
       if (m.run) {
         // running: the pelvis is lowest in mid-stance and highest in mid-flight
         const q = (((s + m.ds * L) / L) % 1 + 1) % 1;
         bob = -m.bob * Math.cos(TAU * (q - m.ds)) * ws;
       } else {
-        const q = (((s + 0.6 * L) / L) % 1 + 1) % 1;
+        const q = wk.phase ? wk.phase(s) : (((s + 0.6 * L) / L) % 1 + 1) % 1;
         const b = bobCurve(q);
         bob = m.bob * (b > 0 ? b * m.up : b * m.down) * ws;
       }
@@ -389,8 +481,10 @@ class Fig {
       const sw = swingSide ? Math.sin(PI * (swingSide < 0 ? feet.L.u : feet.R.u)) : 0;
       pl += -swingSide * 2.4 * sw;
     }
-    if (gw > 0) pz += bob - (wk ? wk.m.knee : 0) * gw;
-    const br = Math.sin(TAU * tReal / 3.6 + sd) * tr.breath.at(t);
+    if (gw > 0) pz += bob - (wk ? wm.knee : 0) * gw;
+    let br = Math.sin(TAU * tReal / 3.6 + sd) * tr.breath.at(t);
+    const pant = tr.pant.at(t);
+    if (pant) br += pant * Math.sin(TAU * tReal / 0.68 + sd);          // out of breath: quick, deep breaths
 
     let Pv = [root[0] + F[0] * pf + R[0] * pl + tr.ox.at(t), root[1] + F[1] * pf + R[1] * pl + tr.od.at(t), H0 + pz + br * 0.6];
     // hip rotation in the walk: the swinging leg's hip comes forward
@@ -422,12 +516,12 @@ class Fig {
     // lean into acceleration, rock back when braking (with a little overshoot), and lean forward with speed
     const spd = wk ? clamp((wk.sAt(t + 0.012) - wk.sAt(t - 0.012)) / 0.024 / wk.v, 0, 1.15) : 0;
     const sec = spring(this.id + ':lean', τ => this.accAt(τ) * 0.012, t, this.t0, 1.7, 0.42);
-    const lean = (tr.lean.at(t) + (wk ? wk.m.lean : 0) * spd + sec * tr.settle.at(t) - lg * 6 + idle * 0.8 * nz(t * 0.5, sd + 7)) * D2R;
+    const lean = (tr.lean.at(t) + (wk ? wm.lean : 0) * spd + sec * tr.settle.at(t) - lg * 6 + idle * 0.8 * nz(t * 0.5, sd + 7)) * D2R;
     const slump = tr.slump.at(t) * D2R;
     const roll = (tr.roll.at(t) + dance * 2.6 * Math.sin(PI * beat + sd + 0.4)) * D2R;
     const sdir = (p, r, FF = F, RR = R) => norm(add(add(mul(FF, Math.sin(p)), mul(RR, Math.sin(r))), [0, 0, Math.cos(p) * Math.cos(r)]));
     const C = madd(Pv, sdir(lean * 0.6, roll * 0.6), DIM.torso * 0.5);
-    const twist = tr.twist.at(t) - (fl.L - fl.R) * (wk ? wk.m.twist : 4) * gw;      // shoulders counter-rotate against the hips
+    const twist = tr.twist.at(t) - (fl.L - fl.R) * (wk ? wm.twist : 4) * gw;      // shoulders counter-rotate against the hips
     const Ft = fwd(yaw + twist), Rt = rgt(yaw + twist);
     const shake = Math.sin(TAU * 8.5 * t + sd) * lg;
     let N = madd(C, sdir(lean + slump, roll, Ft, Rt), DIM.torso * 0.5 + br * 0.9);
@@ -437,8 +531,18 @@ class Fig {
     // neck and head: the head counters the torso so it stays steadier than the body
     const hp = (tr.head.at(t) + dance * 2.5 * Math.sin(TAU * beat + 0.8) - lg * 13 + shake * 1.5) * D2R;
     const hr = (tr.headRoll.at(t) + dance * 2 * Math.sin(PI * beat + sd + 1.2)) * D2R;
-    const NT = sub(madd(N, sdir((lean + slump) * 0.5 + hp * 0.5, roll * 0.5 + hr * 0.5, Ft, Rt), DIM.neck), [0, 0, bob * 0.3]);
-    const Hc = madd(NT, sdir((lean + slump) * 0.3 + hp, roll * 0.3 + hr, Ft, Rt), DIM.headR * 0.9);
+    let NT = sub(madd(N, sdir((lean + slump) * 0.5 + hp * 0.5, roll * 0.5 + hr * 0.5, Ft, Rt), DIM.neck), [0, 0, bob * 0.3]);
+    let Hc = madd(NT, sdir((lean + slump) * 0.3 + hp, roll * 0.3 + hr, Ft, Rt), DIM.headR * 0.9);
+    const hy = tr.hyaw.at(t) * D2R;
+    if (hy) {
+      // head yaw (looking around): what the head's own pitch and roll add to the neck and head turns about the vertical
+      const NT0 = sub(madd(N, sdir((lean + slump) * 0.5, roll * 0.5, Ft, Rt), DIM.neck), [0, 0, bob * 0.3]);
+      const Hc0 = madd(NT0, sdir((lean + slump) * 0.3, roll * 0.3, Ft, Rt), DIM.headR * 0.9);
+      const c = Math.cos(hy), sn = Math.sin(hy), rz = v => [v[0] * c - v[1] * sn, v[0] * sn + v[1] * c, v[2]];
+      const hd = sub(sub(Hc, NT), sub(Hc0, NT0));           // the head's own tilt, relative to the neck
+      NT = add(NT0, rz(sub(NT, NT0)));
+      Hc = add(add(NT, sub(Hc0, NT0)), rz(hd));
+    }
     J.NT = NT; J.Hc = Hc; J.hp = hp;
 
     // arms
@@ -450,16 +554,16 @@ class Fig {
       sh = madd(sh, Ft, shDrop * 0.7);
       let sw = tr['aSw' + S].at(t), out = tr['aOut' + S].at(t), el = tr['aEl' + S].at(t);
       sw += dance * 3 * Math.sin(PI * beat + sd + sg);
-      if (gw > 0 && wk && wk.m.run) {
+      if (gw > 0 && wk && wm.run) {
         // running: one even sine swing, tied to the stride phase (0 = the lead-side foot touches down)
-        const th = PI * (wk.sAt(t) / wk.L + wk.m.ds - 1), sgn = side === wk.lead ? 1 : -1;
+        const th = PI * (wk.sAt(t) / wk.L + wm.ds - 1), sgn = side === wk.lead ? 1 : -1;
         const ph = -sgn * Math.cos(th - 0.25);                 // +1 = this arm fully forward
-        sw += wk.m.arm * ph * gw;
-        el += (wk.m.elBase + wk.m.elbow * ph) * gw;
+        sw += wm.arm * ph * gw;
+        el += (wm.elBase + wm.elbow * ph) * gw;
       } else if (gw > 0 && wk) {
         const lag1 = this.legFwd(side, t - 0.07), lag2 = this.legFwd(side, t - 0.15);
-        sw += -wk.m.arm * lag1 * gw;
-        el += (wk.m.elBase + wk.m.elbow * (0.45 + 0.55 * clamp(-lag2, -1, 1))) * gw;
+        sw += -wm.arm * lag1 * gw;
+        el += (wm.elBase + wm.elbow * (0.45 + 0.55 * clamp(-lag2, -1, 1))) * gw;
       }
       sw *= D2R; out *= D2R; el *= D2R;
       const ud = norm(add(add(mul(Ft, Math.sin(sw) * Math.cos(out)), mul(Rt, sg * Math.sin(out))), [0, 0, -Math.cos(sw) * Math.cos(out)]));

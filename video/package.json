@@ -19,7 +19,12 @@
     "phone:stills": "FILM=i-wish-i-was-your-phone node scripts/stills.js",
     "phone:render": "FILM=i-wish-i-was-your-phone node scripts/render.js",
     "phone:mix": "FILM=i-wish-i-was-your-phone node scripts/mix.js",
-    "phone:build": "npm run phone:check && npm run phone:render && npm run phone:mix"
+    "phone:build": "npm run phone:check && npm run phone:render && npm run phone:mix",
+    "mot:check": "FILM=motivation node scripts/check.js && FILM=motivation node scripts/popcheck.js",
+    "mot:stills": "FILM=motivation node scripts/stills.js",
+    "mot:render": "FILM=motivation node scripts/render.js",
+    "mot:mix": "FILM=motivation node scripts/mix.js",
+    "mot:build": "npm run mot:check && npm run mot:render && npm run mot:mix"
   },
   "dependencies": {
     "playwright": "^1.50.0"
