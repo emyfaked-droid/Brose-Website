@@ -1,0 +1,106 @@
+# Strichfiguren-Video: Vorlage für neue Videos
+
+Diese Datei fasst zusammen, wie "Ask Twice" gebaut ist, damit du neue Videos im selben Stil
+machen kannst. Der ganze Code liegt im Ordner `video/` (Branch `claude/vertical-animation-sound-xbq7vf`).
+
+---
+
+## 1. Prompt zum Kopieren (für einen neuen Chat mit Claude)
+
+> Nutze das Projekt in `video/` aus dem Repo emyfaked-droid/Brose-Website als Vorlage
+> (Engine in `index.html`, Renderer `scripts/render.js`, Ton `sound-timeline.js` + `scripts/mix.js`).
+> Behalte Stil, Figuren und Geh-Animation exakt bei (siehe `video/VORLAGE.md`).
+> Neue Geschichte: **[hier deine Story mit Zeiten, Texten und Sounds]**.
+> Format 720x1280, 30 fps, ca. **[Länge]** Sekunden. Erst Standbilder und einen Test-Clip zeigen,
+> dann das fertige MP4 mit Ton rendern.
+
+---
+
+## 2. Stil (nicht ändern, dann sieht es gleich aus)
+
+- **Figuren:** dünne Strichfiguren. Weiße, runde Linien mit schwarzem Rand, runder weißer Kopf ohne Gesicht.
+  Gliedmaßen 13 px, Rand 3,5 px, Kopf 54 px. Arm und Bein auf der abgewandten Seite sind grau.
+- **Nahtlose Hüfte:** Rumpf und vorderes Bein werden als **eine** Form gezeichnet (`strokeBody`),
+  also ohne Linie an der Hüfte. Das hintere Bein liegt immer hinter dem Körper.
+- **Hintergrund:** fast schwarz, weiches Licht, Vignette, glänzender Boden mit Spiegelung.
+- **Farbe:** Graustufen plus **eine** Akzentfarbe (warmes Gelb).
+- **Text:** fette Monospace-Schrift, GROSSBUCHSTABEN, weite Buchstabenabstände, oben mittig, sanft ein- und ausblenden.
+- **Requisite:** weiße ovale Maske mit Lächeln, das einzige Gesicht im Video.
+- **Proportionen** (in `DIM`): Oberschenkel 82, Unterschenkel 80, Rumpf 100, Oberarm 56, Unterarm 52.
+- **Tür und Möbel:** passend zur Figur. Tür ca. 1,2-mal Körperhöhe (395 px hoch, 150 px breit).
+
+---
+
+## 3. Gehen: die Einstellungen (`MOOD` in `index.html`)
+
+Grundregel: **Geschwindigkeit = Schrittlänge × Schritte pro Sekunde**. Nur so bleibt der Fuß am Boden stehen.
+
+| Stil | Wofür | Schritt (px) | Schritte/s | Fuß-Hub | Armschwung | Gefühl |
+|---|---|---|---|---|---|---|
+| `walk` | normales Gehen | 118 | 1,95 | 11 | 17° | entspannt, Arme locker, kaum Federn |
+| `forced` | aufrecht, "zusammenreißen" | 112 | 2,1 | 12 | 21° | etwas leichter und aufrechter |
+| `heavy` | traurig, schwer | 70 | 1,45 | 5 | 6° | kurze, schleppende Schritte, gebeugt |
+| `bouncy` | ein paar kleine Schritte | 34 | 2,1 | 7 | 9° | kurz und locker |
+| `jog`, `run` | Joggen / Rennen (Extra) | 120 / 165 | 2,6 / 2,85 | 30 / 34 | 28° / 34° | mit Flugphase, Ellbogen ~90° |
+
+Was jeder Schritt automatisch macht:
+- Ferse setzt zuerst auf, der Fuß rollt ab und drückt über die Zehen ab. Der stehende Fuß rutscht nie.
+- Das Knie beugt sich beim Aufsetzen. Das Becken geht runter und hoch (Kontakt, Tief, Passing, Hoch)
+  und verlagert sich zum Standbein.
+- Die Arme schwingen gegengleich zu den Beinen, der Ellbogen leicht verzögert. Die Schultern drehen gegen die Hüfte. Der Kopf bleibt ruhig.
+- Anfahren und Anhalten sind weich: halber Startschritt, Abbremsen, Oberkörper schwingt leicht nach.
+- Drehungen laufen über kleine Trippelschritte, nie über einen rutschenden Fuß.
+
+Benutzung im Code:
+```js
+const fig = new Fig('ID', { x: 300, d: 20, yaw: 0, seed: 1 });   // yaw 0 = schaut nach rechts, -90 = zur Kamera
+const ende = fig.walk(1.0, [600, 20], MOOD.walk, 'R');            // ab 1,0 s nach x=600 gehen, gibt die Endzeit zurück
+fig.turn(ende, ende + 0.6, -90);                                   // danach zur Kamera drehen
+```
+
+Körperhaltung ändern (Werte gleiten weich von Zeit a bis Zeit b):
+```js
+fig.tr.slump.to(a, b, 17);   // zusammensacken
+fig.tr.head.to(a, b, 26);    // Kopf senken
+fig.tr.lean.to(a, b, 8);     // nach vorn lehnen
+```
+
+---
+
+## 4. Ablauf (Befehle im Ordner `video/`)
+
+```sh
+npm install && npx playwright install chromium   # einmalig
+npm run check      # Prüft, dass kein Fuß rutscht und nichts ruckelt
+npm run stills     # Standbilder der wichtigen Momente -> build/stills
+npm run walktest   # Geh-Test-Clips in Seitenansicht mit mitfahrender Kamera
+npm run render     # Bild -> build/video.mp4 (ca. 40 s)
+npm run sfx        # Ersatz-Sounds neu erzeugen (synthetisch)
+npm run mix        # Ton mischen und anlegen -> out/ask-twice.mp4
+```
+
+Geh-Test im Browser: `index.html?test=walk&mood=walk&track=1` (mood: walk, forced, heavy, bouncy, jog, run).
+
+---
+
+## 5. Ton
+
+- Alle Sounds stehen mit Zeit, Datei, Lautstärke und Fades in `sound-timeline.js`.
+- Schritte werden automatisch genau auf den Frame gelegt, an dem die Ferse aufsetzt.
+- Der Mix landet bei -14 LUFS mit max. -1,5 dBTP, also mit Platz für Musik.
+- Die Dateien in `sfx/` sind synthetische Ersatz-Sounds. Echte Aufnahmen mit gleichem Namen ersetzen sie
+  (eine `.mp3` hat Vorrang vor der `.wav`). Die Liste mit Suchbegriffen steht in `sfx/README.md`.
+
+---
+
+## 6. Posting-Text (Ask Twice)
+
+Everyone's "fine." Until they're alone.
+
+"How are you?" "Fine."
+The easiest lie we tell every day.
+If someone says they're fine… ask twice. 🖤
+
+Tag someone you should check on today.
+
+#asktwice #mentalhealth #checkonyourfriends #stickmananimation #fyp
