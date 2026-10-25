@@ -43,7 +43,7 @@ const T = {
   text1a: 11.8, text1b: 14.4,
   flick0: 14.4, dark: 14.86,              // the sign flickers 3 times and goes dark
   nod: 15.0, aTurnL0: 15.24, aTurnL1: 15.74,
-  hes0: 15.6, bWalk: 15.84, aWalk2: 16.36,
+  hes0: 15.6, bWalk: 15.98, aWalk2: 16.15,
   text2a: 15.6, text2b: 18.2,
   fadeOut: 18.2, end: 19.0,
   stills: [1.2, 2.4, 5.4, 7.5, 9.5, 11.2, 14.6, 16.2],
@@ -227,10 +227,11 @@ seated(B30, { lean: 39, slump: 17, head: 33, shDrop: 6, breath: 1.2 });
   b.head.to(T.lookSign, T.lookSign + 0.55, -30, E.io); b.hyaw.to(T.lookSign, T.lookSign + 0.55, 18, E.io);
   b.lean.to(T.lookSign, T.lookSign + 0.55, 0, E.io); b.slump.to(T.lookSign, T.lookSign + 0.55, 4, E.io);
   b.head.to(T.dark + 0.2, T.dark + 0.62, 10, E.io); b.hyaw.to(T.dark + 0.2, T.dark + 0.62, 0, E.io);
-  // hesitates (weight forward, back), then a first slow step, then he walks
-  b.lean.to(T.hes0, T.hes0 + 0.13, 7, E.io).to(T.hes0 + 0.13, T.bWalk + 0.05, 2, E.io);
-  b.slump.to(T.hes0, T.bWalk + 0.6, 2, E.io); b.head.to(T.bWalk, T.bWalk + 0.8, 2, E.io);
-  T.bGone = B365.walkMix(T.bWalk, [-320, -46], MOOD.heavy, 1, MOOD.walk, 'L');
+  // hesitates (weight forward, back), straightens up, then walks off normally and upright (the reference walk)
+  b.lean.to(T.hes0, T.hes0 + 0.13, 7, E.io).to(T.hes0 + 0.13, T.bWalk + 0.1, 3, E.io);
+  b.slump.to(T.hes0, T.bWalk + 0.3, 0, E.io); b.shDrop.to(T.hes0, T.bWalk + 0.3, 0, E.io);
+  b.head.to(T.bWalk - 0.1, T.bWalk + 0.4, 0, E.io);
+  T.bGone = B365.walk(T.bWalk, [-320, -46], MOOD.walk, 'L');
 
   // A jogs in from the left, slows down and stops next to B (the planner eases the stop, the torso follows through)
   T.aStop = A365.walk(T.aIn0, [AX - 15, LANE], JOG_IN, 'R');

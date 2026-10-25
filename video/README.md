@@ -114,7 +114,7 @@ colour, warm yellow) and a timetable **NEXT BUS: SOON**. Four days, cross-dissol
 mirror the sign) A jogs past behind the shelter while B sits hunched; **DAY 180** (snow that piles up on the bench and on B's head
 and back, breath clouds) A runs past, B looks at his watch once; **DAY 365** (night, one street lamp) B gets up stiffly and taps
 the timetable, A jogs in and stops next to him, out of breath. **IT NEVER CAME.** The sign flickers three times and dies, A nods
-"come on", B hesitates, takes one heavy step and walks with him. **START WITHOUT IT.**
+"come on", B hesitates, straightens up and walks with him (the plain upright `walk`). **START WITHOUT IT.**
 
 - New in the engine (the other three films render pixel-identical, 75 frames checked): `tr.hyaw` (head yaw, for looking
   around), `tr.pant` (fast breathing after a run), `fig.walkMix(t, to, m1, n1, m2)` (first n1 steps in one gait, then another,
