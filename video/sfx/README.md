@@ -1,5 +1,11 @@
 # Sound effects for "Ask Twice"
 
+**Current state:** the 15 `.wav` files in this folder are *synthesized stand-ins* made by
+`scripts/make_sfx.py` (modelled wood/metal/plastic resonances, noise transients, formant voices, FM bird
+chirps, a small drum loop, convolution reverb). They are not recordings. To use real recordings, drop
+files with the same base name here (`.mp3` wins over `.wav` automatically), or overwrite the `.wav`,
+then run `npm run mix`. `npm run sfx` regenerates the stand-ins.
+
 Put these 15 files in this folder with exactly these names. Use **real recordings**
 under CC0 or the Pixabay Content License (free for commercial use, no attribution
 needed). Freesound works too if you filter by license *Creative Commons 0*.

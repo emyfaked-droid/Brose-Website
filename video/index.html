@@ -28,12 +28,13 @@ const W = 720, H = 1280, FPS = 30;
 const T = {
   // 1. party
   clink: 0.97,
-  aTurn0: 1.12, aTurn1: 1.97,
-  aWalk: 1.99,
-  ask0: 2.25, ask1: 3.55,
-  nod: 3.75,
-  fine0: 3.85, fine1: 4.95,
-  laugh0: 4.3, laugh1: 5.75,
+  aTurn0: 1.2, aTurn1: 1.85,
+  aWalk: 1.88,                     // A takes a few light steps over to the main figure
+  ask0: 2.5, ask1: 3.85,
+  nod: 4.05,
+  fine0: 4.15, fine1: 5.25,
+  aEnd: 0,
+  laugh0: 4.55, laugh1: 5.95,
   cut1: 6.2,                       // hard cut + door slam
   // 2. home
   lock: 6.5,
@@ -148,8 +149,8 @@ const DIM = {
   upper: 56, fore: 52,
   thigh: 82, shin: 80,
   ankleH: 7, heel: 5, toe: 18,          // ankle sits above a point 5px in front of the heel
-  hipW: 7, shW: 12, footW: 8,
-  limbW: 13, outline: 3.5,
+  hipW: 10, shW: 17, footW: 10,
+  limbW: 20, outline: 4, waistW: 30, chestW: 38,
 };
 const FL = DIM.heel + DIM.toe;           // heel-to-toe length
 const LEG = DIM.thigh + DIM.shin;
@@ -158,10 +159,15 @@ const LMAX = LEG * 0.995;
 
 // Gait moods. L = step length (px), cad = steps per second.
 // Walk speed is always L * cad, which keeps the planted foot locked.
+//   ds      half stance in step lengths (0.6 = walking, double support; < 0.5 = running, with a flight phase)
+//   elBase  elbow bend added while moving (deg); arm = shoulder swing; twist = shoulder counter-rotation
+//   knee    how far the pelvis sits lower than standing (px); lean = forward lean at full speed (deg)
 const MOOD = {
-  bouncy: { name: 'bouncy', L: 34, cad: 2.3, lift: 13, bob: 6.5, up: 1.25, down: 0.8, arm: 18, elbow: 18, landPitch: 18, heelOff: 32, knee: 3, lean: 2 },
-  heavy:  { name: 'heavy',  L: 70, cad: 1.45, lift: 4.5, bob: 5.5, up: 0.45, down: 1.35, arm: 7, elbow: 6, landPitch: 9, heelOff: 20, knee: 7, lean: 5, ta: 0.78, td: 0.86 },
-  forced: { name: 'forced', L: 78, cad: 2.25, lift: 15, bob: 7.5, up: 1.35, down: 0.75, arm: 30, elbow: 14, landPitch: 20, heelOff: 38, knee: 2, lean: 1, ta: 0.42, td: 0.5 },
+  walk:   { name: 'walk',   L: 112, cad: 2.05, lift: 17, bob: 7.5, up: 1.1, down: 0.9, arm: 26, elbow: 14, elBase: 12, landPitch: 22, heelOff: 40, knee: 3, lean: 3, twist: 5 },
+  bouncy: { name: 'bouncy', L: 34, cad: 2.3, lift: 14, bob: 6.5, up: 1.25, down: 0.8, arm: 20, elbow: 16, elBase: 14, landPitch: 18, heelOff: 32, knee: 3, lean: 2, twist: 4 },
+  heavy:  { name: 'heavy',  L: 70,  cad: 1.45, lift: 5,  bob: 5.5, up: 0.45, down: 1.35, arm: 7, elbow: 8, elBase: 16, landPitch: 9, heelOff: 20, knee: 7, lean: 6, twist: 3, ta: 0.78, td: 0.86 },
+  forced: { name: 'forced', L: 100, cad: 2.3,  lift: 19, bob: 9,   up: 1.35, down: 0.75, arm: 34, elbow: 18, elBase: 24, landPitch: 24, heelOff: 42, knee: 2, lean: 0, twist: 6, ta: 0.42, td: 0.5 },
+  run:    { name: 'run',    L: 88,  cad: 3.1,  lift: 52, bob: 7,   arm: 38, elbow: 24, elBase: 62, landPitch: 7, heelOff: 50, knee: 9, lean: 19, twist: 8, ta: 0.42, td: 0.55, run: true, ds: 0.33, dsEdge: 0.45 },
 };
 // pelvis height over one step: contact, down, passing, up
 const BOB = [[0, 0], [0.13, -1], [0.45, 0.3], [0.72, 1]];
@@ -273,10 +279,10 @@ class Fig {
     const R = rgt(yTarget), F = fwd(yTarget);
     const heelAt = (P, side) => { const sg = side === 'R' ? 1 : -1; return [from[0] + dir[0] * (P - DIM.heel) + R[0] * sg * DIM.footW, from[1] + dir[1] * (P - DIM.heel) + R[1] * sg * DIM.footW]; };
     // stance pitch from where the pelvis is relative to the foot (r): heel strike rolls flat, then the heel peels off
-    const rPitch = (P, rl, lp) => t => {
+    const rPitch = (P, rl, lp, ds = 0.6) => t => {
       const r = sAt(t) - P; let th = 0;
-      if (rl !== null) th += lp * (1 - sstep(rl, rl + 0.2 * L, r));
-      th -= m.heelOff * Math.pow(sstep(0.08 * L, 0.62 * L, r), 1.5);
+      if (rl !== null) th += lp * (1 - sstep(rl, rl + 0.2 * L * ds / 0.6, r));
+      th -= m.heelOff * Math.pow(sstep(0.1 * ds * L, ds * L, r), 1.5);
       return th;
     };
     for (const side of ['L', 'R']) {
@@ -286,7 +292,13 @@ class Fig {
     }
     const trail = lead === 'R' ? 'L' : 'R';
     const steps = [];
-    for (let k = 1; k <= N; k++) steps.push({ side: k % 2 ? lead : trail, P: k * L, sLand: (k - 0.6) * L, sLift: k === 1 ? 0.02 * L : (k - 1.4) * L, close: false });
+    // half stance per step: walk-like at the start and end of the move, the mood's own in the middle (a run only leaves the ground in between)
+    const ds0 = m.ds ?? 0.6;
+    const dsK = k => lerp(m.dsEdge ?? 0.6, ds0, clamp(Math.min(k - 1, N - k)));
+    for (let k = 1; k <= N; k++) {
+      const ds = dsK(k);
+      steps.push({ side: k % 2 ? lead : trail, P: k * L, ds, sLand: (k - ds) * L, sLift: k === 1 ? 0.02 * L : (k - 2 + (k > 2 ? dsK(k - 2) : 0.6)) * L, close: false });
+    }
     steps.push({ side: N % 2 ? trail : lead, P: D, sLand: D, sLift: D - 0.4 * L, close: true });
     for (const st of steps) {
       const tl = tOf(st.sLift), ta = st.close ? t0 + Tt - 0.04 : tOf(st.sLand);
@@ -294,7 +306,7 @@ class Fig {
       prev.t1 = tl;
       const np = mkPlant(ta, heelAt(st.P, st.side), yTarget);
       if (st.close) { const lp = m.landPitch * 0.35; np.pitch = [{ from: -Infinity, fn: t => lp * (1 - sstep(ta, ta + 0.16, t)) }]; }
-      else np.pitch = [{ from: -Infinity, fn: rPitch(st.P, st.sLand - st.P, m.landPitch) }];
+      else np.pitch = [{ from: -Infinity, fn: rPitch(st.P, st.sLand - st.P, m.landPitch, st.ds) }];
       np.swing = { h: m.lift * (st.close ? 0.55 : 1) };
       list.push(np);
       this.cues.push({ t: ta, type: st.close ? 'settle' : 'step', fig: this.id, side: st.side, mood: m.name });
@@ -374,9 +386,15 @@ class Fig {
     if (wk) {
       const m = wk.m, s = wk.sAt(t), L = wk.L;
       const ws = sstep(0, 0.5 * L, s) * (1 - sstep(wk.D - 0.55 * L, wk.D, s));
-      const q = (((s + 0.6 * L) / L) % 1 + 1) % 1;
-      const b = bobCurve(q);
-      bob = m.bob * (b > 0 ? b * m.up : b * m.down) * ws;
+      if (m.run) {
+        // running: the pelvis is lowest in mid-stance and highest in mid-flight
+        const q = (((s + m.ds * L) / L) % 1 + 1) % 1;
+        bob = -m.bob * Math.cos(TAU * (q - m.ds)) * ws;
+      } else {
+        const q = (((s + 0.6 * L) / L) % 1 + 1) % 1;
+        const b = bobCurve(q);
+        bob = m.bob * (b > 0 ? b * m.up : b * m.down) * ws;
+      }
       // weight shifts toward the stance foot
       const swingSide = !feet.L.planted ? -1 : !feet.R.planted ? 1 : 0;
       const sw = swingSide ? Math.sin(PI * (swingSide < 0 ? feet.L.u : feet.R.u)) : 0;
@@ -411,13 +429,15 @@ class Fig {
     }
 
     // spine
-    const sec = spring(this.id + ':lean', τ => -this.accAt(τ) * 0.028, t, this.t0, 1.7, 0.42);
-    const lean = (tr.lean.at(t) + (wk ? wk.m.lean : 0) * gw + sec - lg * 6 + idle * 0.8 * nz(t * 0.5, sd + 7)) * D2R;
+    // lean into acceleration, rock back when braking (with a little overshoot), and lean forward with speed
+    const spd = wk ? clamp((wk.sAt(t + 0.012) - wk.sAt(t - 0.012)) / 0.024 / wk.v, 0, 1.15) : 0;
+    const sec = spring(this.id + ':lean', τ => this.accAt(τ) * 0.012, t, this.t0, 1.7, 0.42);
+    const lean = (tr.lean.at(t) + (wk ? wk.m.lean : 0) * spd + sec - lg * 6 + idle * 0.8 * nz(t * 0.5, sd + 7)) * D2R;
     const slump = tr.slump.at(t) * D2R;
     const roll = (tr.roll.at(t) + dance * 2.6 * Math.sin(PI * beat + sd + 0.4)) * D2R;
     const sdir = (p, r, FF = F, RR = R) => norm(add(add(mul(FF, Math.sin(p)), mul(RR, Math.sin(r))), [0, 0, Math.cos(p) * Math.cos(r)]));
     const C = madd(Pv, sdir(lean * 0.6, roll * 0.6), DIM.torso * 0.5);
-    const twist = tr.twist.at(t) - (fl.L - fl.R) * 4 * gw;      // shoulders counter-rotate against the hips
+    const twist = tr.twist.at(t) - (fl.L - fl.R) * (wk ? wk.m.twist : 4) * gw;      // shoulders counter-rotate against the hips
     const Ft = fwd(yaw + twist), Rt = rgt(yaw + twist);
     const shake = Math.sin(TAU * 8.5 * t + sd) * lg;
     let N = madd(C, sdir(lean + slump, roll, Ft, Rt), DIM.torso * 0.5 + br * 0.9);
@@ -443,7 +463,7 @@ class Fig {
       if (gw > 0 && wk) {
         const lag1 = this.legFwd(side, t - 0.07), lag2 = this.legFwd(side, t - 0.15);
         sw += -wk.m.arm * lag1 * gw;
-        el += wk.m.elbow * (0.45 + 0.55 * clamp(-lag2, -1, 1)) * gw;
+        el += (wk.m.elBase + wk.m.elbow * (0.45 + 0.55 * clamp(-lag2, -1, 1))) * gw;
       }
       sw *= D2R; out *= D2R; el *= D2R;
       const ud = norm(add(add(mul(Ft, Math.sin(sw) * Math.cos(out)), mul(Rt, sg * Math.sin(out))), [0, 0, -Math.cos(sw) * Math.cos(out)]));
@@ -510,6 +530,16 @@ function strokeLimb(c, pts, col, k, curve) {
   } else for (let i = 1; i < pp.length; i++) c.lineTo(pp[i][0], pp[i][1]);
   c.strokeStyle = INK; c.lineWidth = (DIM.limbW + 2 * DIM.outline) * k; c.stroke();
   c.strokeStyle = col; c.lineWidth = DIM.limbW * k; c.stroke();
+}
+// several capsule strokes drawn as ONE outlined shape (outlines first, then fills, so there are no seams)
+function strokeShape(c, parts, col) {
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  for (const pass of [0, 1]) for (const sp of parts) {
+    const pp = sp.pts.map(P), k = pp[0][2];
+    c.beginPath(); c.moveTo(pp[0][0], pp[0][1]);
+    for (let i = 1; i < pp.length; i++) c.lineTo(pp[i][0], pp[i][1]);
+    c.strokeStyle = pass ? col : INK; c.lineWidth = (sp.w + (pass ? 0 : 2 * DIM.outline)) * k; c.stroke();
+  }
 }
 function dotJoint(c, p, col, r) {
   const [X, Y, k] = P(p);
@@ -579,7 +609,8 @@ function drawFigure(c, fig, J, extra = {}) {
       if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
     } });
   }
-  parts.push({ d: torsoD, draw: () => strokeLimb(c, [J.P, J.C, J.N, J.NT], rgb(FIG_NEAR), P(J.N)[2], true) });
+  parts.push({ d: torsoD + 0.1, draw: () => strokeLimb(c, [J.N, J.NT], rgb(FIG_NEAR), P(J.N)[2]) });
+  parts.push({ d: torsoD, draw: () => strokeShape(c, [{ pts: [J.P, J.C], w: DIM.waistW }, { pts: [J.C, J.N], w: DIM.chestW }], rgb(FIG_NEAR)) });
   parts.push({ d: Math.min(torsoD - 0.2, J.Hc[1]), draw: () => {
     const [X, Y, k] = P(J.Hc), r = DIM.headR * k;
     c.beginPath(); c.arc(X, Y, r + DIM.outline * k, 0, TAU); c.fillStyle = INK; c.fill();
@@ -703,6 +734,7 @@ const PARTY = (() => {
   // everyone holds a cup at the waist
   for (const f of figs) {
     const s = f.cup;
+    if (!s) continue;
     f.tr['aSw' + s] = new Track(26); f.tr['aEl' + s] = new Track(78); f.tr['aOut' + s] = new Track(14);
   }
   // dancing / swaying to the muffled music
@@ -727,18 +759,19 @@ const PARTY = (() => {
   D.tr.yaw.to(1.6, 2.3, -160);
   A.tr.head.to(0.2, 0.6, 4).to(0.9, 1.2, -4);
 
-  // A turns from D to M and takes two light steps toward it
+  // A turns from D to M and takes a few light steps toward it
   A.turn(T.aTurn0, T.aTurn1, -170, { first: 'R', lift: 9 });
   A.tr.dance.to(T.aTurn0, T.aTurn0 + 0.4, 0.15);
   const aEnd = A.walk(T.aWalk, [436, 22], MOOD.bouncy, 'L');
-  // "how are you?": open-hand gesture
-  A.goal('L', (t, J) => add(add(J.N, mul(J.F, 44)), add(mul(J.R, -10), [0, 0, -34 + 3 * Math.sin((t - T.ask0) * 9)]))).to(T.ask0 + 0.1, T.ask0 + 0.45, 0.85, E.over).to(T.ask1 - 0.4, T.ask1, 0);
-  A.tr.head.to(T.ask0, T.ask0 + 0.3, 6).to(T.ask0 + 0.5, T.ask0 + 0.8, -2);
-  A.tr.lean.to(aEnd - 0.2, aEnd + 0.2, 6, E.over).to(T.ask1, T.ask1 + 0.4, 2);
+  // "how are you?": open-hand gesture once it has arrived
+  A.goal('L', (t, J) => add(add(J.N, mul(J.F, 44)), add(mul(J.R, -10), [0, 0, -34 + 3 * Math.sin((t - aEnd) * 9)]))).to(aEnd + 0.1, aEnd + 0.5, 0.85, E.over).to(T.ask1 - 0.3, T.ask1 + 0.2, 0);
+  A.tr.head.to(aEnd + 0.1, aEnd + 0.4, 6).to(aEnd + 0.6, aEnd + 0.9, -2);
+  A.tr.lean.to(aEnd + 0.1, aEnd + 0.5, 6, E.over).to(T.ask1, T.ask1 + 0.4, 2);
+  T.aEnd = aEnd;
 
   // M turns its torso toward A, then the exaggerated happy nod
-  M.tr.yaw.to(1.7, 2.3, -40, E.over);
-  M.tr.dance.to(1.9, 2.3, 0.12);
+  M.tr.yaw.to(2.2, 2.9, -40, E.over);
+  M.tr.dance.to(2.3, 2.8, 0.12);
   const n = T.nod;
   M.tr.head.to(n, n + 0.16, 30, E.out2).to(n + 0.16, n + 0.36, -14, E.io).to(n + 0.36, n + 0.54, 20, E.io).to(n + 0.54, n + 0.78, -6, E.io).to(n + 0.78, n + 1.1, -2, E.io);
   M.tr.pz.to(n - 0.02, n + 0.14, -10, E.out2).to(n + 0.14, n + 0.32, 2, E.io).to(n + 0.32, n + 0.5, -6, E.io).to(n + 0.5, n + 0.8, 0, E.over);
@@ -759,7 +792,8 @@ const PARTY = (() => {
   }
   const maskOf = maskOnFace;
   function draw(t) {
-    cam.x = 372; cam.zoom = lerp(1.42, 1.5, E.sine(inv(0, T.cut1, t))); cam.hy = 650; cam.h = 270;
+    cam.x = 372;
+    cam.zoom = lerp(1.42, 1.5, E.sine(inv(0, T.cut1, t))); cam.hy = 650; cam.h = 270;
     // wall + floor
     const floorY = P([0, WALL, 0])[1];
     let g = ctx.createLinearGradient(0, 0, 0, floorY);
@@ -1077,6 +1111,8 @@ const HOME = (() => {
     const push = E.io(inv(T.slump0 - 0.6, T.morn + 0.3, t));
     const follow = E.io(inv(T.mWalk - 0.3, T.end, t));
     cam.x = lerp(lerp(440, 420, push), 470, follow);
+    const walking = sstep(T.hWalk - 0.2, T.hWalk + 0.7, t) * (1 - sstep(T.sit0 - 0.1, T.sit0 + 0.8, t));
+    cam.x = lerp(cam.x, lerp(440, M.rootAt(t)[0] - 10, 0.7), walking);
     cam.zoom = lerp(lerp(1.42, 1.56, push), 1.46, follow);
     cam.hy = lerp(640, 610, push); cam.h = 262;
     const J = M.pose(t);
@@ -1139,15 +1175,16 @@ const WALKTEST = (() => {
   const qs = new URLSearchParams(location.search);
   const mood = MOOD[qs.get('mood') || 'heavy'] || MOOD.heavy;
   const F = new Fig('TEST', { x: 110, d: 0, yaw: 0, seed: 2 });
-  const end = F.walk(0.4, [620, 0], mood, 'R');
+  const end = F.walk(0.4, [qs.get('track') === '1' ? 1000 : 620, 0], mood, 'R');
   const dur = end + 0.8;
   function draw(t) {
-    cam.x = 365; cam.zoom = 1.22; cam.hy = 640; cam.h = 250;
+    const track = qs.get('track') === '1';
+    cam.x = track ? F.rootAt(t)[0] + 70 : 365; cam.zoom = track ? 1.5 : 1.22; cam.hy = track ? 560 : 640; cam.h = 250;
     ctx.fillStyle = '#101012'; ctx.fillRect(0, 0, W, H);
     const fy = P([0, 0, 0])[1];
     ctx.fillStyle = '#18181b'; ctx.fillRect(0, fy, W, H - fy);
     ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
-    for (let x = 0; x <= 760; x += 20) { const a = P([x, 0, 0]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(a[0], a[1] + (x % 100 ? 8 : 18)); ctx.stroke(); }
+    for (let x = 0; x <= 1300; x += 20) { const a = P([x, 0, 0]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(a[0], a[1] + (x % 100 ? 8 : 18)); ctx.stroke(); }
     const J = F.pose(t);
     // heel contacts so far
     for (const c of F.cues) if (c.t <= t + 1e-6) {

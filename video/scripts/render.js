@@ -14,13 +14,14 @@ const opt = (name, def) => { const i = args.indexOf('--' + name); return i >= 0 
 
 (async () => {
   const test = opt('test', null);
-  const query = test ? `&test=${test}&mood=${opt('mood', 'heavy')}` : '';
+  const track = args.includes('--track');
+  const query = test ? `&test=${test}&mood=${opt('mood', 'heavy')}${track ? '&track=1' : ''}` : '';
   const { browser, page } = await openPage(query);
   const fps = await page.evaluate(() => window.FPS);
   const duration = await page.evaluate(() => window.DURATION);
   const from = parseFloat(opt('from', '0'));
   const to = parseFloat(opt('to', String(duration)));
-  const out = path.resolve(ROOT, opt('out', test ? `build/walktest-${opt('mood', 'heavy')}.mp4` : 'build/video.mp4'));
+  const out = path.resolve(ROOT, opt('out', test ? `build/walktest-${opt('mood', 'heavy')}${track ? '-tracking' : ''}.mp4` : 'build/video.mp4'));
   fs.mkdirSync(path.dirname(out), { recursive: true });
 
   if (!test) {

@@ -11,6 +11,7 @@ with a sound-effect mix built from real recordings.
   ffmpeg (libx264, yuv420p, crf 17). Also writes `build/cues.json` (story times + heel-contact frames).
 - `scripts/mix.js`: cuts, places and mixes the sounds with ffmpeg (`atrim`, `volume`, `afade`, `adelay`, `amix`),
   normalises to −14 LUFS with a −1.5 dBTP ceiling, and muxes AAC 192k onto the video → `out/ask-twice.mp4`.
+- `scripts/make_sfx.py`: procedural stand-in foley for `sfx/` (real recordings can replace it, see `sfx/README.md`).
 - `scripts/stills.js`, `scripts/check.js`, `scripts/popcheck.js`: key-frame stills, foot-lock check, pop check.
 
 ## Run
@@ -19,7 +20,8 @@ with a sound-effect mix built from real recordings.
 npm install && npx playwright install chromium   # once
 npm run check      # foot locking + pop check
 npm run stills     # key frames -> build/stills
-npm run walktest   # walk-cycle clips -> build/walktest-*.mp4
+npm run walktest   # walk/run-cycle clips (side view, plus tracking-camera versions) -> build/walktest-*.mp4
+npm run sfx        # (re)generate the stand-in sound effects
 npm run render     # picture -> build/video.mp4
 npm run mix        # sound -> out/ask-twice.mp4 (needs the files listed in sfx/README.md)
 ```
@@ -50,8 +52,13 @@ All beat times live in the `T` object in `index.html`. The home and morning beat
   swing opposite the legs with elbow lag. The head is stabilised. Each walk starts and ends with
   half-steps, and the torso overshoots (a damped spring) when the figure stops.
 - **Turns** are shuffle steps: no foot ever pivots on the floor.
-- **Moods:** `bouncy` (party), `heavy` (home: short low steps, slumped, little arm swing), `forced` (morning: long,
-  upright, stiff big arm swing).
+- **Gaits** (`MOOD` in `index.html`): `bouncy` (party), `heavy` (home: short low steps, slumped, little arm swing),
+  `forced` (morning: long, upright, big arm swing), plus a neutral `walk` and a real `run`. The run has flight phases (a
+  half-stance below 0.5 step lengths), the pelvis is lowest in mid-stance and highest in mid-flight, the elbows stay near
+  90° and pump, the torso leans forward with speed and rocks back when braking, the heel kicks up behind, the knee drives
+  forward. Walks and runs share one planner, so foot locking holds for all of them.
+  The test clips (`?test=walk&mood=run&track=1`) show a gait in side view with a tracking camera, like the reference.
+- **Body:** thick limbs (20 px) and a wide tapered torso, head 54 px.
 - **Idle:** breathing plus slow noise in the weight, lean and head. Nobody is ever perfectly still.
 - **Verification:** `npm run check` measures, for every figure and every 1/120 s, the distance between
   where a planted foot should be and where the leg puts it, and how far a planted heel or toe
