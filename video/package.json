@@ -1,0 +1,16 @@
+{
+  "name": "ask-twice",
+  "private": true,
+  "description": "A 9:16 stick-figure short rendered from code, with a sound-effect mix",
+  "scripts": {
+    "stills": "node scripts/stills.js",
+    "walktest": "node scripts/render.js --test walk --mood heavy && node scripts/render.js --test walk --mood forced && node scripts/render.js --test walk --mood bouncy",
+    "check": "node scripts/check.js && node scripts/popcheck.js",
+    "render": "node scripts/render.js",
+    "mix": "node scripts/mix.js",
+    "build": "node scripts/check.js && node scripts/render.js && node scripts/mix.js"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}

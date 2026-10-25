@@ -1,0 +1,1281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask Twice</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script>
+'use strict';
+/* =====================================================================
+   ASK TWICE: a deterministic 2D stick-figure short.
+   render(t) draws the frame at time t (seconds). Nothing in here reads
+   the clock or Math.random, so the same t always gives the same pixels.
+   ===================================================================== */
+
+const W = 720, H = 1280, FPS = 30;
+
+// ---------------------------------------------------------------- story
+// Every scene beat lives here. The sound timeline reads these too.
+const T = {
+  // 1. party
+  clink: 0.97,
+  aTurn0: 1.12, aTurn1: 1.97,
+  aWalk: 1.99,
+  ask0: 2.25, ask1: 3.55,
+  nod: 3.75,
+  fine0: 3.85, fine1: 4.95,
+  laugh0: 4.3, laugh1: 5.75,
+  cut1: 6.2,                       // hard cut + door slam
+  // 2. home
+  lock: 6.5,
+  deflate0: 6.3, deflate1: 7.0,
+  hWalk: 6.62,                      // the rest is filled in once the walks are planned
+  sit0: 0, sitHit: 0, sit1: 0,
+  maskOff0: 0, maskGrab: 0, maskDown: 0,
+  slump0: 0, slump1: 0,
+  // 3. morning
+  morn: 0, alarm0: 0, alarm1: 0,
+  rise0: 0, stand0: 0, stand1: 0, look0: 0, pick: 0, wear: 0, straight0: 0,
+  mTurn0: 0, mTurn1: 0, mWalk: 0,
+  doorOpen: 0,
+  ask2a: 0, ask2b: 0,
+  fade0: 0, end: 0,
+};
+
+// ---------------------------------------------------------------- math
+const PI = Math.PI, TAU = 2 * PI, D2R = PI / 180;
+const clamp = (x, a = 0, b = 1) => x < a ? a : x > b ? b : x;
+const lerp = (a, b, t) => a + (b - a) * t;
+const inv = (a, b, x) => clamp((x - a) / (b - a));
+const sstep = (a, b, x) => { const t = inv(a, b, x); return t * t * (3 - 2 * t); };
+const s5 = x => x * x * x * (x * (x * 6 - 15) + 10);
+const E = {
+  io: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  io2: x => x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2,
+  sine: x => -(Math.cos(PI * x) - 1) / 2,
+  out: x => 1 - Math.pow(1 - x, 3),
+  out2: x => 1 - (1 - x) * (1 - x),
+  in2: x => x * x,
+  s5,
+  // in-out that overshoots slightly and settles with zero velocity
+  over: (x, k = 4) => s5(x) + k * x * x * x * (1 - x) * (1 - x),
+  overK: k => x => E.over(x, k),
+  // anticipation + overshoot
+  back: (x, c = 0.9) => {
+    const c2 = c * 1.525;
+    return x < .5 ? (Math.pow(2 * x, 2) * ((c2 + 1) * 2 * x - c2)) / 2
+                  : (Math.pow(2 * x - 2, 2) * ((c2 + 1) * (x * 2 - 2) + c2) + 2) / 2;
+  },
+};
+// deterministic smooth noise in [-1, 1]
+const nz = (t, s) => 0.5 * Math.sin(t * 1.31 + s * 12.99) + 0.3 * Math.sin(t * 2.17 + s * 78.23) + 0.2 * Math.sin(t * 3.73 + s * 37.72);
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// 3D vectors: [x (screen right), d (depth, away from camera), z (up)]
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const mul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const madd = (a, b, s) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const len = a => Math.hypot(a[0], a[1], a[2]);
+const norm = a => { const l = len(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const UP = [0, 0, 1];
+const fwd = yaw => [Math.cos(yaw * D2R), Math.sin(yaw * D2R), 0];
+const rgt = yaw => [Math.sin(yaw * D2R), -Math.cos(yaw * D2R), 0];
+
+// two-bone IK: root A, target T, bone lengths a and b, pole point.
+// Returns [joint, end] with the end clamped to what the limb can reach.
+function ik2(A, Tg, a, b, pole) {
+  const D = sub(Tg, A); const d = len(D);
+  const dc = clamp(d, Math.abs(a - b) + 1e-3, (a + b) * 0.9999);
+  const u = d > 1e-6 ? mul(D, 1 / d) : [0, 0, -1];
+  const Pp = sub(pole, A);
+  let v = sub(Pp, mul(u, dot(Pp, u)));
+  if (len(v) < 1e-6) v = Math.abs(u[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  v = norm(v);
+  const x = (a * a - b * b + dc * dc) / (2 * dc);
+  const y = Math.sqrt(Math.max(0, a * a - x * x));
+  return [add(A, add(mul(u, x), mul(v, y))), add(A, mul(u, dc))];
+}
+const smin = (a, b, k) => -k * Math.log(Math.exp(-a / k) + Math.exp(-b / k));
+
+// ---------------------------------------------------------------- tracks
+// Keyframed channel. Each segment eases from wherever the channel is at its
+// start to a new value, so overlapping segments blend instead of popping.
+class Track {
+  constructor(v) { this.v0 = v; this.segs = []; }
+  to(t0, t1, v, ease = E.io) { this.segs.push({ t0, t1, v, ease }); return this; }
+  at(t) {
+    let v = this.v0;
+    for (const s of this.segs) {
+      if (t <= s.t0) continue;
+      const p = (t - s.t0) / (s.t1 - s.t0);
+      v = p >= 1 ? s.v : lerp(v, s.v, s.ease(p));
+    }
+    return v;
+  }
+}
+
+// Damped spring integrated on a fixed grid from t0, so the result depends
+// only on t (memoised so playback stays cheap).
+const SPR = {};
+function spring(key, input, t, t0, freq, zeta) {
+  if (t <= t0) return input(t0);
+  const dt = 1 / 240, w = TAU * freq, N = Math.floor((t - t0) / dt);
+  let c = SPR[key];
+  if (!c || c.n > N || c.t0 !== t0) c = { t0, n: 0, x: input(t0), v: 0 };
+  while (c.n < N) {
+    const a = w * w * (input(t0 + c.n * dt) - c.x) - 2 * zeta * w * c.v;
+    c.v += a * dt; c.x += c.v * dt; c.n++;
+  }
+  SPR[key] = c;
+  return c.x;
+}
+
+// ---------------------------------------------------------------- skeleton
+const DIM = {
+  torso: 100, neck: 15, headR: 27,
+  upper: 56, fore: 52,
+  thigh: 82, shin: 80,
+  ankleH: 7, heel: 5, toe: 18,          // ankle sits above a point 5px in front of the heel
+  hipW: 7, shW: 12, footW: 8,
+  limbW: 13, outline: 3.5,
+};
+const FL = DIM.heel + DIM.toe;           // heel-to-toe length
+const LEG = DIM.thigh + DIM.shin;
+const H0 = LEG + DIM.ankleH - 3;          // relaxed standing pelvis height
+const LMAX = LEG * 0.995;
+
+// Gait moods. L = step length (px), cad = steps per second.
+// Walk speed is always L * cad, which keeps the planted foot locked.
+const MOOD = {
+  bouncy: { name: 'bouncy', L: 34, cad: 2.3, lift: 13, bob: 6.5, up: 1.25, down: 0.8, arm: 18, elbow: 18, landPitch: 18, heelOff: 32, knee: 3, lean: 2 },
+  heavy:  { name: 'heavy',  L: 70, cad: 1.45, lift: 4.5, bob: 5.5, up: 0.45, down: 1.35, arm: 7, elbow: 6, landPitch: 9, heelOff: 20, knee: 7, lean: 5, ta: 0.78, td: 0.86 },
+  forced: { name: 'forced', L: 78, cad: 2.25, lift: 15, bob: 7.5, up: 1.35, down: 0.75, arm: 30, elbow: 14, landPitch: 20, heelOff: 38, knee: 2, lean: 1, ta: 0.42, td: 0.5 },
+};
+// pelvis height over one step: contact, down, passing, up
+const BOB = [[0, 0], [0.13, -1], [0.45, 0.3], [0.72, 1]];
+function bobCurve(q) {
+  const n = BOB.length;
+  let i = n - 1;
+  for (let j = 0; j < n; j++) if (BOB[j][0] <= q) i = j;
+  const k = (j) => BOB[((j % n) + n) % n];
+  const q0 = BOB[i][0], q1 = i + 1 < n ? BOB[i + 1][0] : 1;
+  const u = (q - q0) / (q1 - q0);
+  const p0 = k(i - 1)[1], p1 = k(i)[1], p2 = k(i + 1)[1], p3 = k(i + 2)[1];
+  const u2 = u * u, u3 = u2 * u;   // Catmull-Rom
+  return 0.5 * (2 * p1 + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2 + (-p0 + 3 * p1 - 3 * p2 + p3) * u3);
+}
+
+function mkPlant(t0, pos, yaw) {
+  return { t0, t1: Infinity, pos, yaw, pitch: [{ from: -Infinity, fn: () => 0 }], swing: null };
+}
+const pitchOf = (pl, t) => { let f = pl.pitch[0].fn; for (const p of pl.pitch) if (p.from <= t) f = p.fn; return f(t); };
+
+// foot on the floor: positive pitch = toe up, rolls on the heel;
+// negative pitch = heel up, rolls on the toe
+function groundFoot(pos, th, yaw) {
+  const f = fwd(yaw), c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+  let heel, toe;
+  if (th >= 0) { heel = [pos[0], pos[1], 0]; toe = [pos[0] + f[0] * FL * c, pos[1] + f[1] * FL * c, FL * s]; }
+  else { toe = [pos[0] + f[0] * FL, pos[1] + f[1] * FL, 0]; heel = [toe[0] - f[0] * FL * c, toe[1] - f[1] * FL * c, -FL * s]; }
+  return { heel, toe, ank: ankleFromHeel(heel, th, yaw), pitch: th, yaw };
+}
+function ankleFromHeel(heel, th, yaw) {
+  const f = fwd(yaw), c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+  const a = DIM.heel * c - DIM.ankleH * s, z = DIM.heel * s + DIM.ankleH * c;
+  return [heel[0] + f[0] * a, heel[1] + f[1] * a, heel[2] + z];
+}
+function heelFromAnkle(ank, th, yaw) {
+  const f = fwd(yaw), c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+  const a = DIM.heel * c - DIM.ankleH * s, z = DIM.heel * s + DIM.ankleH * c;
+  return [ank[0] - f[0] * a, ank[1] - f[1] * a, ank[2] - z];
+}
+const angLerp = (a, b, t) => { let d = ((b - a + 540) % 360) - 180; return a + d * t; };
+
+class Fig {
+  constructor(id, o) {
+    this.id = id; this.seed = o.seed || 1; this.t0 = o.t0 || 0;
+    const tr = this.tr = {};
+    const defaults = {
+      yaw: o.yaw, pf: 0, pl: 0, pz: 0, lean: 3, slump: 0, roll: 0, twist: 0,
+      head: 0, headRoll: 0, shDrop: 0, breath: 1, dance: 0, laugh: 0, idle: 1, bounce: 0,
+      aSwL: 4, aOutL: 9, aElL: 12, aSwR: 4, aOutR: 9, aElR: 12,
+    };
+    for (const k in defaults) tr[k] = new Track(defaults[k]);
+    this.goals = { L: [], R: [] };
+    this.moves = [];
+    this.root0 = [o.x, o.d];
+    const F = fwd(o.yaw), R = rgt(o.yaw);
+    const foot = sg => [o.x - F[0] * DIM.heel + R[0] * sg * DIM.footW, o.d - F[1] * DIM.heel + R[1] * sg * DIM.footW];
+    this.plants = { L: [mkPlant(-Infinity, foot(-1), o.yaw)], R: [mkPlant(-Infinity, foot(1), o.yaw)] };
+    this.cues = [];
+    this.cup = o.cup || null;   // which hand holds a cup
+  }
+  // where the root (point on the floor under the pelvis) is
+  rootAt(t) {
+    let p = this.root0;
+    for (const w of this.moves) { if (t < w.t0) break; const s = w.sAt(Math.min(t, w.t1)); p = [w.from[0] + w.dir[0] * s, w.from[1] + w.dir[1] * s]; }
+    return p;
+  }
+  walkAt(t) {
+    for (const w of this.moves) if (t >= w.t0 && t <= w.t1) return w;
+    return null;
+  }
+  accAt(t) { const w = this.walkAt(t); return w ? w.acc(t) : 0; }
+  gaitW(t) { // 0..1, how much the figure is "in a walk" right now
+    let g = 0;
+    for (const w of this.moves) g = Math.max(g, sstep(w.t0 - 0.05, w.t0 + w.Ta * 0.8, t) * (1 - sstep(w.t1 - w.Td * 0.8, w.t1 + 0.1, t)));
+    return g;
+  }
+
+  // Plan a walk from wherever the root is at t0 to `to`. Returns the end time.
+  walk(t0, to, m, lead = 'R') {
+    const from = this.rootAt(t0);
+    const dx = to[0] - from[0], dd = to[1] - from[1], D = Math.hypot(dx, dd);
+    const dir = [dx / D, dd / D], yaw = Math.atan2(dd, dx) / D2R;
+    const N = Math.max(2, Math.round(D / m.L)), L = D / N, v = L * m.cad;
+    const Ta = m.ta ?? 0.95 / m.cad, Td = m.td ?? 1.05 / m.cad, Tt = D / v + (Ta + Td) / 2;
+    // eased trapezoid speed profile (cosine ramps); s(t) is distance travelled
+    const sAt = t => {
+      const tau = t - t0;
+      if (tau <= 0) return 0;
+      if (tau >= Tt) return D;
+      if (tau < Ta) return v * (tau / 2 - Ta / (2 * PI) * Math.sin(PI * tau / Ta));
+      if (tau <= Tt - Td) return v * (Ta / 2 + tau - Ta);
+      const r = Tt - tau;
+      return D - v * (r / 2 - Td / (2 * PI) * Math.sin(PI * r / Td));
+    };
+    const acc = t => {
+      const tau = t - t0;
+      if (tau <= 0 || tau >= Tt) return 0;
+      if (tau < Ta) return v * PI / (2 * Ta) * Math.sin(PI * tau / Ta);
+      if (tau <= Tt - Td) return 0;
+      return -v * PI / (2 * Td) * Math.sin(PI * (Tt - tau) / Td);
+    };
+    const tOf = s => { let a = t0, b = t0 + Tt; for (let i = 0; i < 50; i++) { const c = (a + b) / 2; if (sAt(c) < s) a = c; else b = c; } return (a + b) / 2; };
+    const wk = { t0, t1: t0 + Tt, from, to, dir, yaw, D, L, N, v, Ta, Td, T: Tt, sAt, acc, tOf, m };
+    this.moves.push(wk);
+    const yNow = this.tr.yaw.at(t0);
+    const yTarget = yNow + (((yaw - yNow + 540) % 360) - 180);
+    if (Math.abs(yTarget - yNow) > 0.5) this.tr.yaw.to(t0 - 0.1, t0 + 0.25, yTarget, E.io);
+    wk.yaw = yTarget;
+    const R = rgt(yTarget), F = fwd(yTarget);
+    const heelAt = (P, side) => { const sg = side === 'R' ? 1 : -1; return [from[0] + dir[0] * (P - DIM.heel) + R[0] * sg * DIM.footW, from[1] + dir[1] * (P - DIM.heel) + R[1] * sg * DIM.footW]; };
+    // stance pitch from where the pelvis is relative to the foot (r): heel strike rolls flat, then the heel peels off
+    const rPitch = (P, rl, lp) => t => {
+      const r = sAt(t) - P; let th = 0;
+      if (rl !== null) th += lp * (1 - sstep(rl, rl + 0.2 * L, r));
+      th -= m.heelOff * Math.pow(sstep(0.08 * L, 0.62 * L, r), 1.5);
+      return th;
+    };
+    for (const side of ['L', 'R']) {
+      const cur = this.plants[side][this.plants[side].length - 1];
+      const P = (cur.pos[0] - from[0]) * dir[0] + (cur.pos[1] - from[1]) * dir[1] + DIM.heel;
+      cur.pitch.push({ from: t0, fn: rPitch(P, null, 0) });
+    }
+    const trail = lead === 'R' ? 'L' : 'R';
+    const steps = [];
+    for (let k = 1; k <= N; k++) steps.push({ side: k % 2 ? lead : trail, P: k * L, sLand: (k - 0.6) * L, sLift: k === 1 ? 0.02 * L : (k - 1.4) * L, close: false });
+    steps.push({ side: N % 2 ? trail : lead, P: D, sLand: D, sLift: D - 0.4 * L, close: true });
+    for (const st of steps) {
+      const tl = tOf(st.sLift), ta = st.close ? t0 + Tt - 0.04 : tOf(st.sLand);
+      const list = this.plants[st.side], prev = list[list.length - 1];
+      prev.t1 = tl;
+      const np = mkPlant(ta, heelAt(st.P, st.side), yTarget);
+      if (st.close) { const lp = m.landPitch * 0.35; np.pitch = [{ from: -Infinity, fn: t => lp * (1 - sstep(ta, ta + 0.16, t)) }]; }
+      else np.pitch = [{ from: -Infinity, fn: rPitch(st.P, st.sLand - st.P, m.landPitch) }];
+      np.swing = { h: m.lift * (st.close ? 0.55 : 1) };
+      list.push(np);
+      this.cues.push({ t: ta, type: st.close ? 'settle' : 'step', fig: this.id, side: st.side, mood: m.name });
+    }
+    return wk.t1;
+  }
+
+  // turn on the spot with small shuffle steps (no foot ever slides)
+  turn(t0, t1, yawTo, o = {}) {
+    const y0 = this.tr.yaw.at(t0), dy = yawTo - y0;
+    this.tr.yaw.to(t0, t1, yawTo, o.ease || E.over);
+    const n = o.steps || Math.max(2, Math.ceil(Math.abs(dy) / 70) + 1);
+    const root = this.rootAt(t0);
+    const first = o.first || (dy > 0 ? 'L' : 'R');
+    const sl = (t1 - t0) / n;
+    for (let j = 1; j <= n; j++) {
+      const side = j % 2 ? first : (first === 'L' ? 'R' : 'L');
+      const yj = y0 + dy * Math.min(1, j / (n - 1));
+      const F = fwd(yj), R = rgt(yj), sg = side === 'R' ? 1 : -1;
+      const pos = [root[0] - F[0] * DIM.heel + R[0] * sg * DIM.footW, root[1] - F[1] * DIM.heel + R[1] * sg * DIM.footW];
+      const tl = t0 + (j - 1) * sl + sl * 0.04, ta = t0 + j * sl - sl * 0.1;
+      const list = this.plants[side], prev = list[list.length - 1];
+      prev.t1 = tl;
+      const np = mkPlant(ta, pos, yj);
+      np.pitch = [{ from: -Infinity, fn: t => 5 * (1 - sstep(ta, ta + 0.12, t)) }];
+      np.swing = { h: o.lift || 6 };
+      list.push(np);
+      this.cues.push({ t: ta, type: 'shuffle', fig: this.id, side, mood: o.mood || 'shuffle' });
+    }
+  }
+
+  footAt(side, t) {
+    const P = this.plants[side];
+    for (let i = 0; i < P.length; i++) {
+      const p = P[i];
+      if (t < p.t0) return this.swingFoot(P[i - 1], p, t);
+      if (t <= p.t1) { const g = groundFoot(p.pos, pitchOf(p, t), p.yaw); g.planted = true; g.u = 1; g.plant = p; return g; }
+    }
+  }
+  swingFoot(a, b, t) {
+    const A = groundFoot(a.pos, pitchOf(a, a.t1), a.yaw), B = groundFoot(b.pos, pitchOf(b, b.t0), b.yaw);
+    const u = inv(a.t1, b.t0, t), e = E.sine(u);
+    const th = u < 0.5 ? lerp(A.pitch, 3, E.out2(u / 0.5)) : lerp(3, B.pitch, E.in2((u - 0.5) / 0.5));
+    const yaw = angLerp(a.yaw, b.yaw, e);
+    const lift = b.swing.h * Math.sin(PI * Math.pow(u, 0.72));
+    let ank = lerp3(A.ank, B.ank, e); ank[2] += lift;
+    let heel = heelFromAnkle(ank, th, yaw);
+    const f = fwd(yaw), c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+    let toe = [heel[0] + f[0] * FL * c, heel[1] + f[1] * FL * c, heel[2] + FL * s];
+    const lo = Math.min(heel[2], toe[2]);
+    if (lo < 0) { heel[2] -= lo; toe[2] -= lo; ank[2] -= lo; }
+    return { heel, toe, ank, pitch: th, yaw, planted: false, u };
+  }
+  legFwd(side, t) { // how far ahead of the pelvis this foot is, about -1..1
+    const w = this.walkAt(t) || null;
+    const r = this.rootAt(t), F = fwd(this.tr.yaw.at(t)), a = this.footAt(side, t).ank;
+    const n = w ? 0.6 * w.L : 40;
+    return clamp(((a[0] - r[0]) * F[0] + (a[1] - r[1]) * F[1]) / n, -1.4, 1.4);
+  }
+
+  pose(t) {
+    const tr = this.tr, sd = this.seed, J = {};
+    const yaw = tr.yaw.at(t), F = fwd(yaw), R = rgt(yaw);
+    J.F = F; J.R = R; J.yaw = yaw;
+    const root = this.rootAt(t);
+    const wk = this.walkAt(t), gw = this.gaitW(t);
+    const feet = { L: this.footAt('L', t), R: this.footAt('R', t) };
+    J.feet = feet;
+
+    const idle = tr.idle.at(t), dance = tr.dance.at(t), lg = tr.laugh.at(t);
+    const beat = t * 2;                               // party music is 120 bpm
+    let pf = tr.pf.at(t) + idle * 1.4 * nz(t * 0.6, sd);
+    let pl = tr.pl.at(t) + idle * 1.6 * nz(t * 0.45, sd + 3) + dance * 4.2 * Math.sin(PI * beat + sd);
+    let pz = tr.pz.at(t) - dance * 3.4 * (1 - Math.cos(TAU * beat + sd * 0.2)) / 2 - lg * 2;
+    pz += tr.bounce.at(t) * 3 * Math.sin(TAU * 2.2 * t);
+    let bob = 0;
+    if (wk) {
+      const m = wk.m, s = wk.sAt(t), L = wk.L;
+      const ws = sstep(0, 0.5 * L, s) * (1 - sstep(wk.D - 0.55 * L, wk.D, s));
+      const q = (((s + 0.6 * L) / L) % 1 + 1) % 1;
+      const b = bobCurve(q);
+      bob = m.bob * (b > 0 ? b * m.up : b * m.down) * ws;
+      // weight shifts toward the stance foot
+      const swingSide = !feet.L.planted ? -1 : !feet.R.planted ? 1 : 0;
+      const sw = swingSide ? Math.sin(PI * (swingSide < 0 ? feet.L.u : feet.R.u)) : 0;
+      pl += -swingSide * 2.4 * sw;
+    }
+    if (gw > 0) pz += bob - (wk ? wk.m.knee : 0) * gw;
+    const br = Math.sin(TAU * t / 3.6 + sd) * tr.breath.at(t);
+
+    let Pv = [root[0] + F[0] * pf + R[0] * pl, root[1] + F[1] * pf + R[1] * pl, H0 + pz + br * 0.6];
+    // hip rotation in the walk: the swinging leg's hip comes forward
+    const fl = { L: gw > 0 ? this.legFwd('L', t) : 0, R: gw > 0 ? this.legFwd('R', t) : 0 };
+    const hipOf = (side, P) => { const sg = side === 'R' ? 1 : -1; return add(add(P, mul(R, sg * DIM.hipW)), mul(F, 2.6 * fl[side] * gw)); };
+    // never let the pelvis rise above what the planted legs can reach
+    for (const side of ['L', 'R']) {
+      const ft = feet[side], wgt = ft.planted ? 1 : sstep(0.72, 1, ft.u);
+      if (wgt <= 0) continue;
+      const hp = hipOf(side, Pv), h = Math.hypot(hp[0] - ft.ank[0], hp[1] - ft.ank[1]);
+      const zmax = ft.ank[2] + Math.sqrt(Math.max(0, LMAX * LMAX - h * h));
+      Pv[2] = lerp(Pv[2], smin(Pv[2], zmax, 2.5), wgt);
+    }
+    J.P = Pv;
+    // legs
+    J.hip = {}; J.knee = {}; J.ank = {}; J.toe = {}; J.heel = {};
+    for (const side of ['L', 'R']) {
+      const sg = side === 'R' ? 1 : -1, hp = hipOf(side, Pv), ft = feet[side];
+      // knees point between where the body and the foot face (angular mean, never cancels out)
+      const kF = fwd(angLerp(yaw, ft.yaw, 0.5)), kR = rgt(angLerp(yaw, ft.yaw, 0.5));
+      const pole = add(add(hp, mul(kF, 140)), add(mul(kR, sg * 18), [0, 0, -25]));
+      const [kn, an] = ik2(hp, ft.ank, DIM.thigh, DIM.shin, pole);
+      const off = sub(an, ft.ank);
+      J.hip[side] = hp; J.knee[side] = kn; J.ank[side] = an; J.toe[side] = add(ft.toe, off); J.heel[side] = add(ft.heel, off);
+    }
+
+    // spine
+    const sec = spring(this.id + ':lean', τ => -this.accAt(τ) * 0.028, t, this.t0, 1.7, 0.42);
+    const lean = (tr.lean.at(t) + (wk ? wk.m.lean : 0) * gw + sec - lg * 6 + idle * 0.8 * nz(t * 0.5, sd + 7)) * D2R;
+    const slump = tr.slump.at(t) * D2R;
+    const roll = (tr.roll.at(t) + dance * 2.6 * Math.sin(PI * beat + sd + 0.4)) * D2R;
+    const sdir = (p, r, FF = F, RR = R) => norm(add(add(mul(FF, Math.sin(p)), mul(RR, Math.sin(r))), [0, 0, Math.cos(p) * Math.cos(r)]));
+    const C = madd(Pv, sdir(lean * 0.6, roll * 0.6), DIM.torso * 0.5);
+    const twist = tr.twist.at(t) - (fl.L - fl.R) * 4 * gw;      // shoulders counter-rotate against the hips
+    const Ft = fwd(yaw + twist), Rt = rgt(yaw + twist);
+    const shake = Math.sin(TAU * 8.5 * t + sd) * lg;
+    let N = madd(C, sdir(lean + slump, roll, Ft, Rt), DIM.torso * 0.5 + br * 0.9);
+    N[2] += shake * 2.6;
+    J.C = C; J.N = N; J.Ft = Ft; J.Rt = Rt;
+
+    // neck and head: the head counters the torso so it stays steadier than the body
+    const hp = (tr.head.at(t) + dance * 2.5 * Math.sin(TAU * beat + 0.8) - lg * 13 + shake * 1.5) * D2R;
+    const hr = (tr.headRoll.at(t) + dance * 2 * Math.sin(PI * beat + sd + 1.2)) * D2R;
+    const NT = sub(madd(N, sdir((lean + slump) * 0.5 + hp * 0.5, roll * 0.5 + hr * 0.5, Ft, Rt), DIM.neck), [0, 0, bob * 0.3]);
+    const Hc = madd(NT, sdir((lean + slump) * 0.3 + hp, roll * 0.3 + hr, Ft, Rt), DIM.headR * 0.9);
+    J.NT = NT; J.Hc = Hc; J.hp = hp;
+
+    // arms
+    J.sh = {}; J.el = {}; J.hand = {};
+    const shDrop = tr.shDrop.at(t);
+    for (const side of ['L', 'R']) {
+      const sg = side === 'R' ? 1 : -1, S = side;
+      let sh = add(add(N, mul(Rt, sg * DIM.shW)), [0, 0, -4 - shDrop + br * 1.1 + shake * 0.8]);
+      sh = madd(sh, Ft, shDrop * 0.7);
+      let sw = tr['aSw' + S].at(t), out = tr['aOut' + S].at(t), el = tr['aEl' + S].at(t);
+      sw += dance * 3 * Math.sin(PI * beat + sd + sg);
+      if (gw > 0 && wk) {
+        const lag1 = this.legFwd(side, t - 0.07), lag2 = this.legFwd(side, t - 0.15);
+        sw += -wk.m.arm * lag1 * gw;
+        el += wk.m.elbow * (0.45 + 0.55 * clamp(-lag2, -1, 1)) * gw;
+      }
+      sw *= D2R; out *= D2R; el *= D2R;
+      const ud = norm(add(add(mul(Ft, Math.sin(sw) * Math.cos(out)), mul(Rt, sg * Math.sin(out))), [0, 0, -Math.cos(sw) * Math.cos(out)]));
+      let wv = sub(Ft, mul(ud, dot(Ft, ud)));
+      wv = len(wv) < 1e-4 ? [0, 0, 1] : norm(wv);
+      const fd = add(mul(ud, Math.cos(el)), mul(wv, Math.sin(el)));
+      const Efk = madd(sh, ud, DIM.upper), Hfk = madd(Efk, fd, DIM.fore);
+      J.sh[side] = sh;
+      let target = Hfk;
+      let pole = add(add(Efk, mul(norm(sub(Efk, lerp3(sh, Hfk, 0.5))), 40)), add(mul(Ft, -12), mul(Rt, sg * 10)));
+      for (const g of this.goals[side]) {
+        const gwt = g.w.at(t);
+        if (gwt <= 0) continue;
+        target = lerp3(target, g.fn(t, J), gwt);
+        if (g.pole) pole = lerp3(pole, g.pole(t, J), gwt);
+      }
+      const [E1, H1] = ik2(sh, target, DIM.upper, DIM.fore, pole);
+      J.sh[side] = sh; J.el[side] = E1; J.hand[side] = H1;
+    }
+    return J;
+  }
+  goal(side, fn, pole) { const g = { w: new Track(0), fn, pole }; this.goals[side].push(g); return g.w; }
+}
+
+// ---------------------------------------------------------------- camera
+const cam = { x: 360, zoom: 1.15, hy: 700, h: 270, D0: 900 };
+let MIRROR = false;
+function P(p) {
+  const k = cam.zoom * cam.D0 / (cam.D0 + p[1]);
+  const z = MIRROR ? -p[2] : p[2];
+  return [W / 2 + (p[0] - cam.x) * k, cam.hy + (cam.h - z) * k, k];
+}
+
+// ---------------------------------------------------------------- drawing
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const off = document.createElement('canvas'); off.width = W / 2; off.height = H / 2;   // reflections: half res
+const octx = off.getContext('2d');
+const soft = document.createElement('canvas'); soft.width = W / 4; soft.height = H / 4;  // light shafts / glows: quarter res
+const sctx = soft.getContext('2d');
+// Draw something heavily blurred (light shafts, pools) cheaply at quarter resolution.
+function softLayer(blur, op, fn) {
+  sctx.setTransform(1, 0, 0, 1, 0, 0); sctx.clearRect(0, 0, soft.width, soft.height);
+  sctx.setTransform(0.25, 0, 0, 0.25, 0, 0); sctx.filter = `blur(${blur / 4}px)`;
+  fn(sctx);
+  sctx.filter = 'none';
+  ctx.save(); ctx.globalCompositeOperation = op; ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(soft, 0, 0, W, H); ctx.restore();
+}
+const INK = '#060606';
+const FIG_FAR = [168, 168, 170], FIG_NEAR = [246, 246, 244];
+const rgb = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+const mixc = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+
+function strokeLimb(c, pts, col, k, curve) {
+  const pp = pts.map(P);
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  c.beginPath();
+  c.moveTo(pp[0][0], pp[0][1]);
+  if (curve) {   // torso: quadratic through the chest point
+    const [a, m, b] = pp;
+    c.quadraticCurveTo(2 * m[0] - (a[0] + b[0]) / 2, 2 * m[1] - (a[1] + b[1]) / 2, b[0], b[1]);
+    for (let i = 3; i < pp.length; i++) c.lineTo(pp[i][0], pp[i][1]);
+  } else for (let i = 1; i < pp.length; i++) c.lineTo(pp[i][0], pp[i][1]);
+  c.strokeStyle = INK; c.lineWidth = (DIM.limbW + 2 * DIM.outline) * k; c.stroke();
+  c.strokeStyle = col; c.lineWidth = DIM.limbW * k; c.stroke();
+}
+function dotJoint(c, p, col, r) {
+  const [X, Y, k] = P(p);
+  c.beginPath(); c.arc(X, Y, (r + DIM.outline) * k, 0, TAU); c.fillStyle = INK; c.fill();
+  c.beginPath(); c.arc(X, Y, r * k, 0, TAU); c.fillStyle = col; c.fill();
+}
+function drawCup(c, p, col) {
+  const [X, Y, k] = P(p);
+  const h = 24 * k, tw = 17 * k, bw = 12.5 * k, ol = DIM.outline * k;
+  const dir = MIRROR ? -1 : 1;
+  c.save(); c.translate(X, Y + dir * 2 * k); c.scale(1, dir);
+  c.beginPath(); c.moveTo(-tw / 2, -h * 0.62); c.lineTo(tw / 2, -h * 0.62); c.lineTo(bw / 2, h * 0.38); c.lineTo(-bw / 2, h * 0.38); c.closePath();
+  c.lineJoin = 'round'; c.lineWidth = ol * 2; c.strokeStyle = INK; c.stroke();
+  c.fillStyle = rgb(mixc(col, [120, 120, 120], 0.25)); c.fill();
+  c.beginPath(); c.moveTo(-tw / 2 + ol * 0.5, -h * 0.62 + ol * 1.6); c.lineTo(tw / 2 - ol * 0.5, -h * 0.62 + ol * 1.6);
+  c.lineWidth = 1.4 * k; c.strokeStyle = 'rgba(0,0,0,0.35)'; c.stroke();
+  c.restore();
+}
+
+// Where a worn mask sits: in front of the face, following the head's facing
+// direction (including its pitch). Returns everything drawMask needs.
+function maskOnFace(J) {
+  const upH = norm(sub(J.Hc, J.NT));
+  const face = norm(sub(J.F, mul(upH, dot(J.F, upH))));
+  const pos = add(madd(J.Hc, face, DIM.headR * 0.62), [0, -DIM.headR * 0.18, -1]);
+  const toCam = -face[1];                 // 1 = looking straight at the camera
+  return {
+    pos, face: face[0] * 1.1, back: toCam < -0.05,
+    wf: 0.38 + 0.62 * Math.abs(toCam), hf: 1 - 0.32 * Math.max(0, -face[2]),
+    rot: -upH[0] * 0.9, depth: pos[1] - (toCam > 0 ? 2 : -2),
+  };
+}
+
+// the mask: a flat oval, drawn foreshortened to the way it faces
+function drawMask(c, m) {
+  const [X, Y, k] = P(m.pos);
+  const rx = 27.5 * k * m.wf, ry = 33 * k * m.hf;
+  c.save(); c.translate(X, Y); if (MIRROR) c.scale(1, -1); c.rotate(m.rot || 0);
+  c.beginPath(); c.ellipse(0, 0, rx + DIM.outline * k, ry + DIM.outline * k, 0, 0, TAU); c.fillStyle = INK; c.fill();
+  const g = c.createLinearGradient(-rx, -ry, rx, ry);
+  g.addColorStop(0, rgb(mixc([252, 252, 250], m.tint || [252, 252, 250], 0.5))); g.addColorStop(1, rgb(mixc([206, 206, 204], m.tint || [206, 206, 204], 0.5)));
+  c.beginPath(); c.ellipse(0, 0, rx, ry, 0, 0, TAU); c.fillStyle = m.back ? rgb([150, 150, 150]) : g; c.fill();
+  // the smile: the only face in the film (not visible from behind)
+  if (m.back) { c.restore(); return; }
+  const sx = (m.face || 0) * rx * 0.3;
+  c.beginPath();
+  c.moveTo(sx - rx * 0.52, ry * 0.12);
+  c.quadraticCurveTo(sx, ry * 0.12 + ry * 0.62, sx + rx * 0.52, ry * 0.12);
+  c.lineCap = 'round'; c.strokeStyle = INK; c.lineWidth = 3.6 * k * Math.min(1, m.hf + 0.3); c.stroke();
+  c.restore();
+}
+
+// draw one figure, depth-sorted part by part (far limbs first and slightly grey)
+function drawFigure(c, fig, J, extra = {}) {
+  const parts = [];
+  const torsoD = (J.P[1] + J.N[1]) / 2;
+  const shadeFor = d => rgb(mixc(FIG_NEAR, FIG_FAR, sstep(1, 11, d - torsoD) * 0.95));
+  for (const side of ['L', 'R']) {
+    const legPts = [J.P, J.hip[side], J.knee[side], J.ank[side], J.toe[side]];
+    const ld = (J.hip[side][1] + J.knee[side][1] + J.ank[side][1]) / 3;
+    parts.push({ d: ld, draw: () => strokeLimb(c, legPts, shadeFor(ld + (J.hip[side][1] - J.P[1]) * 1.2), P(J.P)[2]) });
+    const armPts = [J.N, J.sh[side], J.el[side], J.hand[side]];
+    const ad = (J.sh[side][1] + J.el[side][1] + J.hand[side][1]) / 3 - 0.5;
+    const acol = shadeFor(ad + (J.sh[side][1] - J.N[1]) * 1.2);
+    parts.push({ d: ad, draw: () => {
+      strokeLimb(c, armPts, acol, P(J.N)[2]);
+      if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
+    } });
+  }
+  parts.push({ d: torsoD, draw: () => strokeLimb(c, [J.P, J.C, J.N, J.NT], rgb(FIG_NEAR), P(J.N)[2], true) });
+  parts.push({ d: Math.min(torsoD - 0.2, J.Hc[1]), draw: () => {
+    const [X, Y, k] = P(J.Hc), r = DIM.headR * k;
+    c.beginPath(); c.arc(X, Y, r + DIM.outline * k, 0, TAU); c.fillStyle = INK; c.fill();
+    c.beginPath(); c.arc(X, Y, r, 0, TAU); c.fillStyle = rgb(FIG_NEAR); c.fill();
+  } });
+  if (extra.mask) parts.push({ d: extra.mask.depth, draw: () => drawMask(c, extra.mask) });
+  if (extra.handOver) for (const side of extra.handOver) parts.push({ d: extra.mask.depth - 0.1, draw: () => dotJoint(c, J.hand[side], rgb(FIG_NEAR), DIM.limbW * 0.55) });
+  parts.sort((a, b) => b.d - a.d);
+  for (const p of parts) p.draw();
+}
+
+// soft contact shadow under each figure
+function contactShadow(c, J, strength = 0.55) {
+  for (const side of ['L', 'R']) {
+    const h = J.heel[side], tt = J.toe[side];
+    const m = lerp3(h, tt, 0.5); const lift = Math.min(h[2], tt[2]);
+    const [X, Y, k] = P([m[0], m[1], 0]);
+    const g = c.createRadialGradient(X, Y, 0, X, Y, 26 * k);
+    g.addColorStop(0, `rgba(0,0,0,${strength * clamp(1 - lift / 30)})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = g; c.save(); c.translate(X, Y); c.scale(1, 0.28); c.translate(-X, -Y);
+    c.beginPath(); c.arc(X, Y, 26 * k, 0, TAU); c.fill(); c.restore();
+  }
+  const [X, Y, k] = P([J.P[0], J.P[1], 0]);
+  const g = c.createRadialGradient(X, Y, 0, X, Y, 60 * k);
+  g.addColorStop(0, `rgba(0,0,0,${strength * 0.55})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g; c.save(); c.translate(X, Y); c.scale(1, 0.22); c.translate(-X, -Y);
+  c.beginPath(); c.arc(X, Y, 60 * k, 0, TAU); c.fill(); c.restore();
+}
+
+function poly(c, pts) { c.beginPath(); pts.forEach((p, i) => { const q = P(p); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }); c.closePath(); }
+// axis-aligned box in world space (x0..x1, d0..d1, z0..z1)
+function box(c, b, col) {
+  const { x0, x1, d0, d1, z0, z1 } = b;
+  const front = [[x0, d0, z0], [x1, d0, z0], [x1, d0, z1], [x0, d0, z1]];
+  const top = [[x0, d0, z1], [x1, d0, z1], [x1, d1, z1], [x0, d1, z1]];
+  const showTop = !MIRROR && z1 < cam.h;
+  // the side face that points toward the camera
+  const sx = cam.x < x0 ? x0 : cam.x > x1 ? x1 : null;
+  if (sx !== null) { poly(c, [[sx, d0, z0], [sx, d1, z0], [sx, d1, z1], [sx, d0, z1]]); c.fillStyle = col.side; c.fill(); }
+  if (showTop) { poly(c, top); c.fillStyle = col.top; c.fill(); }
+  poly(c, front); c.fillStyle = col.front; c.fill();
+  c.lineWidth = 1.2; c.strokeStyle = col.edge || 'rgba(255,255,255,0.06)';
+  if (showTop) { poly(c, top); c.stroke(); }
+}
+
+// letter-spaced monospace caption with a soft fade
+function caption(text, a, rise) {
+  if (a <= 0.002) return;
+  ctx.save();
+  ctx.font = '800 50px "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", monospace';
+  ctx.textBaseline = 'middle';
+  const cw = ctx.measureText('M').width, sp = 15;
+  const total = text.length * cw + (text.length - 1) * sp;
+  let x = W / 2 - total / 2;
+  const y = 196 - rise;
+  ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 18;
+  ctx.fillStyle = `rgba(244,242,236,${a})`;
+  for (const ch of text) { ctx.fillText(ch, x, y); x += cw + sp; }
+  ctx.restore();
+}
+function captionAt(t, text, t0, t1) {
+  const a = sstep(t0, t0 + 0.28, t) * (1 - sstep(t1 - 0.35, t1, t));
+  const rise = 10 * (1 - E.out(inv(t0, t0 + 0.5, t)));
+  caption(text, a, rise);
+}
+
+// film grain (seeded, so it is deterministic per frame)
+const GRAIN = [];
+(function () {
+  const rnd = mulberry32(1234);
+  for (let n = 0; n < 4; n++) {
+    const g = document.createElement('canvas'); g.width = 360; g.height = 640;
+    const gc = g.getContext('2d'), id = gc.createImageData(360, 640);
+    for (let i = 0; i < id.data.length; i += 4) { const v = 128 + (rnd() - 0.5) * 90; id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255; }
+    gc.putImageData(id, 0, 0); GRAIN.push(g);
+  }
+})();
+function grain(t, amt) {
+  const f = Math.floor(t * FPS + 1e-6);
+  ctx.save(); ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = amt;
+  ctx.drawImage(GRAIN[f % 4], 0, 0, W, H); ctx.restore();
+}
+function vignette(strength) {
+  const g = ctx.createRadialGradient(W / 2, H * 0.52, H * 0.22, W / 2, H * 0.52, H * 0.72);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${strength})`);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+
+// glossy floor: draw the scene's objects mirrored into an offscreen layer, fade them out
+function reflection(drawObjects, floorY, alpha) {
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+  octx.clearRect(0, 0, off.width, off.height);
+  octx.setTransform(0.5, 0, 0, 0.5, 0, 0);
+  MIRROR = true;
+  octx.save(); octx.filter = 'blur(0.6px)';
+  drawObjects(octx);
+  octx.restore();
+  MIRROR = false;
+  octx.globalCompositeOperation = 'destination-in';
+  const g = octx.createLinearGradient(0, floorY, 0, floorY + 300);
+  g.addColorStop(0, `rgba(0,0,0,${alpha})`); g.addColorStop(0.45, `rgba(0,0,0,${alpha * 0.3})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+  octx.fillStyle = g; octx.fillRect(0, 0, W, H);
+  octx.globalCompositeOperation = 'destination-out';
+  octx.fillStyle = '#000'; octx.fillRect(0, 0, W, floorY);
+  octx.globalCompositeOperation = 'source-over';
+  ctx.save(); ctx.imageSmoothingQuality = 'high'; ctx.drawImage(off, 0, 0, W, H); ctx.restore();
+}
+
+/* =====================================================================
+   SCENE 1: PARTY
+   ===================================================================== */
+const PARTY = (() => {
+  const WALL = 300;
+  const M = new Fig('M1', { x: 296, d: 10, yaw: -64, seed: 1.3, cup: 'R' });
+  const A = new Fig('A', { x: 502, d: 30, yaw: 34, seed: 2.1, cup: 'R' });
+  const B = new Fig('B', { x: 104, d: 196, yaw: 6, seed: 3.7, cup: 'R' });
+  const C = new Fig('C', { x: 204, d: 206, yaw: -174, seed: 4.4, cup: 'L' });
+  const D = new Fig('D', { x: 596, d: 158, yaw: -150, seed: 5.9, cup: 'L' });
+  const figs = [M, A, B, C, D];
+
+  // everyone holds a cup at the waist
+  for (const f of figs) {
+    const s = f.cup;
+    f.tr['aSw' + s] = new Track(26); f.tr['aEl' + s] = new Track(78); f.tr['aOut' + s] = new Track(14);
+  }
+  // dancing / swaying to the muffled music
+  M.tr.dance = new Track(0.32); A.tr.dance = new Track(0.55); B.tr.dance = new Track(0.75);
+  C.tr.dance = new Track(0.7); D.tr.dance = new Track(0.62);
+  M.tr.lean = new Track(1); M.tr.head = new Track(-3);
+
+  // M holds the mask up in front of its face with the left hand
+  const maskGripL = J => add(add(maskOnFace(J).pos, mul(J.R, -12)), [0, -3, -30]);
+  M.goal('L', (t, J) => maskGripL(J), (t, J) => add(add(J.sh.L, mul(J.R, -45)), add([0, 0, -60], mul(J.F, 30)))).to(-1, -0.9, 1);
+
+  // B and C clink cups
+  const clinkP = [154, 200, 214];
+  B.goal('R', () => add(clinkP, [-9, 0, 0])).to(0.5, T.clink, 1, E.overK(2.5)).to(T.clink + 0.15, T.clink + 0.6, 0, E.io);
+  C.goal('L', () => add(clinkP, [9, 2, 0])).to(0.55, T.clink, 1, E.overK(2.5)).to(T.clink + 0.18, T.clink + 0.65, 0, E.io);
+  B.tr.lean.to(0.5, 0.95, 7).to(1.15, 1.6, 3); C.tr.lean.to(0.55, 0.95, 7).to(1.15, 1.6, 3);
+  B.tr.head.to(1.1, 1.4, -14, E.io).to(1.4, 1.9, 0);   // drink
+  C.tr.head.to(1.15, 1.45, -12, E.io).to(1.45, 1.95, 0);
+
+  // D chats with A, gesturing with the free hand
+  D.goal('R', (t, J) => add(add(J.N, mul(J.F, 42)), add(mul(J.R, 14), [0, 0, -30 + 6 * Math.sin(t * 7)]))).to(0.25, 0.55, 0.8).to(1.0, 1.35, 0);
+  D.tr.yaw.to(1.6, 2.3, -160);
+  A.tr.head.to(0.2, 0.6, 4).to(0.9, 1.2, -4);
+
+  // A turns from D to M and takes two light steps toward it
+  A.turn(T.aTurn0, T.aTurn1, -170, { first: 'R', lift: 9 });
+  A.tr.dance.to(T.aTurn0, T.aTurn0 + 0.4, 0.15);
+  const aEnd = A.walk(T.aWalk, [436, 22], MOOD.bouncy, 'L');
+  // "how are you?": open-hand gesture
+  A.goal('L', (t, J) => add(add(J.N, mul(J.F, 44)), add(mul(J.R, -10), [0, 0, -34 + 3 * Math.sin((t - T.ask0) * 9)]))).to(T.ask0 + 0.1, T.ask0 + 0.45, 0.85, E.over).to(T.ask1 - 0.4, T.ask1, 0);
+  A.tr.head.to(T.ask0, T.ask0 + 0.3, 6).to(T.ask0 + 0.5, T.ask0 + 0.8, -2);
+  A.tr.lean.to(aEnd - 0.2, aEnd + 0.2, 6, E.over).to(T.ask1, T.ask1 + 0.4, 2);
+
+  // M turns its torso toward A, then the exaggerated happy nod
+  M.tr.yaw.to(1.7, 2.3, -40, E.over);
+  M.tr.dance.to(1.9, 2.3, 0.12);
+  const n = T.nod;
+  M.tr.head.to(n, n + 0.16, 30, E.out2).to(n + 0.16, n + 0.36, -14, E.io).to(n + 0.36, n + 0.54, 20, E.io).to(n + 0.54, n + 0.78, -6, E.io).to(n + 0.78, n + 1.1, -2, E.io);
+  M.tr.pz.to(n - 0.02, n + 0.14, -10, E.out2).to(n + 0.14, n + 0.32, 2, E.io).to(n + 0.32, n + 0.5, -6, E.io).to(n + 0.5, n + 0.8, 0, E.over);
+  M.tr.lean.to(n, n + 0.16, 9, E.out2).to(n + 0.16, n + 0.4, -3, E.io).to(n + 0.4, n + 0.9, 1, E.over);
+  M.tr.bounce.to(n + 0.6, n + 0.8, 0.6).to(T.laugh1 - 0.3, T.laugh1, 0);
+
+  // everybody laughs: shoulders shaking
+  const lg = (f, d0, amp) => f.tr.laugh.to(T.laugh0 + d0, T.laugh0 + d0 + 0.2, amp, E.out2).to(T.laugh1 - 0.5 + d0 * 0.5, T.laugh1 + d0 * 0.4, 0, E.io);
+  lg(A, 0, 1); lg(B, 0.06, 1); lg(C, 0.12, 0.9); lg(D, 0.03, 0.85); lg(M, 0.2, 0.35);
+  B.goal('L', (t, J) => add(add(J.P, mul(J.F, 26)), [0, 0, 42])).to(T.laugh0 + 0.1, T.laugh0 + 0.4, 0.9).to(T.laugh1 - 0.4, T.laugh1, 0);
+  D.tr.dance.to(T.laugh0, T.laugh0 + 0.3, 0.3);
+
+  const lamp = [372, 80, 488];
+  function objects(c, t, poses) {
+    const items = figs.map((f, i) => ({ d: poses[i].P[1], draw: () => drawFigure(c, f, poses[i], i === 0 ? { mask: maskOf(poses[0]), handOver: ['L'] } : {}) }));
+    items.sort((a, b) => b.d - a.d);
+    for (const it of items) it.draw();
+  }
+  const maskOf = maskOnFace;
+  function draw(t) {
+    cam.x = 372; cam.zoom = lerp(1.42, 1.5, E.sine(inv(0, T.cut1, t))); cam.hy = 650; cam.h = 270;
+    // wall + floor
+    const floorY = P([0, WALL, 0])[1];
+    let g = ctx.createLinearGradient(0, 0, 0, floorY);
+    g.addColorStop(0, '#060606'); g.addColorStop(1, '#141312');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+    g = ctx.createLinearGradient(0, floorY, 0, H);
+    g.addColorStop(0, '#191816'); g.addColorStop(1, '#0b0b0b');
+    ctx.fillStyle = g; ctx.fillRect(0, floorY, W, H - floorY);
+    // warm wall wash behind the lamp
+    const lp = P(lamp);
+    g = ctx.createRadialGradient(lp[0], floorY - 40, 10, lp[0], floorY - 40, 520);
+    g.addColorStop(0, 'rgba(255,196,96,0.20)'); g.addColorStop(1, 'rgba(255,196,96,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+    // skirting line
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, floorY - 2, W, 4);
+    // warm pool of light on the floor
+    const fp = P([lamp[0], 70, 0]);
+    ctx.save(); ctx.translate(fp[0], fp[1]); ctx.scale(1, 0.2);
+    g = ctx.createRadialGradient(0, 0, 0, 0, 0, 420);
+    g.addColorStop(0, 'rgba(255,190,90,0.32)'); g.addColorStop(0.5, 'rgba(255,170,70,0.10)'); g.addColorStop(1, 'rgba(255,170,70,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 420, 0, TAU); ctx.fill(); ctx.restore();
+
+    const poses = figs.map(f => f.pose(t));
+    reflection(c => objects(c, t, poses), floorY, 0.3);
+    for (const J of poses) contactShadow(ctx, J, 0.6);
+    objects(ctx, t, poses);
+
+    // light cone
+    const sb = P([lamp[0], lamp[1], lamp[2] - 20]);
+    softLayer(18, 'screen', c => {
+      const g = c.createLinearGradient(0, sb[1], 0, fp[1] + 40);
+      g.addColorStop(0, 'rgba(255,200,110,0.16)'); g.addColorStop(1, 'rgba(255,200,110,0)');
+      c.fillStyle = g;
+      c.beginPath(); c.moveTo(sb[0] - 34, sb[1]); c.lineTo(sb[0] + 34, sb[1]); c.lineTo(sb[0] + 300, fp[1] + 40); c.lineTo(sb[0] - 300, fp[1] + 40); c.closePath(); c.fill();
+    });
+    // warm light falloff over everything
+    ctx.save(); ctx.globalCompositeOperation = 'multiply';
+    g = ctx.createRadialGradient(lp[0], lp[1] + 330, 40, lp[0], lp[1] + 330, 640);
+    g.addColorStop(0, '#fff6e6'); g.addColorStop(0.55, '#c9bca6'); g.addColorStop(1, '#35312c');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+
+    // pendant lamp
+    const sway = 0.012 * Math.sin(t * 1.1);
+    const top = [0, -999];
+    ctx.save();
+    ctx.translate(lp[0], 0); ctx.rotate(sway); ctx.translate(-lp[0], 0);
+    ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], top[0]); ctx.lineTo(lp[0], lp[1] - 46); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(lp[0] - 12, lp[1] - 48); ctx.lineTo(lp[0] + 12, lp[1] - 48); ctx.lineTo(lp[0] + 50, lp[1]); ctx.lineTo(lp[0] - 50, lp[1]); ctx.closePath();
+    ctx.fillStyle = '#121110'; ctx.fill(); ctx.strokeStyle = '#2b2925'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 50, 7, 0, 0, TAU); ctx.fillStyle = '#ffd27a'; ctx.fill();
+    ctx.restore();
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    g = ctx.createRadialGradient(lp[0], lp[1] + 6, 2, lp[0], lp[1] + 6, 170);
+    g.addColorStop(0, 'rgba(255,214,130,0.75)'); g.addColorStop(0.2, 'rgba(255,190,90,0.25)'); g.addColorStop(1, 'rgba(255,170,60,0)');
+    ctx.fillStyle = g; ctx.fillRect(lp[0] - 200, lp[1] - 180, 400, 380); ctx.restore();
+
+    vignette(0.78);
+    captionAt(t, 'HOW ARE YOU?', T.ask0, T.ask1);
+    captionAt(t, 'FINE.', T.fine0, T.fine1);
+  }
+  return { draw, figs };
+})();
+
+/* =====================================================================
+   SCENES 2 + 3: HOME AT NIGHT, THEN MORNING (same room)
+   ===================================================================== */
+const HOME = (() => {
+  const WALL = 230;
+  const bed = { x0: 120, x1: 488, d0: 56, d1: WALL, z0: 0, z1: 58 };
+  const mattress = { x0: 124, x1: 484, d0: 58, d1: WALL - 2, z0: 58, z1: 98 };
+  const table = { x0: 306, x1: 358, d0: -26, d1: 22, z0: 0, z1: 100 };
+  const door = { x0: 520, x1: 618, z1: 236 };
+  const win = { x0: 196, x1: 364, z0: 168, z1: 352 };
+  const clock = [452, WALL, 330];
+  const start = [548, 160], stand = [404, 24];
+  const M = new Fig('M2', { x: start[0], d: start[1], yaw: -136, seed: 1.3, t0: T.cut1 });
+  const tr = M.tr;
+  // just in from the party, still "on"
+  tr.lean.v0 = 1; tr.head.v0 = -3; tr.slump.v0 = 0;
+  // deflate: the posture drops the moment the door is shut
+  tr.slump.to(T.deflate0, T.deflate1, 17, E.io2); tr.lean.to(T.deflate0, T.deflate1, 8, E.io2);
+  tr.head.to(T.deflate0 + 0.1, T.deflate1 + 0.2, 26, E.io2); tr.shDrop.to(T.deflate0, T.deflate1, 7, E.io2);
+  tr.pz.to(T.deflate0, T.deflate1, -3, E.io2);
+  tr.aOutL.to(T.deflate0, T.deflate1, 4); tr.aOutR.to(T.deflate0, T.deflate1, 4);
+  tr.aElL.to(T.deflate0, T.deflate1, 8); tr.aElR.to(T.deflate0, T.deflate1, 8);
+  tr.aSwL.to(T.deflate0, T.deflate1, 1); tr.aSwR.to(T.deflate0, T.deflate1, 1);
+  tr.breath.to(T.deflate0, T.deflate0 + 0.5, 1.8).to(T.deflate1 + 1, T.deflate1 + 2, 1.2);
+
+  // heavy, slow walk to the bed; it arrives facing the little table
+  const walkEnd = M.walk(T.hWalk, stand, MOOD.heavy, 'L');
+  // sit back onto the edge of the bed
+  T.sit0 = walkEnd + 0.08; T.sit1 = T.sit0 + 0.95; T.sitHit = T.sit0 + 0.74;
+  tr.pf.to(T.sit0 + 0.05, T.sit1, -64, E.io);
+  tr.pz.to(T.sit0 + 0.1, T.sit1, 104 - H0, E.overK(3));
+  tr.lean.to(T.sit0, T.sit0 + 0.5, 28, E.io).to(T.sit0 + 0.5, T.sit1 + 0.25, 14, E.over);
+  tr.head.to(T.sit0, T.sit1, 22);
+  tr.aSwL.to(T.sit0, T.sit1, 22); tr.aSwR.to(T.sit0, T.sit1, 22);
+  tr.aElL.to(T.sit0, T.sit1, 46); tr.aElR.to(T.sit0, T.sit1, 46);
+  tr.aOutL.to(T.sit0, T.sit1, 12); tr.aOutR.to(T.sit0, T.sit1, 12);
+
+  // take the mask off slowly and lay it on the table, face up
+  const maskWorn = J => maskOnFace(J).pos;
+  const gripL = J => add(maskWorn(J), add(mul(J.R, -18), [0, -4, -20]));
+  const tableSpot = [330, -4, table.z1 + 4];
+  const tableGrip = add(tableSpot, [12, -6, 6]);
+  T.maskOff0 = T.sit1 + 0.08; T.maskGrab = T.maskOff0 + 0.38; T.maskDown = T.maskGrab + 0.9;
+  const carryOff = (t, J) => {
+    const p = E.io(inv(T.maskGrab, T.maskDown, t));
+    const a = lerp3(gripL(J), tableGrip, p); a[2] += 22 * Math.sin(PI * p) * (1 - p * 0.5);
+    return a;
+  };
+  const poleL = (t, J) => add(add(J.sh.L, mul(J.R, -50)), [0, -10, -50]);
+  M.goal('L', (t, J) => t < T.maskGrab ? gripL(J) : carryOff(t, J), poleL)
+    .to(T.maskOff0, T.maskGrab, 1, E.io).to(T.maskDown + 0.1, T.maskDown + 0.55, 0, E.io);
+  tr.lean.to(T.maskGrab + 0.15, T.maskDown, 34, E.io);
+  tr.head.to(T.maskOff0, T.maskGrab, 10).to(T.maskGrab, T.maskDown, 34);
+
+  // slump: elbows on knees, head in hands
+  T.slump0 = T.maskDown + 0.2; T.slump1 = T.slump0 + 0.9;
+  tr.lean.to(T.slump0, T.slump1, 46, E.io2); tr.slump.to(T.slump0, T.slump1, 22, E.io2); tr.head.to(T.slump0, T.slump1, 44, E.io2);
+  tr.shDrop.to(T.slump0, T.slump1, 9, E.io2);
+  const faceHand = (side) => (t, J) => add(add(J.Hc, mul(norm(add(J.Ft, [0, 0, -0.75])), DIM.headR * 0.9)), mul(J.Rt, (side === 'R' ? 1 : -1) * 12));
+  const kneePole = side => (t, J) => add(J.knee[side], add(mul(J.Ft, 10), [0, 0, -14]));
+  const handsUpL = M.goal('L', faceHand('L'), kneePole('L')).to(T.slump0 + 0.08, T.slump1, 1, E.io2);
+  const handsUpR = M.goal('R', faceHand('R'), kneePole('R')).to(T.slump0 + 0.14, T.slump1 + 0.05, 1, E.io2);
+  tr.breath.to(T.slump1, T.slump1 + 0.5, 1.7);
+
+  // ---------------- morning
+  T.morn = T.slump1 + 0.6;
+  T.alarm0 = T.morn + 0.12; T.alarm1 = T.alarm0 + 1.45;
+  T.rise0 = T.morn + 0.3;
+  tr.head.to(T.rise0, T.rise0 + 0.6, 20, E.io2); tr.lean.to(T.rise0, T.rise0 + 0.6, 30, E.io2);
+  tr.slump.to(T.rise0, T.rise0 + 0.6, 15);
+  // hands slide from the face down to the knees
+  const kneeHand = side => (t, J) => add(J.knee[side], [0, -2, 9]);
+  // elbows out and back while the hands rest on the knees
+  const outPole = side => (t, J) => add(J.sh[side], add(add(mul(J.Rt, (side === 'R' ? 1 : -1) * 60), mul(J.Ft, -25)), [0, 0, -30]));
+  handsUpL.to(T.rise0 + 0.05, T.rise0 + 0.55, 0, E.io); handsUpR.to(T.rise0 + 0.05, T.rise0 + 0.55, 0, E.io);
+  const kneesL = M.goal('L', kneeHand('L'), outPole('L')).to(T.rise0 + 0.05, T.rise0 + 0.55, 1, E.io);
+  const kneesR = M.goal('R', kneeHand('R'), outPole('R')).to(T.rise0 + 0.05, T.rise0 + 0.55, 1, E.io);
+  // stand up slowly, pushing on the knees
+  T.stand0 = T.rise0 + 0.6; T.stand1 = T.stand0 + 0.88;
+  tr.lean.to(T.stand0, T.stand0 + 0.42, 40, E.io2).to(T.stand0 + 0.42, T.stand1, 14, E.io2);
+  tr.pf.to(T.stand0 + 0.12, T.stand1, 0, E.io2);
+  tr.pz.to(T.stand0 + 0.22, T.stand1, -4, E.io2);
+  tr.head.to(T.stand0, T.stand1, 26);
+  kneesL.to(T.stand0 + 0.42, T.stand0 + 0.8, 0, E.io); kneesR.to(T.stand0 + 0.46, T.stand0 + 0.85, 0, E.io);
+  tr.aSwL.to(T.stand0 + 0.45, T.stand1, 2); tr.aSwR.to(T.stand0 + 0.45, T.stand1, 2);
+  tr.aElL.to(T.stand0 + 0.45, T.stand1, 10); tr.aElR.to(T.stand0 + 0.45, T.stand1, 10);
+  tr.aOutL.to(T.stand0 + 0.45, T.stand1, 5); tr.aOutR.to(T.stand0 + 0.45, T.stand1, 5);
+  // a moment looking down at the mask
+  T.look0 = T.stand1 - 0.1;
+  tr.head.to(T.look0, T.look0 + 0.4, 40, E.io);
+  // pick it up and put it on
+  T.pick = T.look0 + 0.66; T.wear = T.pick + 0.38;
+  tr.lean.to(T.pick - 0.32, T.pick, 30, E.io).to(T.pick, T.wear, 6, E.io);
+  tr.pz.to(T.pick - 0.32, T.pick, -18, E.io).to(T.pick, T.wear, -2, E.io);
+  const carryOn = (t, J) => { const p = E.io(inv(T.pick, T.wear, t)); const a = lerp3(tableGrip, gripL(J), p); a[2] += 16 * Math.sin(PI * p); return a; };
+  M.goal('L', (t, J) => t < T.pick ? tableGrip : carryOn(t, J), poleL).to(T.pick - 0.36, T.pick, 1, E.io).to(T.wear, T.wear + 0.5, 0, E.io);
+  tr.head.to(T.pick, T.wear, 4, E.io);
+  // straighten up into the fake, upright posture (with overshoot)
+  T.straight0 = T.wear + 0.02;
+  const so = E.overK(9);
+  tr.slump.to(T.straight0, T.straight0 + 0.38, -5, so); tr.lean.to(T.straight0, T.straight0 + 0.38, -2, so);
+  tr.head.to(T.straight0, T.straight0 + 0.38, -6, so); tr.shDrop.to(T.straight0, T.straight0 + 0.38, -3, so);
+  tr.pz.to(T.straight0, T.straight0 + 0.38, 0, so);
+  tr.breath.to(T.straight0, T.straight0 + 0.4, 0.8);
+  // turn around to the door and leave with a forced light step
+  T.mTurn0 = T.straight0 + 0.22; T.mTurn1 = T.mTurn0 + 0.58;
+  M.turn(T.mTurn0, T.mTurn1, 43, { lift: 7, mood: 'forced', steps: 4 });
+  T.mWalk = T.mTurn1 + 0.02;
+  const exitEnd = M.walk(T.mWalk, [570, 206], MOOD.forced, 'R');
+  T.doorOpen = T.mWalk + 0.35;
+  T.ask2a = T.doorOpen + 0.3; T.end = Math.max(exitEnd + 0.25, T.ask2a + 1.4); T.ask2b = T.end - 0.25; T.fade0 = T.end - 0.75;
+  // a hand reaches for the door
+  M.goal('R', (t, J) => add(add(J.N, mul(J.F, 42)), add(mul(J.R, 12), [0, 0, -40]))).to(T.doorOpen - 0.3, T.doorOpen, 0.6).to(T.doorOpen + 0.2, T.doorOpen + 0.5, 0);
+
+  function maskState(t, J) {
+    const worn = () => maskOnFace(J);
+    const onTable = { pos: tableSpot, wf: 1, hf: 0.42, rot: 0.08, face: 0, depth: tableSpot[1] - 6 };
+    const inHand = p => { // p: 0 = on face, 1 = lying on the table
+      const w = worn();
+      const pos = add(J.hand.L, lerp3(sub(w.pos, gripL(J)), sub(tableSpot, tableGrip), p));
+      return { pos, wf: lerp(w.wf, 1, p), hf: lerp(1, 0.42, E.io(p)), rot: lerp(w.rot, 0.08, p) + 0.25 * Math.sin(PI * p), face: lerp(w.face, 0, p), depth: Math.min(J.hand.L[1] - 8, lerp(w.depth, onTable.depth, p)) };
+    };
+    if (t < T.maskGrab) return worn();
+    if (t < T.maskDown) return inHand(E.io(inv(T.maskGrab, T.maskDown, t)));
+    if (t < T.pick) return onTable;
+    if (t < T.wear) return inHand(1 - E.io(inv(T.pick, T.wear, t)));
+    return worn();
+  }
+
+  // light: 0 = night, 1 = morning
+  const dayAt = t => sstep(T.morn, T.morn + 1.1, t);
+  const doorAng = t => 80 * E.over(inv(T.doorOpen, T.doorOpen + 0.75, t), 3);
+
+  function drawRoomBack(c, t, day) {
+    const floorY = P([0, WALL, 0])[1];
+    const wallTop = mixc([16, 18, 22], [92, 94, 96], day), wallBot = mixc([22, 25, 30], [118, 119, 120], day);
+    let g = c.createLinearGradient(0, 0, 0, floorY);
+    g.addColorStop(0, rgb(wallTop)); g.addColorStop(1, rgb(wallBot));
+    c.fillStyle = g; c.fillRect(0, 0, W, floorY);
+    g = c.createLinearGradient(0, floorY, 0, H);
+    g.addColorStop(0, rgb(mixc([24, 26, 30], [124, 124, 124], day))); g.addColorStop(1, rgb(mixc([10, 11, 13], [58, 58, 58], day)));
+    c.fillStyle = g; c.fillRect(0, floorY, W, H - floorY);
+    // floorboards
+    c.save(); c.globalAlpha = 0.22; c.strokeStyle = '#000'; c.lineWidth = 1;
+    for (let d = WALL; d > -260; d -= 34) { const y = P([0, d, 0])[1]; c.beginPath(); c.moveTo(0, y); c.lineTo(W, y); c.stroke(); }
+    c.restore();
+    c.fillStyle = 'rgba(0,0,0,0.5)'; c.fillRect(0, floorY - 2, W, 4);
+    // window
+    const wq = [[win.x0, WALL, win.z0], [win.x1, WALL, win.z0], [win.x1, WALL, win.z1], [win.x0, WALL, win.z1]];
+    poly(c, wq.map(p => add(p, [-7, 0, -7])).map((p, i) => [p[0] + (i === 1 || i === 2 ? 14 : 0), p[1], p[2] + (i >= 2 ? 14 : 0)]));
+    c.fillStyle = rgb(mixc([8, 9, 11], [60, 60, 62], day)); c.fill();
+    poly(c, wq);
+    const a = P(wq[3]), b = P(wq[1]);
+    g = c.createLinearGradient(a[0], a[1], b[0], b[1]);
+    g.addColorStop(0, rgb(mixc([58, 70, 88], [236, 238, 236], day))); g.addColorStop(1, rgb(mixc([26, 32, 42], [206, 210, 210], day)));
+    c.fillStyle = g; c.fill();
+    if (day < 1) {  // moon
+      const m = P([win.x1 - 46, WALL + 400, win.z1 + 40]);
+      c.save(); poly(c, wq); c.clip();
+      const mg = c.createRadialGradient(m[0], m[1], 2, m[0], m[1], 70);
+      mg.addColorStop(0, `rgba(230,238,250,${0.95 * (1 - day)})`); mg.addColorStop(0.18, `rgba(200,214,232,${0.5 * (1 - day)})`); mg.addColorStop(1, 'rgba(200,214,232,0)');
+      c.fillStyle = mg; c.fillRect(0, 0, W, H); c.restore();
+    }
+    c.strokeStyle = rgb(mixc([10, 11, 13], [70, 70, 72], day)); c.lineWidth = 7 * cam.zoom;
+    const mid = P([(win.x0 + win.x1) / 2, WALL, win.z0]), mid2 = P([(win.x0 + win.x1) / 2, WALL, win.z1]);
+    const hz = P([win.x0, WALL, (win.z0 + win.z1) / 2]), hz2 = P([win.x1, WALL, (win.z0 + win.z1) / 2]);
+    c.beginPath(); c.moveTo(mid[0], mid[1]); c.lineTo(mid2[0], mid2[1]); c.moveTo(hz[0], hz[1]); c.lineTo(hz2[0], hz2[1]); c.stroke();
+    // clock: the second hand ticks in time with the sound
+    const cp = P(clock), cr = 25 * cp[2];
+    c.beginPath(); c.arc(cp[0], cp[1], cr + 3, 0, TAU); c.fillStyle = '#050506'; c.fill();
+    c.beginPath(); c.arc(cp[0], cp[1], cr, 0, TAU); c.fillStyle = rgb(mixc([44, 48, 54], [196, 196, 194], day)); c.fill();
+    c.strokeStyle = '#050506'; c.lineCap = 'round';
+    for (let i = 0; i < 12; i++) { const an = i / 12 * TAU; c.lineWidth = 2; c.beginPath(); c.moveTo(cp[0] + Math.cos(an) * cr * 0.78, cp[1] + Math.sin(an) * cr * 0.78); c.lineTo(cp[0] + Math.cos(an) * cr * 0.9, cp[1] + Math.sin(an) * cr * 0.9); c.stroke(); }
+    const sec = tickAngle(t);
+    const hand = (an, l, w) => { c.lineWidth = w; c.beginPath(); c.moveTo(cp[0], cp[1]); c.lineTo(cp[0] + Math.sin(an) * l, cp[1] - Math.cos(an) * l); c.stroke(); };
+    hand(TAU * (3.1 / 12) + sec / 3600, cr * 0.5, 3.2); hand(TAU * 0.62 + sec / 60, cr * 0.72, 2.4);
+    c.strokeStyle = '#7a2a22'; hand(sec, cr * 0.82, 1.2);
+    // door and doorway
+    const ang = doorAng(t);
+    const dq = [[door.x0, WALL, 0], [door.x1, WALL, 0], [door.x1, WALL, door.z1], [door.x0, WALL, door.z1]];
+    poly(c, dq.map((p, i) => [p[0] + (i === 0 || i === 3 ? -9 : 9), p[1], p[2] + (i >= 2 ? 9 : 0)])); c.fillStyle = rgb(mixc([9, 10, 12], [70, 70, 72], day)); c.fill();
+    poly(c, dq);
+    if (ang > 0.5) {
+      const lit = sstep(0, 25, ang);
+      c.fillStyle = rgb(mixc(mixc([16, 18, 22], [118, 118, 118], day), [255, 253, 246], lit)); c.fill();
+    } else { c.fillStyle = rgb(mixc([30, 33, 38], [130, 130, 130], day)); c.fill(); }
+    return floorY;
+  }
+  function drawDoorPanel(c, t, day) {
+    const ang = doorAng(t) * D2R;
+    const w = door.x1 - door.x0;
+    const hinge = door.x1;
+    const ex = hinge - Math.cos(ang) * w, ed = WALL - Math.sin(ang) * w;
+    const q = [[hinge, WALL - 0.5, 0], [ex, ed, 0], [ex, ed, door.z1], [hinge, WALL - 0.5, door.z1]];
+    poly(c, q); c.fillStyle = rgb(mixc([26, 29, 34], [104, 104, 106], day)); c.fill();
+    c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 2; c.stroke();
+    const kn = P(lerp3(q[1], q[2], 0.45).map((v, i) => i === 0 ? v + Math.cos(ang) * 10 : i === 1 ? v + Math.sin(ang) * 10 : v));
+    c.beginPath(); c.arc(kn[0], kn[1], 4 * kn[2], 0, TAU); c.fillStyle = rgb(mixc([80, 84, 92], [190, 190, 190], day)); c.fill();
+  }
+  const tickAngle = t => { // one tick per second, each a quick eased snap with a tiny overshoot
+    const s = t - T.cut1 + 0.6, i = Math.floor(s), f = s - i;
+    return (i + E.over(clamp(f / 0.09), 6)) * TAU / 60;
+  };
+  // the clock ticks the sound timeline uses
+  const ticks = [];
+  for (let i = 1; ; i++) { const tt = T.cut1 - 0.6 + i; if (tt > T.cut1 + 30) break; ticks.push(tt); }
+
+  function furniture(c, t, day, J, mask) {
+    const col = k => ({
+      front: rgb(mixc([18, 20, 24], [96, 96, 98], day).map(v => v * k)),
+      top: rgb(mixc([34, 38, 44], [150, 150, 150], day).map(v => v * k)),
+      side: rgb(mixc([13, 15, 18], [80, 80, 82], day).map(v => v * k)),
+    });
+    const items = [];
+    items.push({ d: 150, draw: () => {
+      // headboard
+      box(c, { x0: bed.x0 - 14, x1: bed.x0, d0: 120, d1: WALL, z0: 0, z1: 170 }, col(0.9));
+      box(c, bed, col(1.0));
+      box(c, mattress, col(1.6));
+      // pillow + blanket fold
+      box(c, { x0: bed.x0 + 8, x1: bed.x0 + 78, d0: 120, d1: 210, z0: 98, z1: 116 }, col(2.0));
+      box(c, { x0: bed.x0 + 120, x1: mattress.x1 + 2, d0: mattress.d0 - 2, d1: WALL - 2, z0: 60, z1: 101 }, col(1.3));
+    } });
+    items.push({ d: table.d0 + 26, draw: () => {
+      box(c, { ...table, z0: table.z1 - 8 }, col(1.8));
+      for (const lx of [table.x0 + 4, table.x1 - 8]) for (const ld of [table.d0 + 4, table.d1 - 8]) box(c, { x0: lx, x1: lx + 4, d0: ld, d1: ld + 4, z0: 0, z1: table.z1 - 8 }, col(1.5));
+      // phone, screen lights up while the alarm rings
+      const ph = [table.x1 - 20, 10, table.z1];
+      box(c, { x0: ph[0] - 8, x1: ph[0] + 8, d0: -2, d1: 22, z0: table.z1, z1: table.z1 + 3 }, { front: '#050505', top: '#0a0a0a', side: '#050505' });
+      const ring = t > T.alarm0 && t < T.alarm1 ? 0.65 + 0.35 * Math.sin((t - T.alarm0) * TAU * 2) : 0;
+      if (ring > 0 && !MIRROR) {
+        const jit = Math.sin(t * 90) * 0.8;
+        poly(c, [[ph[0] - 6 + jit, 0, table.z1 + 3.2], [ph[0] + 6 + jit, 0, table.z1 + 3.2], [ph[0] + 6 + jit, 20, table.z1 + 3.2], [ph[0] - 6 + jit, 20, table.z1 + 3.2]]);
+        c.fillStyle = `rgba(240,244,250,${ring})`; c.fill();
+        const pp = P(ph);
+        c.save(); c.globalCompositeOperation = 'lighter';
+        const g = c.createRadialGradient(pp[0], pp[1], 0, pp[0], pp[1], 60);
+        g.addColorStop(0, `rgba(220,230,255,${0.3 * ring})`); g.addColorStop(1, 'rgba(220,230,255,0)');
+        c.fillStyle = g; c.fillRect(pp[0] - 60, pp[1] - 60, 120, 120); c.restore();
+      }
+    } });
+    if (mask.depth > table.d0 && t >= T.maskDown && t < T.pick) items.push({ d: table.d0 + 1, draw: () => drawMask(c, mask) });
+    items.push({ d: J.P[1] - 0.5, draw: () => drawFigure(c, M, J, (t < T.maskDown || t >= T.pick) ? { mask, handOver: (t > T.maskGrab - 0.1 && t < T.maskDown) || (t > T.pick - 0.1 && t < T.wear + 0.15) ? ['L'] : [] } : {}) });
+    items.sort((a, b) => b.d - a.d);
+    for (const it of items) it.draw();
+    if (t >= T.maskDown && t < T.pick && mask.depth <= table.d0) drawMask(c, mask);
+  }
+
+  function draw(t) {
+    const day = dayAt(t);
+    // camera: settles in, pushes slowly toward the bed, then follows to the door
+    const push = E.io(inv(T.slump0 - 0.6, T.morn + 0.3, t));
+    const follow = E.io(inv(T.mWalk - 0.3, T.end, t));
+    cam.x = lerp(lerp(440, 420, push), 470, follow);
+    cam.zoom = lerp(lerp(1.42, 1.56, push), 1.46, follow);
+    cam.hy = lerp(640, 610, push); cam.h = 262;
+    const J = M.pose(t);
+    const mask = maskState(t, J);
+    const floorY = drawRoomBack(ctx, t, day);
+
+    // moonlight / daylight through the window onto the floor
+    const Ld = norm([0.42, -1.0, -0.72]);
+    const corners = [[win.x0, WALL, win.z0], [win.x1, WALL, win.z0], [win.x1, WALL, win.z1], [win.x0, WALL, win.z1]];
+    const hit = corners.map(p => { const lam = p[2] / -Ld[2]; return add(p, mul(Ld, lam)); });
+    softLayer(14, 'screen', c => { poly(c, hit); c.fillStyle = rgb(mixc([60, 74, 96], [150, 150, 148], day), 0.75); c.fill(); });
+
+    reflection(c => { drawDoorPanel(c, t, day); furniture(c, t, day, J, mask); }, floorY, lerp(0.22, 0.16, day));
+    drawDoorPanel(ctx, t, day);
+    contactShadow(ctx, J, lerp(0.7, 0.45, day));
+    furniture(ctx, t, day, J, mask);
+
+    // light shaft through the air
+    softLayer(22, 'screen', c => {
+      const ga = P(corners[3]), gb = P(hit[1]);
+      const g = c.createLinearGradient(ga[0], ga[1], gb[0], gb[1]);
+      g.addColorStop(0, rgb(mixc([90, 110, 140], [200, 200, 196], day), 0.2)); g.addColorStop(1, rgb(mixc([90, 110, 140], [200, 200, 196], day), 0.0));
+      poly(c, [corners[0], corners[3], corners[2], hit[2], hit[1], hit[0]]); c.fillStyle = g; c.fill();
+    });
+
+    // light grade: cold blue-grey night, pale white morning
+    ctx.save(); ctx.globalCompositeOperation = 'multiply';
+    const wc = P([(win.x0 + win.x1) / 2, 40, 120]);
+    const gg = ctx.createRadialGradient(wc[0], wc[1], 30, wc[0], wc[1], 760);
+    gg.addColorStop(0, rgb(mixc([196, 206, 222], [255, 255, 255], day))); gg.addColorStop(0.6, rgb(mixc([104, 112, 128], [224, 224, 222], day))); gg.addColorStop(1, rgb(mixc([30, 33, 40], [130, 130, 130], day)));
+    ctx.fillStyle = gg; ctx.fillRect(0, 0, W, H); ctx.restore();
+
+    // daylight spilling through the open door
+    const ang = doorAng(t);
+    if (ang > 0.5) {
+      const lit = sstep(0, 40, ang);
+      softLayer(26, 'screen', c => {
+        poly(c, [[door.x0, WALL, 0], [door.x1, WALL, 0], [door.x1 + 120, WALL - 260, 0], [door.x0 - 40, WALL - 260, 0]]);
+        c.fillStyle = `rgba(255,252,240,${0.35 * lit})`; c.fill();
+      });
+      ctx.save(); ctx.globalCompositeOperation = 'screen';
+      const dc = P([(door.x0 + door.x1) / 2, WALL, 120]);
+      const dg = ctx.createRadialGradient(dc[0], dc[1], 10, dc[0], dc[1], 260);
+      dg.addColorStop(0, `rgba(255,252,240,${0.45 * lit})`); dg.addColorStop(1, 'rgba(255,252,240,0)');
+      ctx.fillStyle = dg; ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+
+    vignette(lerp(0.85, 0.6, day));
+    captionAt(t, 'ASK TWICE.', T.ask2a, T.ask2b + 10);
+  }
+  return { draw, fig: M, ticks, maskPos: (t, J) => maskState(t, J).pos };
+})();
+
+/* =====================================================================
+   WALK TEST (index.html?test=walk&mood=heavy): side view, static camera,
+   floor ruler and a marker at every heel contact, for checking foot locking.
+   ===================================================================== */
+const WALKTEST = (() => {
+  const qs = new URLSearchParams(location.search);
+  const mood = MOOD[qs.get('mood') || 'heavy'] || MOOD.heavy;
+  const F = new Fig('TEST', { x: 110, d: 0, yaw: 0, seed: 2 });
+  const end = F.walk(0.4, [620, 0], mood, 'R');
+  const dur = end + 0.8;
+  function draw(t) {
+    cam.x = 365; cam.zoom = 1.22; cam.hy = 640; cam.h = 250;
+    ctx.fillStyle = '#101012'; ctx.fillRect(0, 0, W, H);
+    const fy = P([0, 0, 0])[1];
+    ctx.fillStyle = '#18181b'; ctx.fillRect(0, fy, W, H - fy);
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
+    for (let x = 0; x <= 760; x += 20) { const a = P([x, 0, 0]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(a[0], a[1] + (x % 100 ? 8 : 18)); ctx.stroke(); }
+    const J = F.pose(t);
+    // heel contacts so far
+    for (const c of F.cues) if (c.t <= t + 1e-6) {
+      const pl = F.plants[c.side].find(p => Math.abs(p.t0 - c.t) < 1e-6);
+      const a = P([pl.pos[0], 0, 0]);
+      ctx.fillStyle = c.side === 'R' ? '#ff5544' : '#44aaff'; ctx.fillRect(a[0] - 2, a[1] + 20, 4, 14);
+    }
+    contactShadow(ctx, J, 0.6);
+    drawFigure(ctx, F, J);
+    // planted feet are tinted; a contact frame flashes
+    const label = [];
+    for (const side of ['L', 'R']) {
+      const ft = J.feet[side];
+      const a = P(ft.pitch >= 0 ? ft.heel : ft.toe);
+      if (ft.planted) { ctx.fillStyle = side === 'R' ? '#ff5544' : '#44aaff'; ctx.beginPath(); ctx.arc(a[0], a[1], 4, 0, TAU); ctx.fill(); }
+      label.push(side + (ft.planted ? ' planted' : ' swing  '));
+      for (const c of F.cues) if (c.side === side && Math.round(c.t * FPS) === Math.round(t * FPS)) label.push('<< ' + side + ' HEEL CONTACT (frame ' + Math.round(c.t * FPS) + ')');
+    }
+    ctx.fillStyle = '#ddd'; ctx.font = '22px "DejaVu Sans Mono", monospace';
+    ctx.fillText(`WALK TEST  mood=${mood.name}  L=${F.moves[0].L.toFixed(1)}px  cad=${mood.cad}/s`, 30, 60);
+    ctx.fillText(`t=${t.toFixed(3)}s  frame=${Math.round(t * FPS)}  speed=${(F.moves[0].L * mood.cad).toFixed(1)}px/s`, 30, 92);
+    label.forEach((l, i) => ctx.fillText(l, 30, 124 + i * 30));
+  }
+  return { draw, dur, fig: F };
+})();
+
+// Foot-lock check: for every figure and frame, how far the drawn ankle is from
+// where the foot planner put it (non-zero = the leg could not reach, i.e. a slide),
+// how far a planted foot's pivot moved, and whether a foot dipped through the floor.
+function footCheck(step = 1 / 120) {
+  const figs = [...PARTY.figs.map(f => [f, 0, T.cut1]), [HOME.fig, T.cut1, T.end], [WALKTEST.fig, 0, WALKTEST.dur]];
+  const res = [];
+  for (const [f, a, b] of figs) {
+    let reach = 0, reachT = 0, drift = 0, driftT = 0, below = 0;
+    const last = { L: null, R: null };
+    for (let t = a; t <= b; t += step) {
+      const J = f.pose(t);
+      for (const side of ['L', 'R']) {
+        const ft = J.feet[side];
+        if (ft.planted) {
+          const e = len(sub(J.ank[side], ft.ank));
+          if (e > reach) { reach = e; reachT = t; }
+          // contact point actually drawn on screen (heel when rolling on the heel, toe when on the toe)
+          const piv = ft.pitch >= 0 ? J.heel[side] : J.toe[side];
+          const key = ft.pitch >= 0 ? 'h' : 't';
+          const l = last[side];
+          if (l && l.key === key && l.pl === ft.plant) { const d = Math.hypot(piv[0] - l.p[0], piv[1] - l.p[1], piv[2] - l.p[2]); if (d > drift) { drift = d; driftT = t; } }
+          last[side] = { p: piv, key, pl: ft.plant };
+        } else {
+          last[side] = null;
+          below = Math.min(below, J.toe[side][2], J.heel[side][2]);
+        }
+      }
+    }
+    res.push({ fig: f.id, maxReachError: +reach.toFixed(3), at: +reachT.toFixed(3), maxPlantedDriftPerTick: +drift.toFixed(3), driftAt: +driftT.toFixed(3), lowestSwingFoot: +below.toFixed(2) });
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------- render
+const TEST = new URLSearchParams(location.search).get('test') === 'walk';
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  if (t < T.cut1) PARTY.draw(t); else HOME.draw(t);
+  grain(t, 0.07);
+  // fade in from black at the very start, fade to black at the end
+  const fade = Math.max(1 - sstep(0, 0.35, t), sstep(T.fade0, T.end - 0.05, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+  // the last caption stays readable over the fade until the very end
+  if (t > T.fade0) {
+    const a = (1 - sstep(T.end - 0.32, T.end - 0.02, t)) * sstep(T.fade0, T.fade0 + 0.2, t);
+    ctx.save(); ctx.globalAlpha = 1; caption('ASK TWICE.', a * sstep(T.fade0, T.end - 0.05, t), 0); ctx.restore();
+  }
+}
+
+// sound cues the animation itself produces (footsteps at heel contact etc.)
+function getCues() {
+  const steps = [];
+  for (const f of PARTY.figs) for (const c of f.cues) steps.push(c);
+  for (const c of HOME.fig.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: HOME.ticks.filter(x => x > T.cut1 && x < T.end), fps: FPS, duration: T.end };
+}
+
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.footCheck = footCheck;
+// Pop check: per frame, the largest change in velocity of any joint (px/frame²).
+window.popCheck = function () {
+  const res = [];
+  const track = (name, fig, a, b, extra) => {
+    let prev = null, prev2 = null; const spikes = [];
+    for (let f = Math.ceil(a * FPS); f <= Math.floor(b * FPS); f++) {
+      const t = f / FPS, J = fig.pose(t);
+      const pts = [J.P, J.N, J.Hc, J.hand.L, J.hand.R, J.el.L, J.el.R, J.knee.L, J.knee.R, J.ank.L, J.ank.R];
+      if (extra) pts.push(extra(t, J));
+      if (prev && prev2) {
+        let worst = 0, wi = -1;
+        pts.forEach((p, i) => { const acc = len(sub(add(p, prev2[i]), mul(prev[i], 2))); if (acc > worst) { worst = acc; wi = i; } });
+        spikes.push({ t: +t.toFixed(3), acc: +worst.toFixed(2), joint: ['pelvis', 'neck', 'head', 'handL', 'handR', 'elbowL', 'elbowR', 'kneeL', 'kneeR', 'ankleL', 'ankleR', 'mask'][wi] });
+      }
+      prev2 = prev; prev = pts;
+    }
+    spikes.sort((x, y) => y.acc - x.acc);
+    res.push({ fig: name, top: spikes.slice(0, 6) });
+  };
+  for (const f of PARTY.figs) track(f.id, f, 0, T.cut1 - 0.01);
+  track('M2', HOME.fig, T.cut1, T.end - 0.01, HOME.maskPos);
+  return res;
+};
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+window.__debug = { PARTY, HOME, cam, P };
+
+// live preview loop (skipped when the renderer drives the page)
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>

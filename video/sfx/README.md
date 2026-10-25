@@ -1,0 +1,33 @@
+# Sound effects for "Ask Twice"
+
+Put these 15 files in this folder with exactly these names. Use **real recordings**
+under CC0 or the Pixabay Content License (free for commercial use, no attribution
+needed). Freesound works too if you filter by license *Creative Commons 0*.
+
+`.mp3` is assumed, but `.wav`, `.ogg`, `.flac` or `.m4a` with the same base name work as well.
+
+| File | What to search for | Used for | Length needed |
+|---|---|---|---|
+| `party_music.mp3` | Pixabay Music: "party house", "upbeat dance pop" | party music, muffled as if from the next room | ≥ 7 s (loops otherwise) |
+| `crowd_murmur.mp3` | "crowd talking indoor", "party chatter ambience", "restaurant walla" | murmur in the party room | ≥ 7 s (loops otherwise) |
+| `cup_clink.mp3` | "glasses clink cheers", "cups toast" | one clink at 0.97 s | one hit |
+| `laughter.mp3` | "group of people laughing", "small crowd laugh" | the others laugh after "FINE." | ≥ 2 s |
+| `door_close.mp3` | "door close wooden", "door shut" | the hard cut to home: one firm close | one hit |
+| `lock_click.mp3` | "door lock click", "deadbolt lock" | lock click after the door | one hit |
+| `footsteps_wood.mp3` | "footsteps wooden floor", "walking on wood floor slow" | every footstep (single steps are cut out automatically) | ≥ 6 separate steps with small gaps between them |
+| `bed_creak.mp3` | "bed creak", "sitting down on bed", "mattress springs creak" | the figure sits on the bed | one creak |
+| `mask_down.mp3` | "put plastic object on table", "place object on wooden table" | the mask is set down / picked up | one hit |
+| `clock_tick.mp3` | "clock ticking loud", "wall clock tick" | single ticks are cut out and placed on the clock's second hand | ≥ 2 s of clear ticks |
+| `traffic_distant.mp3` | "distant city traffic night ambience" | faint background at home | ≥ 13 s (loops otherwise) |
+| `phone_alarm.mp3` | "phone alarm", "smartphone alarm ringtone" | the morning alarm | ≥ 1.5 s (loops otherwise) |
+| `cloth_rustle.mp3` | "clothes rustle", "fabric movement foley" | sitting, standing, picking up the mask | ≥ 2 s |
+| `door_open.mp3` | "door open", "door handle open" | leaving in the morning | one hit |
+| `birds_morning.mp3` | "birds chirping morning", "birdsong outside" | outside; swells when the door opens | ≥ 5 s (loops otherwise) |
+
+Tips
+
+- For one-shot sounds the mixer finds the first transient and lines it up with the frame, so leading silence in the file doesn't matter.
+- Footsteps: a recording of slow, separate steps on wood works best (shoes, not barefoot). Every step in the film is cut out of this file and placed on its exact heel-contact frame; heavier steps are pitched down and the forced morning steps up.
+- Avoid music or voices baked into the effects (except `party_music` and `crowd_murmur`).
+
+Then run `npm run mix` (or `npm run build` to re-render the picture as well).
