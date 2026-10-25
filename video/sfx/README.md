@@ -37,3 +37,10 @@ Tips
 - Avoid music or voices baked into the effects (except `party_music` and `crowd_murmur`).
 
 Then run `npm run mix` (or `npm run build` to re-render the picture as well).
+
+## Extra files for "It Ends With You"
+
+`room_tone`, `toy_blocks`, `glass_break`, `door_slam`, `heartbeat`, `whoosh_soft`, `knee_floor`, `cloth_hug` (plus the existing
+`clock_tick`, `footsteps_wood`, `door_open`). Search terms are in `FILES_IEWY` in `sound-timeline.js`:
+"quiet house room tone", "wooden toy blocks", "glass shatter floor", "interior door slam", "slow heartbeat",
+"soft whoosh", "knee on wooden floor", "clothes rustle hug". Same rule as above: `.mp3` with the same base name wins over the `.wav`.

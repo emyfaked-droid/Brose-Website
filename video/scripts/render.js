@@ -7,7 +7,8 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { ROOT, openPage, frame } = require('./lib');
+const { ROOT, FILM, openPage, frame } = require('./lib');
+const TAG = FILM === 'index' ? 'video' : FILM;      // build/video.mp4 for Ask Twice, build/<film>.mp4 otherwise
 
 const args = process.argv.slice(2);
 const opt = (name, def) => { const i = args.indexOf('--' + name); return i >= 0 ? args[i + 1] : def; };
@@ -21,12 +22,12 @@ const opt = (name, def) => { const i = args.indexOf('--' + name); return i >= 0 
   const duration = await page.evaluate(() => window.DURATION);
   const from = parseFloat(opt('from', '0'));
   const to = parseFloat(opt('to', String(duration)));
-  const out = path.resolve(ROOT, opt('out', test ? `build/walktest-${opt('mood', 'heavy')}${track ? '-tracking' : ''}.mp4` : 'build/video.mp4'));
+  const out = path.resolve(ROOT, opt('out', test ? `build/walktest-${opt('mood', 'heavy')}${track ? '-tracking' : ''}.mp4` : `build/${TAG}.mp4`));
   fs.mkdirSync(path.dirname(out), { recursive: true });
 
   if (!test) {
     const cues = await page.evaluate(() => window.getCues());
-    fs.writeFileSync(path.join(ROOT, 'build', 'cues.json'), JSON.stringify(cues, null, 2));
+    fs.writeFileSync(path.join(ROOT, 'build', FILM === 'index' ? 'cues.json' : `${FILM}-cues.json`), JSON.stringify(cues, null, 2));
   }
 
   const f0 = Math.round(from * fps), f1 = Math.round(to * fps);

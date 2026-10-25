@@ -95,4 +95,58 @@ function timeline(S, cues) {
   return C;
 }
 
-module.exports = { FILES, timeline, TARGET_LUFS: -14, CEILING_DBTP: -1.5 };
+// =====================================================================
+// IT ENDS WITH YOU (it-ends-with-you.html). Times come from the story beats in the page (cues.story).
+// Scene 2 (2026) is scene 1 (1998) + OFF seconds, so the sounds repeat on purpose (the glass breaks twice
+// with the very same recording).
+// =====================================================================
+const FILES_IEWY = {
+  'room_tone.mp3':      { search: '"quiet house room tone", "indoor silence ambience"', use: 'bed under the whole film, very quiet (-32 dB)' },
+  'clock_tick.mp3':     { search: '"wall clock ticking"', use: 'single ticks every second; cut out for a moment at the freeze' },
+  'toy_blocks.mp3':     { search: '"wooden toy blocks"', use: 'the child plays (about 1 s)' },
+  'glass_break.mp3':    { search: '"glass shatter floor"', use: 'the glass breaks (1998 and 2026, same sound)' },
+  'footsteps_wood.mp3': { search: '"footsteps wooden floor"', use: 'every step on the heel-contact frame (adult heavy, child light)' },
+  'door_open.mp3':      { search: '"door open", "door handle open"', use: 'the father opens the door (extra, quiet)' },
+  'door_slam.mp3':      { search: '"interior door slam"', use: 'the door slams shut at 5.5 s' },
+  'heartbeat.mp3':      { search: '"slow heartbeat"', use: 'under the freeze, loops (needs a few beats)' },
+  'whoosh_soft.mp3':    { search: '"soft whoosh"', use: 'the flashback' },
+  'knee_floor.mp3':     { search: '"knee on wooden floor"', use: 'the adult kneels' },
+  'cloth_hug.mp3':      { search: '"clothes rustle hug"', use: 'the hug' },
+};
+
+function timelineIewy(S, cues) {
+  const C = [], add = c => C.push(c), OFF = S.OFF, END = S.end;
+  // quiet house tone under everything, and the clock
+  add({ file: 'room_tone.mp3', at: 0, dur: END, vol: -32, fadeIn: 0.6, fadeOut: 0.9, loop: true });
+  for (let i = 0; 0.5 + i < END - 0.3; i++) {
+    const t = 0.5 + i;
+    if (t >= S.freeze0 - 0.05 && t < S.lower0) continue;           // sudden silence at the freeze
+    add({ file: 'clock_tick.mp3', slice: i % 8, at: t, vol: -30, align: 'onset', fadeOut: 0.05 });
+  }
+  // the child plays, the glass breaks (twice, the same recording), the door slams
+  for (const o of [0, OFF]) {
+    add({ file: 'toy_blocks.mp3', at: S.blocks0 + o, dur: S.blocks1 - S.blocks0, vol: -14, fadeOut: 0.1 });
+    add({ file: 'glass_break.mp3', at: S.glass + o, vol: -4, align: 'onset', fadeOut: 0.5 });
+  }
+  add({ file: 'door_open.mp3', at: S.doorOpen - 0.02, vol: -12, align: 'onset', fadeOut: 0.3 });
+  add({ file: 'door_slam.mp3', at: S.doorSlam, vol: -1, align: 'onset', fadeOut: 0.5 });
+  // freeze and flashback
+  add({ file: 'heartbeat.mp3', at: S.freeze0, dur: S.kneel1 - S.freeze0, vol: -11, fadeIn: 0.5, fadeOut: 1.0, loop: true });
+  add({ file: 'whoosh_soft.mp3', at: S.ghost0, vol: -22, fadeOut: 0.4 });
+  // kneel, hug
+  add({ file: 'knee_floor.mp3', at: S.knee, vol: -9, align: 'onset', fadeOut: 0.3 });
+  add({ file: 'cloth_hug.mp3', at: S.hug, vol: -15, fadeIn: 0.05, fadeOut: 0.5 });
+  // footsteps on the heel-contact frames: the adult is heavy and hard, the child light
+  const VOL = { hard: -3, bouncy: -19, back: -22, kid: -24 }, RATE = { hard: 0.9, bouncy: 1.2, back: 1.22, kid: 1.2 };
+  let n = 0;
+  for (const c of cues.steps) {
+    let vol = VOL[c.mood] ?? -12;
+    if (c.type === 'settle') vol -= 5;
+    const jitter = ((n * 7919) % 13) / 13 - 0.5;
+    add({ file: 'footsteps_wood.mp3', slice: n++, at: c.t, vol: vol + jitter * 2, rate: (RATE[c.mood] || 1) * (1 + jitter * 0.04), align: 'onset', fadeOut: 0.06, note: `${c.fig} ${c.side} ${c.type} frame ${c.frame}` });
+  }
+  return C;
+}
+
+module.exports = { FILES, timeline, TARGET_LUFS: -14, CEILING_DBTP: -1.5,
+  films: { 'it-ends-with-you': { FILES: FILES_IEWY, timeline: timelineIewy } } };

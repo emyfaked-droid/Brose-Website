@@ -10,14 +10,18 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { FILES, timeline, TARGET_LUFS, CEILING_DBTP } = require('../sound-timeline');
+const TL = require('../sound-timeline');
+const { TARGET_LUFS, CEILING_DBTP } = TL;
+const FILM = process.env.FILM || 'index';                      // index = Ask Twice
+const TAG = FILM === 'index' ? 'video' : FILM;
+const { FILES, timeline } = FILM === 'index' ? TL : TL.films[FILM];
 
 const ROOT = path.resolve(__dirname, '..');
 const args = process.argv.slice(2);
 const opt = (name, def) => { const i = args.indexOf('--' + name); return i >= 0 ? args[i + 1] : def; };
 const SFX = path.resolve(ROOT, opt('sfx', 'sfx'));
-const VIDEO = path.resolve(ROOT, opt('video', 'build/video.mp4'));
-const OUT = path.resolve(ROOT, opt('out', 'out/ask-twice.mp4'));
+const VIDEO = path.resolve(ROOT, opt('video', `build/${TAG}.mp4`));
+const OUT = path.resolve(ROOT, opt('out', FILM === 'index' ? 'out/ask-twice.mp4' : `out/${FILM}.mp4`));
 const BUILD = path.join(ROOT, 'build');
 const SR = 48000;
 
@@ -106,7 +110,7 @@ function loudness(file) {
 }
 
 (function main() {
-  const cuesFile = path.join(BUILD, 'cues.json');
+  const cuesFile = path.join(BUILD, FILM === 'index' ? 'cues.json' : `${FILM}-cues.json`);
   if (!fs.existsSync(cuesFile)) { console.error('build/cues.json missing: run `node scripts/render.js` first'); process.exit(1); }
   const cues = JSON.parse(fs.readFileSync(cuesFile, 'utf8'));
   const S = cues.story, DUR = cues.duration;
@@ -163,17 +167,17 @@ function loudness(file) {
   const graph = chains.join(';\n') + ';\n' + chains.map((_, i) => `[c${i}]`).join('') +
     `amix=inputs=${n}:normalize=0:dropout_transition=0,apad=whole_dur=${DUR},atrim=0:${DUR}[mix]`;
   fs.mkdirSync(BUILD, { recursive: true });
-  fs.writeFileSync(path.join(BUILD, 'mix_graph.txt'), graph);
-  fs.writeFileSync(path.join(BUILD, 'cue_sheet.json'), JSON.stringify(sheet.sort((a, b) => a.time - b.time), null, 1));
+  fs.writeFileSync(path.join(BUILD, `${TAG}_mix_graph.txt`), graph);
+  fs.writeFileSync(path.join(BUILD, `${TAG}_cue_sheet.json`), JSON.stringify(sheet.sort((a, b) => a.time - b.time), null, 1));
 
-  const raw = path.join(BUILD, 'sfx_raw.wav');
+  const raw = path.join(BUILD, `${TAG}_sfx_raw.wav`);
   console.log('mixing...');
-  run('ffmpeg', ['-v', 'error', '-y', ...inputs, '-filter_complex_script', path.join(BUILD, 'mix_graph.txt'), '-map', '[mix]', '-ar', String(SR), '-c:a', 'pcm_f32le', raw]);
+  run('ffmpeg', ['-v', 'error', '-y', ...inputs, '-filter_complex_script', path.join(BUILD, `${TAG}_mix_graph.txt`), '-map', '[mix]', '-ar', String(SR), '-c:a', 'pcm_f32le', raw]);
 
   // loudness: gain to target, then a true-peak-safe limiter; repeat once if the limiter moved the level
   const m0 = loudness(raw);
   console.log(`raw mix: ${m0.I} LUFS, true peak ${m0.TP} dBTP, LRA ${m0.LRA} LU`);
-  const mixed = path.join(BUILD, 'sfx_mix.wav');
+  const mixed = path.join(BUILD, `${TAG}_sfx_mix.wav`);
   let gain = TARGET_LUFS - m0.I, m = null;
   // limiter runs 4x oversampled so it catches inter-sample (true) peaks
   const limit = Math.pow(10, (CEILING_DBTP - 0.6) / 20);

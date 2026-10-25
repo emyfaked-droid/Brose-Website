@@ -9,7 +9,12 @@
     "check": "node scripts/check.js && node scripts/popcheck.js",
     "render": "node scripts/render.js",
     "mix": "node scripts/mix.js",
-    "build": "node scripts/check.js && node scripts/render.js && node scripts/mix.js"
+    "build": "node scripts/check.js && node scripts/render.js && node scripts/mix.js",
+    "iewy:check": "FILM=it-ends-with-you node scripts/check.js && FILM=it-ends-with-you node scripts/popcheck.js",
+    "iewy:stills": "FILM=it-ends-with-you node scripts/stills.js",
+    "iewy:render": "FILM=it-ends-with-you node scripts/render.js",
+    "iewy:mix": "FILM=it-ends-with-you node scripts/mix.js",
+    "iewy:build": "npm run iewy:check && npm run iewy:render && npm run iewy:mix"
   },
   "dependencies": {
     "playwright": "^1.50.0"

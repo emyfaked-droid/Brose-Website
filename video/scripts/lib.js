@@ -3,7 +3,8 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 const ROOT = path.resolve(__dirname, '..');
-const PAGE = 'file://' + path.join(ROOT, 'index.html') + '?render';
+const FILM = process.env.FILM || 'index';          // which film page to use (index = Ask Twice)
+const PAGE = 'file://' + path.join(ROOT, FILM + '.html') + '?render';
 
 async function openPage(extraQuery = '', sharedBrowser = null) {
   const browser = sharedBrowser || await chromium.launch({ args: ['--force-color-profile=srgb', '--disable-gpu-vsync'] });
@@ -23,4 +24,4 @@ async function frame(page, t) {
   return Buffer.from(b64, 'base64');
 }
 
-module.exports = { ROOT, openPage, frame };
+module.exports = { ROOT, FILM, openPage, frame };

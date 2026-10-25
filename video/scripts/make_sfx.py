@@ -464,6 +464,123 @@ def make_music():
     save('party_music.wav', out, peak=0.85)
 
 
+
+# ------------------------------------------------------------------ It Ends With You
+def make_room_tone():
+    r = rng(201)
+    n = int(18.5 * SR)
+    t = np.arange(n) / SR
+    low = fft_filter(r.standard_normal(n), 20, 190, 2)
+    mid = fft_filter(r.standard_normal(n), 300, 1400, 2) * (0.22 + 0.12 * np.sin(2 * np.pi * t / 5.3) ** 2)
+    hum = np.sin(2 * np.pi * 50 * t) * 0.02 + np.sin(2 * np.pi * 100 * t) * 0.012
+    x = low / np.abs(low).max() * 0.6 + mid / (np.abs(mid).max() + 1e-9) * 0.25 + hum
+    save('room_tone.wav', fade(x, 0.3, 0.3), peak=0.5)
+
+
+def make_toy_blocks():
+    r = rng(211)
+    buf = np.zeros(int(1.7 * SR))
+    for at, f, g in [(0.05, 1180, 0.9), (0.22, 820, 0.7), (0.38, 1420, 0.6), (0.47, 960, 0.8), (0.69, 1250, 0.7), (0.83, 720, 0.9), (1.02, 1100, 0.6), (1.18, 890, 0.8), (1.33, 1500, 0.5)]:
+        t = tt(0.4)
+        knock = modes(t, [(f, 0.018, 0.9), (f * 1.9, 0.012, 0.35), (f * 3.1, 0.008, 0.18), (210 + 30 * r.random(), 0.03, 0.5)])
+        tick = fft_filter(r.standard_normal(len(t)), 1500, 8000) * np.exp(-t / 0.002) * 0.7
+        place(buf, (knock + tick) * g, at + 0.01 * r.standard_normal())
+    # a soft slide of blocks across the floor
+    ts = tt(0.25)
+    place(buf, fft_filter(r.standard_normal(len(ts)), 400, 3200) * np.sin(np.pi * ts / 0.25) ** 2 * 0.12, 0.55)
+    save('toy_blocks.wav', reverb(buf, 0.35, 0.18, seed=212))
+
+
+def make_glass_break():
+    r = rng(221)
+    n = int(2.4 * SR)
+    buf = np.zeros(n)
+    t = tt(0.3)
+    impact = fft_filter(r.standard_normal(len(t)), 1800, 14000) * np.exp(-t / 0.006) * 1.4 + modes(t, [(2300, 0.03, 0.7), (4100, 0.025, 0.5)])
+    place(buf, impact, 0.0)
+    thud = np.sin(2 * np.pi * (180 + 100 * np.exp(-t / 0.02)) * t) * np.exp(-t / 0.03) * 0.6
+    place(buf, thud, 0.0)
+    # cascade of falling and tinkling shards
+    for _ in range(90):
+        at = 0.02 + r.exponential(0.22)
+        if at > 1.9:
+            continue
+        f = 2200 + 7500 * r.random() ** 1.3
+        d = 0.012 + 0.07 * r.random()
+        ts = tt(0.35)
+        s = modes(ts, [(f, d, 0.5 + 0.5 * r.random()), (f * 1.58, d * 0.7, 0.3), (f * 2.3, d * 0.5, 0.15)]) * (0.25 + 0.75 * np.exp(-at / 0.5))
+        place(buf, s * 0.35, at)
+    # larger pieces landing
+    for at, f in [(0.12, 1500), (0.31, 2100), (0.5, 1800), (0.8, 2600)]:
+        ts = tt(0.3)
+        place(buf, modes(ts, [(f, 0.04, 0.7), (f * 1.7, 0.03, 0.4)]) * 0.5, at)
+    save('glass_break.wav', reverb(buf, 0.6, 0.22, seed=222))
+
+
+def make_door_slam():
+    r = rng(231)
+    t = tt(2.4)
+    thump = np.sin(2 * np.pi * (46 + 36 * np.exp(-t / 0.05)) * t) * np.exp(-t / 0.3) * 2.0
+    slam = fft_filter(r.standard_normal(len(t)), 100, 2800) * np.exp(-t / 0.09) * 1.5
+    wood = modes(t, [(105, 0.45, 0.9), (170, 0.4, 0.6), (270, 0.3, 0.45), (440, 0.22, 0.3), (760, 0.14, 0.18)])
+    latch = fft_filter(r.standard_normal(len(t)), 1500, 7000) * np.exp(-t / 0.008) * 0.9
+    # the door bounces back against the frame
+    tb = np.maximum(t - 0.16, 0) * (t > 0.16)
+    bounce = (np.sin(2 * np.pi * 70 * tb) * np.exp(-tb / 0.1) * 0.7 + fft_filter(r.standard_normal(len(t)), 150, 1800) * np.exp(-tb / 0.03) * 0.5) * (t > 0.16)
+    x = thump + slam + wood + latch + bounce
+    save('door_slam.wav', reverb(x, 0.9, 0.35, seed=232))
+
+
+def make_heartbeat():
+    r = rng(241)
+    n = int(4.0 * SR)
+    buf = np.zeros(n)
+    for beat in range(4):
+        for at, f, g, dec in [(0.0, 54, 1.0, 0.07), (0.31, 64, 0.62, 0.06)]:
+            t = tt(0.5)
+            body = np.sin(2 * np.pi * (f + 22 * np.exp(-t / 0.03)) * t) * np.minimum(t / 0.012, 1) * np.exp(-t / dec) * g
+            soft = fft_filter(r.standard_normal(len(t)), 40, 260, 2) * np.exp(-t / 0.05) * 0.35 * g
+            place(buf, body + soft, beat + at)
+    save('heartbeat.wav', fft_filter(buf, 25, 400, 2), peak=0.9)
+
+
+def make_whoosh():
+    r = rng(251)
+    n = int(1.5 * SR)
+    t = np.arange(n) / SR
+    base = r.standard_normal(n)
+    out = np.zeros(n)
+    for fc, c in [(260, 0.35), (520, 0.5), (1000, 0.65), (1900, 0.75), (900, 0.95), (420, 1.15)]:
+        band = fft_filter(base, fc * 0.6, fc * 1.5, 2)
+        out += band * np.exp(-((t - c) / 0.2) ** 2) * (1.0 if fc < 1500 else 0.6)
+    save('whoosh_soft.wav', reverb(fade(out, 0.1, 0.4), 0.5, 0.2, seed=252), peak=0.7)
+
+
+def make_knee_floor():
+    r = rng(261)
+    t = tt(0.9)
+    thump = np.sin(2 * np.pi * (115 + 55 * np.exp(-t / 0.02)) * t) * np.exp(-t / 0.07) * 1.4
+    cloth = fft_filter(r.standard_normal(len(t)), 150, 1400) * np.exp(-t / 0.03) * 0.9
+    wood = modes(t, [(140, 0.1, 0.6), (225, 0.08, 0.4), (380, 0.05, 0.25)])
+    rub = fft_filter(r.standard_normal(len(t)), 500, 3500) * np.exp(-((t - 0.12) / 0.07) ** 2) * 0.18
+    save('knee_floor.wav', reverb(thump + cloth + wood + rub, 0.4, 0.2, seed=262))
+
+
+def make_cloth_hug():
+    r = rng(271)
+    t = tt(2.6)
+    n = r.standard_normal(len(t))
+    band = fft_filter(n, 500, 5000, 3)
+    env = np.exp(-((t - 0.4) / 0.28) ** 2) + 0.8 * np.exp(-((t - 1.1) / 0.35) ** 2) + 0.5 * np.exp(-((t - 1.8) / 0.3) ** 2)
+    crackle = np.abs(fft_filter(r.standard_normal(len(t)), 30, 700, 2)); crackle = crackle / crackle.max()
+    y = band * env * (0.35 + 0.65 * crackle ** 0.8)
+    # two soft pats on the back
+    for at in (0.55, 1.35):
+        tp = tt(0.25)
+        place(y, np.sin(2 * np.pi * (95 + 40 * np.exp(-tp / 0.02)) * tp) * np.exp(-tp / 0.05) * 0.7, at)
+    save('cloth_hug.wav', reverb(fade(y, 0.02, 0.4), 0.4, 0.15, seed=272), peak=0.7)
+
+
 if __name__ == '__main__':
     make_footsteps()
     make_door_close()
@@ -480,3 +597,11 @@ if __name__ == '__main__':
     make_birds()
     make_alarm()
     make_music()
+    make_room_tone()
+    make_toy_blocks()
+    make_glass_break()
+    make_door_slam()
+    make_heartbeat()
+    make_whoosh()
+    make_knee_floor()
+    make_cloth_hug()

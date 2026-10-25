@@ -1,4 +1,8 @@
-# Ask Twice
+# Stick-figure shorts (Ask Twice, It Ends With You)
+
+Two films share one engine (`engine.js`): `index.html` = **Ask Twice**, `it-ends-with-you.html` = **It Ends With You**.
+Use `FILM=it-ends-with-you` (or the `npm run iewy:*` scripts) to point the render, check and mix scripts at the second film.
+
 
 A 19-second vertical (720×1280, 30 fps) stick-figure short drawn entirely in code,
 with a sound-effect mix built from real recordings.
@@ -72,3 +76,12 @@ transient lands on its frame (measured: within 3 ms). The clock's second hand an
 share the same times. The party is low-passed to sound like it comes from the next room, and it
 stops dead at the cut. The finished mix is normalised to −14 LUFS integrated with a −1.5 dBTP
 ceiling, which leaves room for music on top.
+
+## It Ends With You (`it-ends-with-you.html`)
+
+Scene 1 (1998, 0 to 6.3 s) is repeated as scene 2 (2026) exactly 6.0 s later with the roles reversed; the adult repeats
+the father's motion with the same seed, then freezes (`Fig.warp`, only breathing continues) and kneels into a hug while the
+light turns from cold white to warm yellow. New engine features used here: `Fig` option `s` (children at 0.6, strides scale,
+feet stay locked), `fig.footGoal()` (pin a foot to a target: kneeling), backward steps (`walk(..., {back: true})`),
+`fig.warp` (freeze/retime), and `fig.pose(t, true)` (skip arm goals so two figures can read each other's pose).
+Sounds: `FILES_IEWY` and `timelineIewy` in `sound-timeline.js`; output `out/it-ends-with-you.mp4`.

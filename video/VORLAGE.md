@@ -104,3 +104,13 @@ If someone says they're fine… ask twice. 🖤
 Tag someone you should check on today.
 
 #asktwice #mentalhealth #checkonyourfriends #stickmananimation #fyp
+
+
+---
+
+## 7. Zweiter Film: It Ends With You
+
+- Datei `it-ends-with-you.html`, gleiche Engine (`engine.js`). Befehle: `npm run iewy:check`, `iewy:stills`, `iewy:render`, `iewy:mix`, `iewy:build`.
+- Neu in der Engine: Kinder (`{ s: 0.6 }`), Knien (`fig.footGoal`), Rückwärtsschritte (`walk(..., { back: true })`),
+  Einfrieren (`fig.warp`), Umarmen (zwei Figuren lesen gegenseitig ihre Pose mit `fig.pose(t, true)`).
+- Aufbau: Szene 2 ist Szene 1 plus 6,0 s, mit vertauschten Rollen. Alle Zeiten stehen im Objekt `T` oben in der Datei.

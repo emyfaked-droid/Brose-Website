@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>It Ends With You</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   IT ENDS WITH YOU: a deterministic 2D stick-figure short (scenes + story).
+   Scene 2 (2026) repeats scene 1 (1998) exactly, six seconds later, with
+   the roles reversed. The engine lives in engine.js.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story
+// Scene 1 times; scene 2 = scene 1 + OFF (the same beats, a deliberate echo).
+const OFF = 6.0;
+const T = {
+  fadeIn1: 0.5,
+  blocks0: 0.5, blocks1: 1.5,          // the child plays with the blocks
+  bump: 1.5, glass: 1.8,               // table bumped, glass breaks
+  turn: 2.0, walk: 2.1,                // the father turns, three hard steps
+  lean: 3.2, flinch: 3.3,              // leans over the child, the child flinches
+  exit: 4.4, doorOpen: 4.75, doorSlam: 5.5,
+  fadeOut1: 6.0, cut: 6.3,
+  // scene 2 (2026)
+  fadeIn2: 6.6, bump2: 7.5, glass2: 7.8,
+  freeze0: 9.3, freeze1: 10.1,         // the adult freezes mid-motion (0.8 s)
+  ghost0: 9.6, ghost1: 10.6,           // flashback of the 1998 child
+  lower0: 10.6, straight1: 11.4,       // lowers his arm, straightens up, head drops
+  kneel0: 11.4, knee: 11.6, kneel1: 12.4,
+  step0: 12.5, hug: 13.0,
+  warm0: 13.0, warm1: 14.5,            // cold white -> warm yellow
+  text0: 14.2, text1: 17.6, end: 18.5,
+  stills: [1.8, 3.3, 5.8, 8.6, 10.0, 11.8, 13.5, 15.0],
+};
+const HOLD = T.freeze1 - T.freeze0;
+const V = t => t - HOLD;                // real time -> the adult's own timeline after the freeze
+
+const FX = 335;                           // where the father stops to lean over the child
+const XK = 400, HUG_X = XK + 63;          // where the adult kneels (pelvis) and where the child ends up
+const WALL = 150;                        // back wall (depth)
+const DOOR = { x0: 190, x1: 340, z1: 395 };            // same size as in Ask Twice
+const TABLE = { x0: 545, x1: 600, d0: 22, d1: 72, z1: 100 };
+const LAMP = [360, 80, 520];
+const BLOCKS = [
+  { x: 456, d: 28, s: 15, z: 0, k: 0.95 }, { x: 479, d: 24, s: 17, z: 0, k: 1.1 }, { x: 502, d: 30, s: 14, z: 0, k: 1.0 },
+  { x: 467, d: 52, s: 16, z: 0, k: 0.9 }, { x: 495, d: 54, s: 15, z: 0, k: 1.05 }, { x: 479, d: 24, s: 15, z: 17, k: 1.2 },
+  { x: 433, d: 46, s: 14, z: 0, k: 1.0 },
+];
+
+// ---------------------------------------------------------------- gaits for this film
+// "hard" is MOOD.forced with a short, fast, stamping stride so the walk over to the child is exactly three steps
+const HARD = { ...MOOD.forced, name: 'hard', L: 38, cad: 3.2, ta: 0.2, td: 0.3, lift: 13, bob: 7, arm: 6, elbow: 4, elBase: 30, landPitch: 12, heelOff: 26, lean: 8, twist: 3 };
+const HARD_OUT = { ...HARD, L: 70, cad: 3.0, td: 0.4 };
+const KID_STEP = { ...MOOD.bouncy, cad: 3.0, ta: 0.15, td: 0.2 };   // the small bouncy steps (the stride shrinks with the child)
+const KID_BACK = { ...MOOD.back, cad: 3.0, ta: 0.25, td: 0.3 };
+
+// ---------------------------------------------------------------- the figures
+const AD0 = { x: 220, d: 36, yaw: -35, seed: 1.7 };      // the father / the adult stands exactly here
+const KD0 = { x: 480, d: 42, yaw: -100, seed: 2.9, s: 0.6 };
+const F98 = new Fig('F98', AD0), K98 = new Fig('K98', KD0);
+const A26 = new Fig('A26', AD0), K26 = new Fig('K26', KD0);
+const GHOST = new Fig('GHOST', { x: 452, d: 42, yaw: 180, seed: 6.1, s: 0.6 });
+
+// the child: plays with the blocks, stands up, bumps the table, turns to the father, flinches, steps back
+function child(K, o, adult) {
+  const tr = K.tr;
+  // squatting over the blocks
+  tr.pz.v0 = -92; tr.pf.v0 = -20; tr.lean.v0 = 36; tr.head.v0 = 14;
+  const play = side => (t, J) => {
+    const a = side === 'L' ? 0 : 1.9, sg = side === 'L' ? -1 : 1;
+    const base = K.toSkel([479 + sg * 17, 27 + 2 * Math.sin(t * 1.3 + a), 10]);
+    return add(base, [5 * Math.sin(t * 2.1 + a), 2 * Math.sin(t * 1.7 + a), 4 * Math.max(0, Math.sin(t * 2.6 + a * 2))]);
+  };
+  const pL = K.goal('L', play('L')), pR = K.goal('R', play('R'));
+  pL.v0 = 1; pR.v0 = 1;
+  pL.to(o + 1.0, o + 1.25, 0, E.io); pR.to(o + 1.0, o + 1.25, 0, E.io);
+  tr.breath.v0 = 1.3;
+  // stands up and stumbles forward into the table edge
+  tr.pz.to(o + 1.0, o + 1.45, 0, E.io);
+  tr.pf.to(o + 1.0, o + 1.35, 4, E.io).to(o + 1.35, o + 1.5, 28, E.out2).to(o + 1.75, o + 2.2, 0, E.io);
+  tr.lean.to(o + 1.0, o + 1.4, 14, E.io).to(o + 1.4, o + 1.52, 22, E.out2).to(o + 1.7, o + 2.2, 3, E.io);
+  tr.head.to(o + 1.0, o + 1.4, 0).to(o + 1.85, o + 2.1, 20, E.io).to(o + 2.2, o + 2.5, 0, E.io);
+  tr.yaw.to(o + 1.0, o + 1.45, -8, E.io);
+  const reach = side => (t, J) => K.toSkel([TABLE.x0 - 3, 40 + (side === 'L' ? -6 : 6), 88]);
+  const bL = K.goal('L', reach('L')), bR = K.goal('R', reach('R'));
+  bL.to(o + 1.3, o + 1.5, 1, E.out2).to(o + 1.65, o + 2.0, 0, E.io);
+  bR.to(o + 1.34, o + 1.52, 1, E.out2).to(o + 1.7, o + 2.0, 0, E.io);
+  // turns toward the father
+  K.turn(o + 2.2, o + 2.9, 180, { steps: 3, lift: 5, first: 'L', mood: 'kid' });
+  // flinch: head down, slumped, shrinking, arms in front of its body, two short steps back
+  tr.head.to(o + 3.3, o + 3.55, 26, E.out2);
+  tr.slump.to(o + 3.3, o + 3.6, 17, E.out2);
+  tr.shDrop.to(o + 3.3, o + 3.6, 9, E.out2);
+  tr.pz.to(o + 3.3, o + 3.6, -14, E.out2);
+  tr.lean.to(o + 3.3, o + 3.6, -4, E.out2);
+  tr.breath.to(o + 3.3, o + 3.8, 1.9);
+  const guard = side => (t, J) => add(J.N, add(mul(J.Ft, 24), add(mul(J.Rt, (side === 'R' ? 1 : -1) * 5), [0, 0, -22])));
+  const gL = K.goal('L', guard('L')), gR = K.goal('R', guard('R'));
+  gL.to(o + 3.3, o + 3.55, 1, E.out2); gR.to(o + 3.33, o + 3.58, 1, E.out2);
+  const r = K.worldRoot(o + 3.3);
+  const backEnd = K.walk(o + 3.35, [r[0] + 24, r[1]], KID_BACK, 'L', { back: true });
+  // scene 2: hesitates, then two small steps toward the adult and into the hug
+  if (adult) {
+    tr.head.to(12.35, 12.9, 8, E.io);
+    tr.slump.to(12.35, 12.9, 5, E.io);
+    tr.shDrop.to(12.35, 12.9, 2, E.io);
+    tr.pz.to(12.35, 12.9, -2, E.io);
+    tr.lean.to(12.35, 12.9, 4, E.io);
+    gL.to(12.4, 12.9, 0, E.io); gR.to(12.4, 12.9, 0, E.io);
+    K.walk(T.step0 + 0.1, [HUG_X, 27], KID_STEP, 'L');
+  }
+  return backEnd;
+}
+
+// the father (1998) and the adult (2026): the same angry motion, identical down to the idle noise
+function angry(F, o, scene2) {
+  const tr = F.tr;
+  const tremor = new Track(0);
+  F.tremor = tremor;
+  F.walk(o + T.walk, [FX, 36], HARD, 'R');                  // turns (0.3 s) and takes three hard steps
+  tr.lean.to(o + 2.95, o + 3.3, 14, E.over);                 // leans over the child
+  tr.head.to(o + 3.0, o + 3.35, 16, E.io);
+  const point = F.goal('R', (t, J) => add(J.sh.R, add(mul(J.F, 80), [0, 0, -68])));   // one arm stretched out, pointing down
+  point.to(o + 2.85, o + 3.35, 1, E.over);
+  const fist = F.goal('L', (t, J) => add(J.sh.L, add(add(mul(J.F, 26), mul(J.R, -4)), [tremor.at(t) * 1.4 * Math.sin(t * 61), 0, -56 + tremor.at(t) * 1.4 * Math.cos(t * 53)])));  // the other arm tense
+  fist.to(o + 2.9, o + 3.25, 1, E.io);
+  tremor.to(o + 3.25, o + 3.4, 1);
+  if (!scene2) {
+    // 1998: turns away and walks out through the door on the left
+    tremor.to(o + 4.3, o + 4.4, 0);
+    point.to(o + 4.35, o + 4.7, 0, E.io); fist.to(o + 4.35, o + 4.7, 0, E.io);
+    tr.lean.to(o + 4.3, o + 4.6, 3, E.io); tr.head.to(o + 4.3, o + 4.6, 0, E.io);
+    F.walk(o + T.exit, [265, 138], HARD_OUT, 'R');
+  }
+  return { point, fist, tremor };
+}
+
+// 2026: after the freeze the adult lowers his arm, straightens up, kneels and opens his arms
+function adultAfterFreeze(F, hugW) {
+  const tr = F.tr, g = F._g;
+  const u = V;
+  F.warp = t => t < T.freeze0 ? t : t < T.freeze1 ? T.freeze0 : t - HOLD;
+  // lowers his arm, straightens up, head drops
+  g.point.to(u(T.lower0), u(T.straight1), 0, E.io);
+  g.fist.to(u(T.lower0), u(T.straight1 - 0.15), 0, E.io);
+  g.tremor.to(u(T.lower0), u(T.lower0 + 0.1), 0);
+  tr.settle.to(u(T.lower0), u(T.lower0 + 0.6), 0, E.io);
+  tr.lean.to(u(T.lower0), u(T.straight1), 3, E.io);
+  tr.head.to(u(T.lower0), u(T.straight1), 20, E.io);
+  tr.slump.to(u(T.lower0), u(T.straight1), 6, E.io);
+  // kneels (right knee down, left foot forward) to the child's eye level
+  const ZP = 88, KNEE = XK - Math.sqrt(82 * 82 - (ZP - 8) ** 2);
+  F.footGoal('R', t => ({ ank: [KNEE - 80, 36 - 9, 7], pitch: 0, yaw: 180, kyaw: 0, lift: 14 })).to(u(T.kneel0 + 0.1), u(T.knee), 1, E.io);
+  F.footGoal('L', t => ({ ank: [XK + 85, 36 + 9, 7], pitch: 0, yaw: 0, lift: 34 })).to(u(T.kneel0), u(T.knee + 0.15), 1, E.io);
+  tr.pf.to(u(T.kneel0), u(T.knee + 0.3), XK - FX, E.io);
+  tr.pz.to(u(T.kneel0 + 0.05), u(T.knee + 0.2), ZP - H0, E.io);
+  tr.lean.to(u(T.knee), u(T.kneel1 + 0.3), 30, E.io);
+  tr.head.to(u(T.knee), u(T.kneel1), 10, E.io);
+  tr.slump.to(u(T.knee), u(T.kneel1), 0, E.io);
+  // slowly opens his arms, then the hug
+  const open = side => (t, J) => {
+    const sg = side === 'R' ? 1 : -1;
+    const o1 = add(J.sh[side], add(mul(J.Ft, 62), add(mul(J.Rt, sg * 34), [0, 0, -34])));
+    const w = hugW.at(t + HOLD);
+    if (w <= 0) return o1;
+    const kj = K26.pose(t + HOLD, true);                    // the child's pose in world coordinates
+    const back = add(kj.C, add(mul(kj.F, -8), [side === 'R' ? 0 : 4, side === 'R' ? 4 : -2, side === 'R' ? 8 : -6]));
+    return lerp3(o1, back, w);
+  };
+  const oR = F.goal('R', open('R')), oL = F.goal('L', open('L'));
+  tr.twist.to(u(T.knee + 0.1), u(T.kneel1), -30, E.io).to(u(T.hug), u(T.hug + 0.5), 0, E.io);   // shoulders turn to the camera so the open arms read
+  oR.to(u(T.knee + 0.3), u(T.kneel1), 1, E.io);
+  oL.to(u(T.knee + 0.4), u(T.kneel1 + 0.05), 1, E.io);
+}
+
+// ---------------------------------------------------------------- set up both scenes
+const NS = angry(F98, 0, false);
+child(K98, 0, false);
+const AS = angry(A26, OFF, true);
+A26._g = AS;
+const hugW = new Track(0);
+hugW.to(T.hug - 0.05, T.hug + 0.5, 1, E.io);
+child(K26, OFF, true);
+adultAfterFreeze(A26, hugW);
+// the child's arms around the adult's neck
+{
+  const wrap = side => (t, J) => {
+    const aj = A26.pose(t, true);
+    const tgt = side === 'L' ? add(aj.N, add(mul(aj.F, -8), [0, -4, 2])) : add(aj.NT, add(mul(aj.F, -6), [0, 6, -2]));
+    return K26.toSkel(tgt);
+  };
+  const cL = K26.goal('L', wrap('L')), cR = K26.goal('R', wrap('R'));
+  cL.to(T.hug - 0.05, T.hug + 0.5, 1, E.io); cR.to(T.hug, T.hug + 0.55, 1, E.io);
+}
+// the 1998 child as a faint silhouette: hunched, arms in front
+{
+  const tr = GHOST.tr;
+  tr.head.v0 = 26; tr.slump.v0 = 17; tr.shDrop.v0 = 9; tr.pz.v0 = -14; tr.lean.v0 = -4; tr.breath.v0 = 1.9;
+  const guard = side => (t, J) => add(J.N, add(mul(J.Ft, 24), add(mul(J.Rt, (side === 'R' ? 1 : -1) * 5), [0, 0, -22])));
+  GHOST.goal('L', guard('L')).v0 = 1; GHOST.goal('R', guard('R')).v0 = 1;
+}
+
+// ---------------------------------------------------------------- props: glass, shards, door, table
+const SHARDS = (() => {
+  const r = mulberry32(77), out = [];
+  for (let i = 0; i < 18; i++) {
+    const a = r() * TAU, sp = 40 + r() * 120;
+    out.push({ dx: Math.cos(a) * sp, dd: Math.sin(a) * sp * 0.35, vz: 40 + r() * 150, s: 2.5 + r() * 4.5, rot: r() * TAU, glint: r() });
+  }
+  return out;
+})();
+const glassState = (t, o) => {                 // returns {x, d, z, rot, broken, tb}
+  const tb = o + T.bump, tl = o + T.glass, x0 = 553, d0 = 46;
+  if (t < tb) return { x: x0, d: d0, z: TABLE.z1, rot: 0, broken: false };
+  if (t < tl) { const u = t - tb, g = 2 * TABLE.z1 / ((tl - tb) ** 2); return { x: x0 - 110 * u * 0.6 - 12 * Math.min(1, u * 8), d: d0 - 30 * u, z: Math.max(0, TABLE.z1 - 0.5 * g * u * u), rot: -7 * u, broken: false }; }
+  const u = tl - tb;
+  return { x: x0 - 110 * u * 0.6 - 12, d: d0 - 30 * u, z: 0, rot: 0, broken: true, tb: t - tl };
+};
+const tableShift = (t, o) => 7 * E.out(inv(o + T.bump, o + T.bump + 0.18, t));
+function doorAngle(t) {
+  const a = 80 * E.out(inv(T.doorOpen, T.doorOpen + 0.32, t));
+  if (t < T.doorSlam - 0.22) return a;
+  const c = a * (1 - E.in2(inv(T.doorSlam - 0.22, T.doorSlam, t)));
+  return t < T.doorSlam ? c : 4.5 * Math.exp(-(t - T.doorSlam) * 16) * Math.abs(Math.sin((t - T.doorSlam) * 34));
+}
+
+// ---------------------------------------------------------------- drawing
+const GHOSTCV = document.createElement('canvas'); GHOSTCV.width = W; GHOSTCV.height = H;
+const gctx = GHOSTCV.getContext('2d');
+function layer(alpha, tint, fn) {                 // draw fn() into an offscreen layer, then composite it with one alpha
+  gctx.setTransform(1, 0, 0, 1, 0, 0); gctx.clearRect(0, 0, W, H);
+  fn(gctx);
+  if (tint) { gctx.globalCompositeOperation = 'source-atop'; gctx.fillStyle = tint; gctx.fillRect(0, 0, W, H); gctx.globalCompositeOperation = 'source-over'; }
+  ctx.save(); ctx.globalAlpha = alpha; ctx.drawImage(GHOSTCV, 0, 0); ctx.restore();
+}
+const COLD = [226, 232, 246], WARMC = [255, 206, 108];
+function tone(v, warm) { return v.map((x, i) => x * (1 - 0.0) ); }
+
+function drawGlass(c, st) {
+  const [X, Y, k] = P([st.x, st.d, st.z + 13]);
+  const h = 26 * k, tw = 18 * k, bw = 13 * k;
+  c.save(); c.translate(X, Y); c.rotate(st.rot);
+  c.beginPath(); c.moveTo(-tw / 2, -h / 2); c.lineTo(tw / 2, -h / 2); c.lineTo(bw / 2, h / 2); c.lineTo(-bw / 2, h / 2); c.closePath();
+  c.fillStyle = 'rgba(205,222,240,0.28)'; c.fill();
+  c.lineWidth = 1.8 * k; c.strokeStyle = 'rgba(235,244,255,0.85)'; c.stroke();
+  c.beginPath(); c.moveTo(-tw / 2 + 3 * k, -h / 2 + 3 * k); c.lineTo(-bw / 2 + 2.5 * k, h / 2 - 3 * k);
+  c.lineWidth = 1.4 * k; c.strokeStyle = 'rgba(255,255,255,0.55)'; c.stroke();
+  c.restore();
+}
+function drawShards(c, tb, base) {
+  for (const s of SHARDS) {
+    const e = 1 - Math.exp(-tb * 7);
+    const x = base.x + s.dx * 0.16 * e, d = base.d + s.dd * 0.16 * e;
+    const z = Math.max(0, s.vz * tb - 0.5 * 2600 * tb * tb);
+    const [X, Y, k] = P([x, d, z]);
+    c.save(); c.translate(X, Y); c.rotate(s.rot + tb * 3 * (1 - e));
+    c.beginPath(); c.moveTo(-s.s * k, s.s * 0.5 * k); c.lineTo(s.s * k, s.s * 0.2 * k); c.lineTo(0, -s.s * 0.8 * k); c.closePath();
+    const gl = 0.5 + 0.5 * Math.sin(tb * 9 + s.glint * 30);
+    c.fillStyle = `rgba(${200 + 40 * gl | 0},${220 + 30 * gl | 0},245,${0.55 + 0.35 * s.glint})`; c.fill();
+    c.restore();
+  }
+}
+function drawTable(c, shift, warm) {
+  const t = { ...TABLE, x0: TABLE.x0 + shift, x1: TABLE.x1 + shift };
+  const col = k => ({ front: rgb(mixc([20, 22, 27], [44, 32, 20], warm).map(v => v * k)), top: rgb(mixc([46, 49, 56], [86, 62, 36], warm).map(v => v * k)), side: rgb(mixc([14, 16, 20], [34, 24, 14], warm).map(v => v * k)) });
+  box(c, { ...t, z0: t.z1 - 8 }, col(1.5));
+  for (const lx of [t.x0 + 4, t.x1 - 8]) for (const ld of [t.d0 + 4, t.d1 - 8]) box(c, { x0: lx, x1: lx + 4, d0: ld, d1: ld + 4, z0: 0, z1: t.z1 - 8 }, col(1.25));
+}
+function drawBlocks(c, warm) {
+  for (const b of BLOCKS) {
+    const col = k => ({ front: rgb(mixc([84, 80, 76], [112, 84, 48], warm).map(v => v * k * b.k)), top: rgb(mixc([120, 114, 106], [158, 120, 70], warm).map(v => v * k * b.k)), side: rgb(mixc([58, 55, 52], [82, 60, 34], warm).map(v => v * k * b.k)) });
+    box(c, { x0: b.x - b.s / 2, x1: b.x + b.s / 2, d0: b.d - b.s / 2, d1: b.d + b.s / 2, z0: b.z, z1: b.z + b.s }, col(1.0));
+  }
+}
+function drawDoor(c, t, warm) {
+  const ang = doorAngle(t), w = DOOR.x1 - DOOR.x0;
+  const dark = rgb(mixc([14, 16, 20], [22, 16, 10], warm));
+  const frame = [[DOOR.x0, WALL, 0], [DOOR.x1, WALL, 0], [DOOR.x1, WALL, DOOR.z1], [DOOR.x0, WALL, DOOR.z1]];
+  poly(c, frame.map((p, i) => [p[0] + (i === 0 || i === 3 ? -8 : 8), p[1], p[2] + (i >= 2 ? 8 : 0)])); c.fillStyle = rgb(mixc([8, 9, 11], [18, 13, 8], warm)); c.fill();
+  poly(c, frame); c.fillStyle = ang > 0.5 ? dark : rgb(mixc([34, 37, 43], [58, 44, 30], warm)); c.fill();
+  if (ang > 0.5) {
+    const a = ang * D2R, hx = DOOR.x1, ex = hx - Math.cos(a) * w, ed = WALL - Math.sin(a) * w;
+    poly(c, [[hx, WALL - 0.5, 0], [ex, ed, 0], [ex, ed, DOOR.z1], [hx, WALL - 0.5, DOOR.z1]]);
+    c.fillStyle = rgb(mixc([30, 33, 39], [54, 41, 28], warm)); c.fill(); c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 2; c.stroke();
+  } else {
+    const kn = P([DOOR.x1 - 14, WALL, 190]);
+    c.beginPath(); c.arc(kn[0], kn[1], 4 * kn[2], 0, TAU); c.fillStyle = rgb(mixc([92, 96, 106], [150, 120, 80], warm)); c.fill();
+  }
+}
+
+function draw(t) {
+  const scene2 = t >= T.cut;
+  const o = scene2 ? OFF : 0;
+  const warm = scene2 ? sstep(T.warm0, T.warm1, t) : 0;
+  const lamp = mixc(COLD, WARMC, warm);
+  // camera: slow push in; for the hug it moves in close
+  const hugIn = scene2 ? E.io(inv(T.kneel0, T.warm1 + 0.5, t)) : 0;
+  cam.x = lerp(360, 438, hugIn);
+  cam.zoom = lerp(1.12, 1.17, inv(o, o + 6.2, t)) * lerp(1, 1.17, hugIn);
+  cam.hy = 640; cam.h = 270;
+
+  const FS = scene2 ? [A26, K26] : [F98, K98];
+  const poses = FS.map(f => f.pose(t));
+  // the father fades into the dark hallway as he walks through the door
+  const fAlpha = scene2 ? 1 : 1 - sstep(WALL - 62, WALL - 22, F98.worldRoot(t)[1]);
+
+  const floorY = P([0, WALL, 0])[1];
+  // wall and floor
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb(mixc([9, 10, 13], [18, 12, 7], warm))); g.addColorStop(1, rgb(mixc([27, 29, 35], [52, 36, 19], warm)));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb(mixc([36, 38, 44], [66, 48, 27], warm))); g.addColorStop(1, rgb(mixc([12, 13, 16], [20, 14, 8], warm)));
+  ctx.fillStyle = g; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.save(); ctx.globalAlpha = 0.2; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+  for (let d = WALL; d > -260; d -= 34) { const y = P([0, d, 0])[1]; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.restore();
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, floorY - 2, W, 4);
+  // warm / cold wash of the wall behind the lamp
+  const lp = P(LAMP);
+  g = ctx.createRadialGradient(lp[0], floorY - 80, 10, lp[0], floorY - 80, 560);
+  g.addColorStop(0, rgb(lamp, 0.22)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  // pool of light on the floor
+  const fp = P([LAMP[0], 60, 0]);
+  ctx.save(); ctx.translate(fp[0], fp[1]); ctx.scale(1, 0.2);
+  g = ctx.createRadialGradient(0, 0, 0, 0, 0, 430);
+  g.addColorStop(0, rgb(lamp, 0.30)); g.addColorStop(0.5, rgb(lamp, 0.09)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 430, 0, TAU); ctx.fill(); ctx.restore();
+
+  drawDoor(ctx, t, warm);
+
+  // everything that stands on the floor, depth sorted; the same list is mirrored into the glossy floor
+  const gs = glassState(t, o), shift = tableShift(t, o);
+  const items = (c) => {
+    const list = [];
+    list.push({ d: 90, draw: () => drawTable(c, shift, warm) });
+    list.push({ d: 60, draw: () => drawBlocks(c, warm) });
+    if (!gs.broken) list.push({ d: 70, draw: () => drawGlass(c, gs) });
+    else list.push({ d: 55, draw: () => drawShards(c, gs.tb, gs) });
+    FS.forEach((f, i) => list.push({ d: poses[i].P[1], draw: () => {
+      if (f === F98 && fAlpha < 0.999) layer(fAlpha, null, cc => drawFigure(cc, f, poses[i]));
+      else drawFigure(c, f, poses[i]);
+    } }));
+    list.sort((a, b) => b.d - a.d);
+    for (const it of list) it.draw();
+  };
+  reflection(c => { FS.forEach((f, i) => { if (!(f === F98 && fAlpha < 0.5)) drawFigure(c, f, poses[i]); }); drawTable(c, shift, warm); }, floorY, lerp(0.26, 0.34, warm));
+  poses.forEach((J, i) => { if (!(FS[i] === F98 && fAlpha < 0.3)) contactShadow(ctx, J, 0.55 * (FS[i] === F98 ? fAlpha : 1), FS[i].s); });
+  items(ctx);
+  // the 1998 child as a faint grey silhouette next to the current child
+  if (scene2 && t > T.ghost0 && t < T.ghost1) {
+    const a = 0.35 * sstep(T.ghost0, T.ghost0 + 0.25, t) * (1 - sstep(T.ghost1 - 0.35, T.ghost1, t));
+    const gp = GHOST.pose(t);
+    layer(a, 'rgba(120,128,142,0.75)', cc => drawFigure(cc, GHOST, gp));
+  }
+
+  // pendant lamp, light cone
+  const sb = P([LAMP[0], LAMP[1], LAMP[2] - 20]);
+  softLayer(18, 'screen', c => {
+    const gg = c.createLinearGradient(0, sb[1], 0, fp[1] + 40);
+    gg.addColorStop(0, rgb(lamp, 0.15)); gg.addColorStop(1, rgb(lamp, 0));
+    c.fillStyle = gg; c.beginPath(); c.moveTo(sb[0] - 34, sb[1]); c.lineTo(sb[0] + 34, sb[1]); c.lineTo(sb[0] + 320, fp[1] + 40); c.lineTo(sb[0] - 320, fp[1] + 40); c.closePath(); c.fill();
+  });
+  // light fall-off over everything
+  ctx.save(); ctx.globalCompositeOperation = 'multiply';
+  g = ctx.createRadialGradient(lp[0], lp[1] + 330, 40, lp[0], lp[1] + 330, 700);
+  g.addColorStop(0, rgb(mixc([246, 250, 255], [255, 244, 224], warm))); g.addColorStop(0.55, rgb(mixc([176, 182, 196], [200, 178, 146], warm))); g.addColorStop(1, rgb(mixc([40, 42, 50], [58, 44, 30], warm)));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+  ctx.save();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], 0); ctx.lineTo(lp[0], lp[1] - 46); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lp[0] - 12, lp[1] - 48); ctx.lineTo(lp[0] + 12, lp[1] - 48); ctx.lineTo(lp[0] + 52, lp[1]); ctx.lineTo(lp[0] - 52, lp[1]); ctx.closePath();
+  ctx.fillStyle = '#121214'; ctx.fill(); ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 52, 7, 0, 0, TAU); ctx.fillStyle = rgb(lamp); ctx.fill();
+  ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  g = ctx.createRadialGradient(lp[0], lp[1] + 6, 2, lp[0], lp[1] + 6, 190);
+  g.addColorStop(0, rgb(lamp, 0.7)); g.addColorStop(0.2, rgb(lamp, 0.24)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.fillRect(lp[0] - 220, lp[1] - 200, 440, 420); ctx.restore();
+
+  // the warm glow that blooms around the two of them, and its reflection in the floor
+  if (warm > 0) {
+    const hc = P([440, 36, 130]), hf = P([440, 30, 0]);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    g = ctx.createRadialGradient(hc[0], hc[1], 10, hc[0], hc[1], 380 * hc[2] / 1.2);
+    g.addColorStop(0, rgb(WARMC, 0.34 * warm)); g.addColorStop(0.45, rgb(WARMC, 0.12 * warm)); g.addColorStop(1, rgb(WARMC, 0));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.translate(hf[0], hf[1] + 26); ctx.scale(1, 0.22);
+    g = ctx.createRadialGradient(0, 0, 0, 0, 0, 330);
+    g.addColorStop(0, rgb(WARMC, 0.42 * warm)); g.addColorStop(0.55, rgb(WARMC, 0.14 * warm)); g.addColorStop(1, rgb(WARMC, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 330, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  vignette(lerp(0.78, 0.66, warm));
+  // the year, small and grey at the bottom
+  ctx.save();
+  ctx.font = '600 30px "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", monospace';
+  ctx.textBaseline = 'middle'; ctx.fillStyle = 'rgba(150,152,158,0.8)';
+  const yr = scene2 ? '2026' : '1998', cw = ctx.measureText('0').width, sp = 10, tw = yr.length * cw + (yr.length - 1) * sp;
+  let xx = W / 2 - tw / 2; for (const ch of yr) { ctx.fillText(ch, xx, 1196); xx += cw + sp; }
+  ctx.restore();
+  captionAt(t, 'IT ENDS WITH YOU.', T.text0, T.text1, 42, 11);
+}
+
+// ---------------------------------------------------------------- checks, render, cues
+const CHECK_FIGS = [[F98, 0, 6.0], [K98, 0, 6.0], [A26, T.cut, T.end], [K26, T.cut, T.end]];
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn1, t), t < T.cut ? sstep(T.fadeOut1, T.cut, t) : 0, t >= T.cut ? 1 - sstep(T.cut, T.fadeIn2, t) : 0, sstep(T.text1, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  const steps = [];
+  for (const f of [F98, K98, A26, K26]) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T, OFF, HOLD }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+window.__debug = { F98, K98, A26, K26, GHOST, WALKTEST, cam, P };
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
