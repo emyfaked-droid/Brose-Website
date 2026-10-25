@@ -53,7 +53,7 @@ All beat times live in the `T` object in `index.html`. The home and morning beat
   half-steps, and the torso overshoots (a damped spring) when the figure stops.
 - **Turns** are shuffle steps: no foot ever pivots on the floor.
 - **Gaits** (`MOOD` in `index.html`): `bouncy` (party), `heavy` (home: short low steps, slumped, little arm swing),
-  `forced` (morning: long, upright, big arm swing), plus a neutral `walk`, an easy `jog` (the look of the reference clip) and a normal `run`. The run has flight phases (a
+  `forced` (morning: long, upright, big arm swing), plus a neutral `walk` (relaxed arms, low feet, small bob: the reference for a normal walk), and, as extras not used in the film, an easy `jog` and a `run`. The run has flight phases (a
   half-stance below 0.5 step lengths), the pelvis is lowest in mid-stance and highest in mid-flight, the elbows stay near
   90° and pump, the torso leans forward with speed and rocks back when braking, the heel kicks up behind, the knee drives
   forward. Walks and runs share one planner, so foot locking holds for all of them.

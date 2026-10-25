@@ -163,10 +163,10 @@ const LMAX = LEG * 0.995;
 //   elBase  elbow bend added while moving (deg); arm = shoulder swing; twist = shoulder counter-rotation
 //   knee    how far the pelvis sits lower than standing (px); lean = forward lean at full speed (deg)
 const MOOD = {
-  walk:   { name: 'walk',   L: 112, cad: 2.05, lift: 17, bob: 7.5, up: 1.1, down: 0.9, arm: 26, elbow: 14, elBase: 12, landPitch: 22, heelOff: 40, knee: 3, lean: 3, twist: 5 },
-  bouncy: { name: 'bouncy', L: 34, cad: 2.3, lift: 14, bob: 6.5, up: 1.25, down: 0.8, arm: 20, elbow: 16, elBase: 14, landPitch: 18, heelOff: 32, knee: 3, lean: 2, twist: 4 },
-  heavy:  { name: 'heavy',  L: 70,  cad: 1.45, lift: 5,  bob: 5.5, up: 0.45, down: 1.35, arm: 7, elbow: 8, elBase: 16, landPitch: 9, heelOff: 20, knee: 7, lean: 6, twist: 3, ta: 0.78, td: 0.86 },
-  forced: { name: 'forced', L: 100, cad: 2.3,  lift: 19, bob: 9,   up: 1.35, down: 0.75, arm: 34, elbow: 18, elBase: 24, landPitch: 24, heelOff: 42, knee: 2, lean: 0, twist: 6, ta: 0.42, td: 0.5 },
+  walk:   { name: 'walk',   L: 118, cad: 1.95, lift: 11, bob: 5.5, up: 1.0, down: 1.0, arm: 17, elbow: 8, elBase: 6, landPitch: 17, heelOff: 30, knee: 3, lean: 2, twist: 4 },
+  bouncy: { name: 'bouncy', L: 34, cad: 2.1, lift: 7, bob: 4, up: 1.1, down: 0.9, arm: 9, elbow: 6, elBase: 6, landPitch: 12, heelOff: 20, knee: 3, lean: 2, twist: 3 },
+  heavy:  { name: 'heavy',  L: 70,  cad: 1.45, lift: 5,  bob: 5.5, up: 0.45, down: 1.35, arm: 6, elbow: 6, elBase: 14, landPitch: 9, heelOff: 20, knee: 7, lean: 6, twist: 3, ta: 0.78, td: 0.86 },
+  forced: { name: 'forced', L: 112, cad: 2.1, lift: 12, bob: 6.5, up: 1.1, down: 0.9, arm: 21, elbow: 9, elBase: 7, landPitch: 19, heelOff: 33, knee: 2, lean: 1, twist: 4, ta: 0.45, td: 0.55 },
   // normal run: long stride, ~40% flight, steady upright-ish lean, elbows ~90 deg with an even swing
   run:    { name: 'run',    L: 165, cad: 2.85, lift: 34, bob: 6, arm: 34, elbow: 12, elBase: 78, landPitch: 8, heelOff: 42, knee: 8, lean: 14, twist: 6, ta: 0.55, td: 0.65, run: true, ds: 0.30, dsEdge: 0.5 },
   // easy jog (the look of the reference clip): shorter stride, more ground contact
@@ -1121,6 +1121,9 @@ const HOME = (() => {
     cam.x = lerp(lerp(440, 420, push), 470, follow);
     const walking = sstep(T.hWalk - 0.2, T.hWalk + 0.7, t) * (1 - sstep(T.sit0 - 0.1, T.sit0 + 0.8, t));
     cam.x = lerp(cam.x, lerp(440, M.rootAt(t)[0] - 10, 0.7), walking);
+    // the morning exit is a side-on tracking shot too
+    const leaving = sstep(T.mWalk - 0.1, T.mWalk + 0.6, t) * (1 - sstep(T.end - 0.7, T.end, t));
+    cam.x = lerp(cam.x, M.rootAt(t)[0] + 45, leaving * 0.8);
     cam.zoom = lerp(lerp(1.42, 1.56, push), 1.46, follow);
     cam.hy = lerp(640, 610, push); cam.h = 262;
     const J = M.pose(t);
