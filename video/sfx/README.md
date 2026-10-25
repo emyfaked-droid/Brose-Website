@@ -44,3 +44,12 @@ Then run `npm run mix` (or `npm run build` to re-render the picture as well).
 `clock_tick`, `footsteps_wood`, `door_open`). Search terms are in `FILES_IEWY` in `sound-timeline.js`:
 "quiet house room tone", "wooden toy blocks", "glass shatter floor", "interior door slam", "slow heartbeat",
 "soft whoosh", "knee on wooden floor", "clothes rustle hug". Same rule as above: `.mp3` with the same base name wins over the `.wav`.
+
+## Extra files for "I Wish I Was Your Phone"
+
+`phone_scroll`, `phone_notification`, `phone_buzz`, `footsteps_barefoot`, `cloth_tug`, `toy_squeak`, `ball_bounce_roll`,
+`cardboard_handle`, `phone_on_couch`, `cardboard_drop`, `couch_creak` (plus the existing `room_tone`). Search terms are in
+`FILES_PHONE` in `sound-timeline.js`: "phone screen tapping", "phone notification ding", "phone vibrate in hand",
+"barefoot steps wooden floor", "fabric sleeve tug", "rubber toy squeak", "small ball bounce roll floor",
+"cardboard handling rustle", "phone dropped on couch", "cardboard drop floor", "sofa creak". Taps and barefoot steps are
+cut out one by one, so a recording of separate taps / steps with small gaps works best.

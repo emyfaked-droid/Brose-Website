@@ -1,7 +1,8 @@
-# Stick-figure shorts (Ask Twice, It Ends With You)
+# Stick-figure shorts (Ask Twice, It Ends With You, I Wish I Was Your Phone)
 
-Two films share one engine (`engine.js`): `index.html` = **Ask Twice**, `it-ends-with-you.html` = **It Ends With You**.
-Use `FILM=it-ends-with-you` (or the `npm run iewy:*` scripts) to point the render, check and mix scripts at the second film.
+Three films share one engine (`engine.js`): `index.html` = **Ask Twice**, `it-ends-with-you.html` = **It Ends With You**,
+`i-wish-i-was-your-phone.html` = **I Wish I Was Your Phone**.
+Use `FILM=<page name>` (or the `npm run iewy:*` / `npm run phone:*` scripts) to point the render, check and mix scripts at another film.
 
 
 A 19-second vertical (720×1280, 30 fps) stick-figure short drawn entirely in code,
@@ -85,3 +86,22 @@ light turns from cold white to warm yellow. New engine features used here: `Fig`
 feet stay locked), `fig.footGoal()` (pin a foot to a target: kneeling), backward steps (`walk(..., {back: true})`),
 `fig.warp` (freeze/retime), and `fig.pose(t, true)` (skip arm goals so two figures can read each other's pose).
 Sounds: `FILES_IEWY` and `timelineIewy` in `sound-timeline.js`; output `out/it-ends-with-you.mp4`.
+
+## I Wish I Was Your Phone (`i-wish-i-was-your-phone.html`)
+
+18 s. A father on a sofa (side view) in a dark living room, lit from below by his phone. His child (scale 0.6) tugs his
+sleeve twice (he lifts a finger: "wait"), holds up a toy ball (he turns his shoulders away), gives up and walks out heavily;
+the ball drops and rolls to the sofa. The child comes back with a cardboard phone, holds it up so its head shows through the
+cut-out screen. The phone buzzes, the father slowly looks up, everything freezes for 0.8 s, he puts the phone face down on the
+sofa, the lamp turns from cold white to warm yellow, the child drops the cardboard and he lifts it onto his lap.
+**I WISH I WAS / YOUR PHONE.**
+
+- Light: a quarter-resolution light map (ambient + lamp + phone, multiplied over the finished frame), so the head and
+  hands are bright only where the phone light reaches; additive glows on top.
+- New in the engine (no change to the other two films, checked pixel for pixel): tracks `ox`/`od` (move the pelvis in world
+  axes, used to lift the child), `extra.props` in `drawFigure` (things held in the hands are depth-sorted with the limbs),
+  and a `y` for captions (two-line caption).
+- The child's two visits are two figures (`KID1`, `KID2`) so its exit and re-entry off screen stay independent.
+- Sound: `FILES_PHONE` / `timelinePhone` in `sound-timeline.js`. Thumb taps, ball bounces, the cardboard slap and barefoot
+  steps come from the animation's own times; at 10.4 s everything drops to the room tone at -40 dB for 1.5 s.
+- `npm run phone:check | phone:stills | phone:render | phone:mix | phone:build`; output `out/i-wish-i-was-your-phone.mp4`.

@@ -175,6 +175,7 @@ class Fig {
     const defaults = {
       yaw: o.yaw, pf: 0, pl: 0, pz: 0, lean: 3, slump: 0, roll: 0, twist: 0,
       head: 0, headRoll: 0, shDrop: 0, breath: 1, dance: 0, laugh: 0, idle: 1, bounce: 0, settle: 1,
+      ox: 0, od: 0,   // pelvis offset in world axes (skeleton units), e.g. a child being lifted
       aSwL: 4, aOutL: 9, aElL: 12, aSwR: 4, aOutR: 9, aElR: 12,
     };
     for (const k in defaults) tr[k] = new Track(defaults[k]);
@@ -391,7 +392,7 @@ class Fig {
     if (gw > 0) pz += bob - (wk ? wk.m.knee : 0) * gw;
     const br = Math.sin(TAU * tReal / 3.6 + sd) * tr.breath.at(t);
 
-    let Pv = [root[0] + F[0] * pf + R[0] * pl, root[1] + F[1] * pf + R[1] * pl, H0 + pz + br * 0.6];
+    let Pv = [root[0] + F[0] * pf + R[0] * pl + tr.ox.at(t), root[1] + F[1] * pf + R[1] * pl + tr.od.at(t), H0 + pz + br * 0.6];
     // hip rotation in the walk: the swinging leg's hip comes forward
     const fl = { L: gw > 0 ? this.legFwd('L', t) : 0, R: gw > 0 ? this.legFwd('R', t) : 0 };
     const hipOf = (side, P) => { const sg = side === 'R' ? 1 : -1; return add(add(P, mul(R, sg * DIM.hipW)), mul(F, 2.6 * fl[side] * gw)); };
@@ -651,6 +652,8 @@ function drawFigureParts(c, fig, J, extra) {
   } });
   if (extra.mask) parts.push({ d: extra.mask.depth, draw: () => drawMask(c, extra.mask) });
   if (extra.handOver) for (const side of extra.handOver) parts.push({ d: extra.mask.depth - 0.1, draw: () => dotJoint(c, J.hand[side], rgb(FIG_NEAR), DIM.limbW * 0.55) });
+  // props held by the figure, sorted in with its limbs: [{ d, draw }]
+  if (extra.props) for (const p of extra.props) parts.push(p);
   parts.sort((a, b) => b.d - a.d);
   for (const p of parts) p.draw();
 }
@@ -690,7 +693,7 @@ function box(c, b, col) {
 }
 
 // letter-spaced monospace caption with a soft fade
-function caption(text, a, rise, size = 50, sp = 15) {
+function caption(text, a, rise, size = 50, sp = 15, y0 = 196) {
   if (a <= 0.002) return;
   ctx.save();
   ctx.font = `800 ${size}px "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", monospace`;
@@ -698,16 +701,16 @@ function caption(text, a, rise, size = 50, sp = 15) {
   const cw = ctx.measureText('M').width;
   const total = text.length * cw + (text.length - 1) * sp;
   let x = W / 2 - total / 2;
-  const y = 196 - rise;
+  const y = y0 - rise;
   ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 18;
   ctx.fillStyle = `rgba(244,242,236,${a})`;
   for (const ch of text) { ctx.fillText(ch, x, y); x += cw + sp; }
   ctx.restore();
 }
-function captionAt(t, text, t0, t1, size, sp) {
+function captionAt(t, text, t0, t1, size, sp, y0) {
   const a = sstep(t0, t0 + 0.28, t) * (1 - sstep(t1 - 0.35, t1, t));
   const rise = 10 * (1 - E.out(inv(t0, t0 + 0.5, t)));
-  caption(text, a, rise, size, sp);
+  caption(text, a, rise, size, sp, y0);
 }
 
 // film grain (seeded, so it is deterministic per frame)

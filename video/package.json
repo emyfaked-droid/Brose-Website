@@ -14,7 +14,12 @@
     "iewy:stills": "FILM=it-ends-with-you node scripts/stills.js",
     "iewy:render": "FILM=it-ends-with-you node scripts/render.js",
     "iewy:mix": "FILM=it-ends-with-you node scripts/mix.js",
-    "iewy:build": "npm run iewy:check && npm run iewy:render && npm run iewy:mix"
+    "iewy:build": "npm run iewy:check && npm run iewy:render && npm run iewy:mix",
+    "phone:check": "FILM=i-wish-i-was-your-phone node scripts/check.js && FILM=i-wish-i-was-your-phone node scripts/popcheck.js",
+    "phone:stills": "FILM=i-wish-i-was-your-phone node scripts/stills.js",
+    "phone:render": "FILM=i-wish-i-was-your-phone node scripts/render.js",
+    "phone:mix": "FILM=i-wish-i-was-your-phone node scripts/mix.js",
+    "phone:build": "npm run phone:check && npm run phone:render && npm run phone:mix"
   },
   "dependencies": {
     "playwright": "^1.50.0"

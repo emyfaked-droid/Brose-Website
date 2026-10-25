@@ -148,5 +148,61 @@ function timelineIewy(S, cues) {
   return C;
 }
 
+// =====================================================================
+// I WISH I WAS YOUR PHONE (i-wish-i-was-your-phone.html). Times come from the page (cues.story): the thumb taps,
+// the ball's bounces, the cardboard slap and every barefoot step are the animation's own frames.
+// =====================================================================
+const FILES_PHONE = {
+  'room_tone.mp3':          { search: '"quiet living room night ambience"', use: 'bed under the whole film (-32 dB, -40 dB while he looks up)' },
+  'phone_scroll.mp3':       { search: '"phone screen tapping"', use: 'single taps are cut out and put on the thumb flicks (-28 dB)' },
+  'phone_notification.mp3': { search: '"phone notification ding"', use: 'three notifications (1.5, 4.3, 9.6 s)' },
+  'phone_buzz.mp3':         { search: '"phone vibrate in hand"', use: 'the phone buzzes at 9.6 s (extra, quiet)' },
+  'footsteps_barefoot.mp3': { search: '"barefoot steps wooden floor"', use: 'every child step on its heel-contact frame' },
+  'cloth_tug.mp3':          { search: '"fabric sleeve tug"', use: 'two tugs on the sleeve (0.28 s apart)' },
+  'toy_squeak.mp3':         { search: '"rubber toy squeak"', use: 'the toy ball is squeezed (3.6 s)' },
+  'ball_bounce_roll.mp3':   { search: '"small ball bounce roll floor"', use: 'the ball drops, bounces and rolls (first bounce about 6.4 s)' },
+  'cardboard_handle.mp3':   { search: '"cardboard handling rustle"', use: 'the child carries and lifts the cardboard phone (7.8-9.2 s)' },
+  'phone_on_couch.mp3':     { search: '"phone dropped on couch"', use: 'the phone lands face down on the sofa' },
+  'cardboard_drop.mp3':     { search: '"cardboard drop floor"', use: 'the cardboard phone slaps onto the floor' },
+  'couch_creak.mp3':        { search: '"sofa creak"', use: 'he leans forward to lift the child (13.8 s)' },
+};
+
+function timelinePhone(S, cues) {
+  const C = [], add = c => C.push(c), END = S.end;
+  // a quiet room; when the father looks up everything drops to near silence for 1.5 s (only the room tone, at -40 dB)
+  const h0 = S.look0, h1 = S.look0 + 1.5;
+  add({ file: 'room_tone.mp3', at: 0, dur: h0 + 0.05, vol: -32, fadeIn: 0.6, fadeOut: 0.3, loop: true });
+  add({ file: 'room_tone.mp3', at: h0 - 0.25, offset: h0 - 0.25, dur: h1 - h0 + 0.5, vol: -40, fadeIn: 0.3, fadeOut: 0.5, loop: true });
+  add({ file: 'room_tone.mp3', at: h1 - 0.25, offset: h1 - 0.25, dur: END - h1 + 0.25, vol: -32, fadeIn: 0.6, fadeOut: 1.0, loop: true });
+  // the phone: thumb taps, notifications, one buzz
+  S.taps.forEach((t, i) => { if (t < h0) add({ file: 'phone_scroll.mp3', slice: i, at: t, vol: -28, align: 'onset', fadeOut: 0.04, note: 'thumb tap' }); });
+  for (const t of S.notes) add({ file: 'phone_notification.mp3', at: t, vol: -17, align: 'onset', dur: Math.min(1.3, h0 - t), fadeOut: 0.25 });
+  add({ file: 'phone_buzz.mp3', at: S.buzz + 0.02, vol: -21, align: 'onset', fadeOut: 0.08 });
+  // the child: tug, squeak, the ball, the cardboard
+  add({ file: 'cloth_tug.mp3', at: S.pull1, vol: -15, align: 'onset', fadeOut: 0.2 });
+  add({ file: 'toy_squeak.mp3', at: S.squeak, vol: -14, align: 'onset', fadeOut: 0.15 });
+  add({ file: 'ball_bounce_roll.mp3', at: S.ballHits[0], vol: -13, align: 'onset', fadeOut: 0.6 });
+  add({ file: 'cardboard_handle.mp3', at: 7.8, dur: 1.4, vol: -23, fadeIn: 0.15, fadeOut: 0.3 });
+  // after the silence: phone face down on the sofa, the cardboard drops, the sofa creaks
+  add({ file: 'phone_on_couch.mp3', at: S.phoneOnSofa, vol: -15, align: 'onset', fadeOut: 0.2 });
+  add({ file: 'cardboard_drop.mp3', at: S.cardSlap, vol: -10, align: 'onset', fadeOut: 0.4 });
+  add({ file: 'couch_creak.mp3', at: S.creak, vol: -16, fadeIn: 0.02, fadeOut: 0.3 });
+  // barefoot steps on the heel-contact frames; steps off screen are softer and duller
+  const VOL = { kid: -19, kidsad: -23, kidwalk: -20 };
+  let n = 0;
+  for (const c of cues.steps) {
+    let vol = c.type === 'shuffle' ? -27 : (VOL[c.mood] ?? -21), filter = null;
+    if (c.type === 'settle') vol -= 4;
+    const off = (c.fig === 'KID1' && c.t > S.gone - 0.2) || (c.fig === 'KID2' && c.t < 8.0);
+    if (off) { vol -= c.fig === 'KID1' ? 6 + 4 * (c.t - S.gone) : 5; filter = 'lowpass=f=1800'; }
+    const jitter = ((n * 7919) % 13) / 13 - 0.5;
+    add({ file: 'footsteps_barefoot.mp3', slice: n++, at: c.t, vol: vol + jitter * 2, rate: 1 + jitter * 0.05, align: 'onset', fadeOut: 0.06, filter, note: `${c.fig} ${c.side} ${c.type} frame ${c.frame}` });
+  }
+  return C;
+}
+
 module.exports = { FILES, timeline, TARGET_LUFS: -14, CEILING_DBTP: -1.5,
-  films: { 'it-ends-with-you': { FILES: FILES_IEWY, timeline: timelineIewy } } };
+  films: {
+    'it-ends-with-you': { FILES: FILES_IEWY, timeline: timelineIewy },
+    'i-wish-i-was-your-phone': { FILES: FILES_PHONE, timeline: timelinePhone },
+  } };

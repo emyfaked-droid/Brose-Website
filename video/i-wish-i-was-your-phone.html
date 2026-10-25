@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>I Wish I Was Your Phone</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   I WISH I WAS YOUR PHONE: a deterministic 2D stick-figure short.
+   A father on the sofa, lit only by his phone. His child tries three
+   times to get his attention, then comes back with a cardboard phone.
+   The engine lives in engine.js.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story
+const T = {
+  fadeIn: 0.5,
+  kidIn: 0.68,                            // the child starts walking just off screen and enters at about 0.8 s
+  grab: 1.88, pull1: 2.0, pull2: 2.28, letGo: 2.55,   // tugs the father's sleeve twice
+  wait0: 2.6, wait1: 3.4,                 // the father lifts his index finger ("wait") without looking up
+  ball0: 3.33, squeak: 3.6, ball1: 5.2,   // the child holds up the toy ball and waves it
+  away: 3.72,                             // the father turns his shoulders away, still scrolling
+  sad0: 5.2,                              // the child slumps and looks at the glowing phone
+  drop: 6.115,                            // the ball slips out of its hand (first bounce at about 6.4 s)
+  turn0: 6.3, out0: 6.64, gone: 7.62,     // turns and walks out, heavy
+  back0: 7.42, front: 9.0, raise1: 9.65,  // comes back with the cardboard phone, raises it in front of its face
+  notes: [1.5, 4.3, 9.6], buzz: 9.6,      // notifications (the last one also buzzes)
+  look0: 10.4, look1: 11.2,               // the father lifts his head and sees the child
+  freeze0: 11.2, freeze1: 12.0,
+  text0: 11.4, text1: 15.8,
+  phone0: 12.2,                           // turns the phone face down and puts it on the sofa
+  warm0: 12.6, warm1: 14.0,               // the lamp turns from cold white to warm yellow
+  lower0: 12.62, release: 12.92,          // the child lowers the cardboard phone and lets it drop
+  reach0: 13.6, creak: 13.8, lift0: 13.95, lift1: 14.5,   // he lifts the child onto his lap
+  fadeOut: 17.0, end: 18.0,
+  stills: [1.0, 2.2, 3.8, 5.6, 9.2, 11.0, 13.0, 15.0],
+};
+const HOLD = T.freeze1 - T.freeze0;
+const V = t => t - HOLD;                  // real time -> the father's own clock after the freeze
+
+// ---------------------------------------------------------------- the room
+const WALL = 300;
+const SEAT = 84;                          // top of the seat cushion
+const SOFA = { x0: 140, x1: 300, d0: 28, d1: 268 };
+const LAMP = [224, 96, 318];              // pendant lamp above the sofa
+const PF = -80, SIT_Z = SEAT + 7;         // the father's pelvis: 80 behind his feet, on the cushion
+const KX = 360, KD = 38;                  // where the child stands in front of him
+const LAP = [296, 56, 104];               // where the child's pelvis ends up (world): on his thighs
+const LAP_YAW = 345;                      // facing the same way as the father (a little toward the camera), its back against him
+const SPOT = [280, 33, SEAT + 1.3];       // where the phone ends up, face down on the seat beside his leg
+const COLD = [196, 206, 222], WARMC = [255, 196, 112], WARML = [255, 222, 176], GLOWC = [206, 222, 255];
+
+// ---------------------------------------------------------------- gaits for this film (the child's strides scale with it)
+const KID_IN = { ...MOOD.bouncy, name: 'kid', L: 88, cad: 3.1, ta: 0.25, td: 0.32, lift: 12, bob: 6, up: 1.3, arm: 14, elbow: 8 };
+const KID_SAD = { ...MOOD.heavy, name: 'kidsad', L: 80, cad: 2.0, ta: 0.4, td: 0.5 };
+const KID_WALK = { ...MOOD.walk, name: 'kidwalk' };
+
+// ---------------------------------------------------------------- the figures
+const DAD = new Fig('DAD', { x: 330, d: 60, yaw: 0, seed: 2.3 });
+const KID1 = new Fig('KID1', { x: 515, d: KD, yaw: 180, seed: 4.1, s: 0.6 });    // first visit (ball)
+const KID2 = new Fig('KID2', { x: 482, d: KD, yaw: 180, seed: 5.3, s: 0.6 });    // comes back with the cardboard phone
+const sc = (v, s) => [v[0] * s, v[1] * s, v[2] * s];
+
+// scroll taps: the thumb flicks the screen (the same times go to the sound mix)
+const TAPS = (() => {
+  const r = mulberry32(31), out = [];
+  for (let t = 0.58; t < T.look0 - 0.15; t += 0.36 + r() * 0.34) if (!(t > T.grab + 0.02 && t < T.wait1 + 0.18)) out.push(+t.toFixed(3));
+  return out;
+})();
+const thumb = u => { let z = 0; for (const a of TAPS) { const x = (u - a + 0.05) / 0.045; if (x > -3 && x < 3) z += Math.exp(-x * x); } return z; };
+function pull(u, a) { const x = (u - a) / 0.24; if (x <= 0 || x >= 1) return 0; return x < 0.35 ? E.out2(x / 0.35) : 1 - E.io((x - 0.35) / 0.65); }
+const tugAmt = u => pull(u, T.pull1) + pull(u, T.pull2);
+const noteGlow = u => { let g = 0; for (const a of T.notes) if (u > a) g += 0.45 * Math.exp(-(u - a) / 0.55) * sstep(a, a + 0.04, u); return g; };
+
+// the phone in the father's hands, in world coordinates. J: the father's pose, u: his own clock
+function phoneState(J, u) {
+  const look = E.io(inv(T.look0, T.look1, u));
+  let c = add(add(J.N, mul(J.Ft, 37)), [0, 0, -60 - 6 * look]);
+  c = add(c, mul([1, 0, -0.42], 6 * tugAmt(u)));
+  const bz = u > T.buzz && u < T.buzz + 0.55 ? Math.sin(TAU * 29 * u) * 0.8 * (1 - (u - T.buzz) / 0.55) : 0;
+  c = add(c, [bz, bz * 0.5, 0]);
+  const th = (12 - 7 * look) * D2R;
+  let a = norm(add(mul(J.Ft, Math.cos(th)), [0, 0, Math.sin(th)]));
+  let n = norm(add(mul(J.Ft, -Math.sin(th)), [0, 0, Math.cos(th)]));
+  // turned face down (the screen turns away from the camera) and put on the sofa
+  const p0 = V(T.phone0), flip = E.io(inv(p0, p0 + 0.32, u)), move = E.io(inv(p0 + 0.04, p0 + 0.52, u));
+  if (flip > 0) {
+    const ax = cross(a, n), ph = PI * flip;
+    n = norm(add(mul(n, Math.cos(ph)), mul(ax, -Math.sin(ph))));
+  }
+  if (move > 0) {
+    c = add(lerp3(c, SPOT, move), [0, 0, 9 * Math.sin(PI * move)]);
+    a = norm(lerp3(a, [1, 0, 0], move));
+    n = norm(sub(n, mul(a, dot(n, a))));
+  }
+  const r = norm(cross(n, a));
+  let glow = 1 + noteGlow(u) + 0.05 * thumb(u);
+  glow *= 1 - sstep(p0, p0 + 0.45, u);
+  return { c, a, n, r, glow, move, placed: u >= p0 + 0.52 };
+}
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+
+// ---------------------------------------------------------------- the father
+const DG = {};
+(function dad() {
+  const F = DAD, tr = F.tr;
+  F.warp = t => t < T.freeze0 ? t : t < T.freeze1 ? T.freeze0 : t - HOLD;
+  tr.pf.v0 = PF; tr.pz.v0 = SIT_Z - H0; tr.lean.v0 = 22; tr.slump.v0 = 9; tr.head.v0 = 26; tr.shDrop.v0 = 2; tr.idle.v0 = 0.7;
+  const elbowPole = side => (t, J) => add(add(J.sh[side], add(mul(J.Ft, -18), mul(J.Rt, (side === 'R' ? 1 : -1) * 48))), [0, 0, -60]);
+  // both hands on the phone, the right thumb flicks the screen
+  const grip = side => (t, J) => {
+    const st = phoneState(J, t), sg = side === 'R' ? 1 : -1;
+    let p = add(add(sub(st.c, mul(st.a, 6)), mul(st.r, sg * 6)), mul(st.n, -2.5));
+    if (side === 'R') {
+      p = add(p, [0.8 * thumb(t), 0, 2.4 * thumb(t)]);
+      p = lerp3(p, add(st.c, [-3, 0, 7]), st.move);        // palm on the phone's back when it lies on the sofa
+    }
+    return p;
+  };
+  DG.hR = F.goal('R', grip('R'), elbowPole('R')); DG.hR.v0 = 1;
+  DG.hL = F.goal('L', grip('L'), elbowPole('L')); DG.hL.v0 = 1;
+  // "wait": the right hand comes up off the phone, index finger raised, head unchanged
+  DG.wait = F.goal('R', (t, J) => add(add(add(J.N, mul(J.Ft, 30)), mul(J.Rt, 10)), [0, 0, -30]), elbowPole('R'));
+  DG.wait.to(T.wait0, T.wait0 + 0.22, 1, E.out2).to(T.wait1, T.wait1 + 0.25, 0, E.io);
+  // shoulders turn away from the ball
+  tr.twist.to(T.away, T.away + 0.5, 20, E.io).to(6.0, 6.8, 2, E.io);
+  // the head comes up slowly; he sits up a little
+  tr.head.to(T.look0, T.look1, 0, E.io);
+  tr.lean.to(T.look0, T.look1, 18, E.io);
+  // (own clock from here) phone face down onto the sofa, hands to his thighs
+  const p0 = V(T.phone0);
+  const rest = side => (t, J) => add(lerp3(J.hip[side], J.knee[side], 0.62), [0, (side === 'R' ? -1 : 1) * 2, 9]);
+  DG.hL.to(p0, p0 + 0.3, 0, E.io);
+  DG.rL = F.goal('L', rest('L'), elbowPole('L')); DG.rL.to(p0 + 0.02, p0 + 0.4, 1, E.io);
+  DG.rR = F.goal('R', rest('R'), elbowPole('R')); DG.rR.to(p0 + 0.82, p0 + 1.2, 1, E.io);
+  tr.head.to(p0, p0 + 0.6, 6, E.io);
+  tr.lean.to(p0 + 0.1, p0 + 1.0, 13, E.io); tr.slump.to(p0 + 0.1, p0 + 1.0, 4, E.io);
+  // leans forward, lifts the child, sits back with the child on his lap
+  tr.lean.to(V(13.55), V(13.95), 31, E.io).to(V(14.0), V(14.6), 3, E.io);
+  tr.pf.to(V(13.55), V(13.95), PF + 7, E.io).to(V(14.0), V(14.6), PF, E.io);
+  tr.head.to(V(13.55), V(13.95), 12, E.io).to(V(14.3), V(14.95), 16, E.io);
+  tr.headRoll.to(V(14.3), V(14.95), -4, E.io);
+  const lift = side => (t, J) => {
+    const k = KID2.pose(t + HOLD, true), sg = side === 'R' ? -1 : 1;
+    return add(lerp3(k.C, k.N, 0.5), [0, sg * 7, -2]);
+  };
+  const hug = side => (t, J) => {
+    const k = KID2.pose(t + HOLD, true), sg = side === 'R' ? 1 : -1;
+    return side === 'R' ? add(add(add(k.C, mul(k.F, 9)), mul(k.R, 2)), [0, 0, -14]) : add(add(add(k.C, mul(k.F, 5)), mul(k.R, -6)), [0, 0, -10]);
+  };
+  DG.lR = F.goal('R', lift('R'), elbowPole('R')); DG.lR.to(V(T.reach0), V(T.lift0), 1, E.io);
+  DG.lL = F.goal('L', lift('L'), elbowPole('L')); DG.lL.to(V(T.reach0 + 0.03), V(T.lift0), 1, E.io);
+  DG.gR = F.goal('R', hug('R'), elbowPole('R')); DG.gR.to(V(14.35), V(14.85), 1, E.io);
+  DG.gL = F.goal('L', hug('L'), elbowPole('L')); DG.gL.to(V(14.4), V(14.9), 1, E.io);
+})();
+
+// ---------------------------------------------------------------- the child, first visit: tug, ball, gives up
+const BALL_R = 12.5;
+(function kid1() {
+  const K = KID1, tr = K.tr;
+  tr.breath.v0 = 1.2;
+  K.walk(T.kidIn, [KX, KD], KID_IN, 'L');
+  // grabs the father's forearm and pulls twice
+  const forearm = (t, J) => { const d = DAD.pose(t); return K.toSkel(add(lerp3(d.el.R, d.hand.R, 0.5), [2, -3, 0])); };
+  const tug = K.goal('R', forearm);
+  tug.to(T.grab - 0.1, T.pull1, 1, E.io).to(T.letGo, T.letGo + 0.28, 0, E.io);
+  tr.lean.to(T.grab - 0.05, T.pull1 + 0.05, 9, E.io).to(T.letGo, T.letGo + 0.35, 3, E.io);
+  tr.pf.to(T.pull1, T.pull1 + 0.1, -5, E.out2).to(T.pull1 + 0.1, T.pull1 + 0.24, 0, E.io)
+       .to(T.pull2, T.pull2 + 0.1, -5, E.out2).to(T.pull2 + 0.1, T.pull2 + 0.24, 0, E.io);
+  tr.head.to(T.grab, T.pull1, -6, E.io);
+  // holds the ball up to the father's face and waves it
+  const wave = (t, J) => {
+    const u = t - T.squeak, e = sstep(T.squeak - 0.1, T.squeak + 0.15, t) * (1 - sstep(T.ball1 - 0.3, T.ball1, t));
+    return K.toSkel([326 + 6 * Math.sin(TAU * 2.3 * u) * e, 22, 170 + 3 * Math.sin(TAU * 4.6 * u) * e]);
+  };
+  const up = K.goal('L', wave, (t, J) => add(add(J.sh.L, add(mul(J.Rt, -50), mul(J.Ft, -10))), [0, 0, -60]));
+  up.to(T.ball0, T.squeak, 1, E.out2).to(T.ball1, T.ball1 + 0.45, 0, E.io);
+  tr.head.to(T.ball0, T.squeak, -12, E.io);
+  tr.lean.to(T.ball0, T.squeak, 6, E.io);
+  // gives up: slumps, head tilted, looks at the glowing phone
+  tr.slump.to(T.sad0, T.sad0 + 0.65, 12, E.io);
+  tr.shDrop.to(T.sad0, T.sad0 + 0.65, 5, E.io);
+  tr.lean.to(T.sad0, T.sad0 + 0.65, 2, E.io);
+  tr.head.to(T.sad0, T.sad0 + 0.6, 16, E.io);
+  tr.headRoll.to(T.sad0 + 0.1, T.sad0 + 0.7, 13, E.io).to(T.turn0, T.turn0 + 0.4, 3, E.io);
+  // turns and walks out, slow and heavy
+  K.turn(T.turn0, T.out0 - 0.02, 360, { steps: 4, lift: 4, mood: 'kid' });
+  K.walk(T.out0, [640, KD], KID_SAD, 'R');
+})();
+
+// the ball: in the child's left hand, then it drops, bounces and rolls slowly to the sofa
+const BALL = (() => {
+  const g = 1800, e = 0.5, vx = -46, Tr = 3.4;
+  let base = null;
+  const init = () => {
+    if (base) return base;
+    const J = KID1.pose(T.drop);
+    const p = add(J.hand.L, [0, -1.5, -4]);
+    const hits = [];
+    let t = T.drop, z = p[2] - BALL_R, v = 0;
+    t += Math.sqrt(2 * z / g); v = Math.sqrt(2 * g * z); hits.push(t);
+    while (v * e > 40) { v *= e; t += 2 * v / g; hits.push(t); }
+    return (base = { p, hits, vEnd: v * e });
+  };
+  function state(t) {
+    const b = init(), tau = t - T.drop;
+    const xx = b.p[0] + vx * (Math.min(tau, Tr) - Math.min(tau, Tr) ** 2 / (2 * Tr));
+    const dd = lerp(b.p[1], 22, E.out2(clamp(tau / 1.2)));
+    let z = BALL_R, sq = 0;
+    if (t < b.hits[0]) z = b.p[2] - 0.5 * g * tau * tau;
+    else {
+      let i = 0; while (i + 1 < b.hits.length && t >= b.hits[i + 1]) i++;
+      if (i + 1 < b.hits.length) { const a = b.hits[i], c = b.hits[i + 1], v = g * (c - a) / 2, u = t - a; z = BALL_R + v * u - 0.5 * g * u * u; }
+      for (const h of b.hits) sq = Math.max(sq, Math.exp(-Math.pow((t - h) / 0.018, 2)) * (h === b.hits[0] ? 1 : 0.6));
+    }
+    return { pos: [xx, dd, z], rot: -(xx - b.p[0]) / BALL_R, sq };
+  }
+  return { state, init };
+})();
+
+// ---------------------------------------------------------------- the child, second visit: the cardboard phone
+// The card is drawn in its own plane: c = centre, u = right, v = up, n = front (all world)
+const CARD = { hw: 34, hh: 52, hole: { x0: -25, x1: 25, y0: -6, y1: 44 } };
+const HOLE_C = (CARD.hole.y0 + CARD.hole.y1) / 2;                 // the hole centre, above the card centre
+const KYAW = 235;                                                  // the child turns this far toward the camera to show the card
+const yawU = y => { const r = rgt(y); return [-r[0], -r[1], 0]; };  // the card's "right" for a card facing yaw y
+(function kid2() {
+  const K = KID2, tr = K.tr;
+  K.walk(T.back0, [KX, KD], KID_WALK, 'L');
+  K.turn(T.front + 0.02, T.front + 0.5, KYAW, { steps: 2, lift: 4, mood: 'kid' });
+  const pole = side => (t, J) => add(add(J.sh[side], add(mul(J.Ft, -30), mul(J.Rt, (side === 'R' ? 1 : -1) * 12))), [0, 0, -60]);
+  // both hands follow the card's side edges (the card itself is animated from the body, see cardFrame)
+  const edge = (side) => (t, J) => {
+    const f = cardFrame(t, { P: sc(J.P, K.s), Hc: sc(J.Hc, K.s), F: J.F });
+    const x = side === 'R' ? -CARD.hw : CARD.hw, y = f.grabY;
+    return K.toSkel(add(add(f.c, mul(f.u, x)), mul(f.v, y)));
+  };
+  const gR = K.goal('R', edge('R'), pole('R')); gR.v0 = 1;
+  const gL = K.goal('L', edge('L'), pole('L'));
+  gL.to(T.front + 0.38, T.front + 0.6, 1, E.io);
+  gR.to(T.release, T.release + 0.35, 0, E.io); gL.to(T.release, T.release + 0.32, 0, E.io);
+  tr.idle.to(T.raise1, T.raise1 + 0.4, 0.25).to(T.release, T.release + 0.4, 0.8);
+  tr.head.to(T.front, T.raise1, 4, E.io).to(T.lower0, T.release, -6, E.io);
+  // reaches up to be lifted
+  // reaches for the father: both arms stretch out toward him (a direction, so the hands move with the body)
+  const arms = side => (t, J) => {
+    const d = K.toSkel(DAD.pose(t, true).N), sh = J.sh[side];
+    const dir = norm([d[0] - sh[0], d[1] - sh[1], 0]);
+    return add(add(sh, mul(dir, 70)), add(mul(J.Rt, (side === 'R' ? 1 : -1) * 8), [0, 0, 26]));
+  };
+  // elbow pole below the middle of the arm (and a little out): never in line with the arm, so the elbow cannot flip
+  const midPole = (side, fn) => (t, J) => add(lerp3(J.sh[side], fn(t, J), 0.5), add(mul(J.Rt, (side === 'R' ? 1 : -1) * 18), [0, 0, -60]));
+  const uR = K.goal('R', arms('R'), midPole('R', arms('R'))), uL = K.goal('L', arms('L'), midPole('L', arms('L')));
+  uR.to(13.42, 13.85, 1, E.io); uL.to(13.46, 13.9, 1, E.io);
+  // while it is lifted and turned the hands stay in front of its chest (they turn with the body)
+  const chest = side => (t, J) => add(J.sh[side], add(add(mul(J.Ft, 46), mul(J.Rt, (side === 'R' ? 1 : -1) * 16)), [0, 0, -42]));
+  K.goal('R', chest('R'), midPole('R', chest('R'))).to(13.86, 14.3, 1, E.io); K.goal('L', chest('L'), midPole('L', chest('L'))).to(13.88, 14.32, 1, E.io);
+  // lifted onto the lap: the pelvis moves in an arc, the body turns to face the same way as the father
+  const s = K.s, ox = (LAP[0] - KX) / s, od = (LAP[1] - KD) / s, pzL = LAP[2] / s - H0;
+  tr.ox.to(T.lift0, T.lift1, ox, E.io);
+  tr.od.to(T.lift0, T.lift1, od, E.io);
+  tr.pz.to(T.lift0, T.lift0 + 0.3, 34, E.io).to(T.lift0 + 0.3, T.lift1 + 0.02, pzL - 3, E.io).to(T.lift1 + 0.02, T.lift1 + 0.35, pzL, E.io);
+  tr.yaw.to(T.lift0 - 0.1, T.lift1 + 0.15, LAP_YAW, E.sine);
+  const Fk = fwd(LAP_YAW), Rk = rgt(LAP_YAW);
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? 1 : -1;
+    const ank = K.toSkel(add(add(LAP, add(mul(Fk, 44), mul(Rk, sg * 5))), [0, 0, -47]));
+    K.footGoal(side, () => ({ ank, pitch: -22, yaw: LAP_YAW, kyaw: LAP_YAW, lift: 30 }))
+     .to(T.lift0 + 0.02, T.lift1 - 0.04, 1, E.io);
+  }
+  tr.lean.to(T.lift1 - 0.1, T.lift1 + 0.5, -10, E.io);
+  tr.head.to(T.lift1, T.lift1 + 0.6, -2, E.io);
+  tr.headRoll.to(T.lift1, T.lift1 + 0.6, 4, E.io);
+  tr.breath.to(T.lift1, T.lift1 + 0.6, 1.15);
+  // on the lap the hands rest on the father's forearms
+  const onArm = side => (t, J) => { const d = DAD.pose(t); return K.toSkel(add(lerp3(d.el[side], d.hand[side], 0.82), [0, 0, 5])); };
+  K.goal('R', onArm('R'), midPole('R', onArm('R'))).to(14.42, 14.85, 1, E.io);
+  K.goal('L', onArm('L'), midPole('L', onArm('L'))).to(14.46, 14.9, 1, E.io);
+})();
+
+// where the cardboard phone is while the child holds it. J: { P, Hc, F } of KID2 in world units
+function cardFrame(t, J) {
+  const P = J.P, hold = add(J.Hc, [0, -14, -HOLE_C]);
+  const sway = 1.6 * Math.sin(TAU * 1.95 * t) * (t < T.front ? 1 : 0);
+  const carry = add(P, [30, 7, -6 + sway]);
+  const side = add(P, [56, -14, 50]);
+  const low = add(add(P, mul(J.F, 14)), [0, -10, -4]);
+  const a = E.io(inv(T.front, T.front + 0.28, t)), b = E.io(inv(T.front + 0.28, T.raise1, t)), l = E.io(inv(T.lower0, T.release, t));
+  let c = lerp3(carry, side, a);
+  c = lerp3(c, hold, b);
+  c = lerp3(c, low, l);
+  const yaw = angLerp(270, KYAW, b);
+  const u = yawU(yaw), v = [0, 0, 1], n = fwd(yaw);
+  return { c, u, v, n, front: c[1] < P[1] - 2, grabY: lerp(4, -24, b) };
+}
+// after it is dropped: it falls on its bottom edge, tips forward and slaps flat on the floor
+const CARD_FALL = (() => {
+  let base = null;
+  const g = 1800, Tf = 0.31;
+  const init = () => {
+    if (base) return base;
+    const J = KID2.pose(T.release);
+    const f = cardFrame(T.release, { P: J.P, Hc: J.Hc, F: J.F });
+    return (base = { f, B0: sub(f.c, mul(f.v, CARD.hh)) });
+  };
+  function state(t) {
+    const { f, B0 } = init(), tau = Math.max(0, t - T.release);
+    const th = (PI / 2) * Math.pow(clamp(tau / Tf), 2);
+    const B = add(B0, mul(f.n, 16 * Math.min(tau, Tf)));
+    B[2] = Math.max(0, B0[2] - 0.5 * g * tau * tau);
+    const v = norm(add(mul(f.v, Math.cos(th)), mul(f.n, Math.sin(th)))), n = norm(sub(mul(f.n, Math.cos(th)), mul(f.v, Math.sin(th))));
+    const c = add(add(B, mul(v, CARD.hh)), [0, 0, 0.6]);
+    return { c, u: f.u, v, n, front: true };
+  }
+  return { state, init, slap: () => T.release + Tf };
+})();
+
+// ---------------------------------------------------------------- props
+const CARD_OUT = [[-34, 52], [-11, 52.6], [12, 51.7], [34.4, 52.3], [33.7, 18], [34.3, -20], [33.9, -52], [10, -51.5], [-14, -52.4], [-34.2, -51.8], [-33.6, -14], [-34.3, 21]];
+const CARD_HOLE = [[-25, 44], [0, 44.5], [25.2, 43.7], [24.7, 18], [25.1, -6.2], [0, -5.6], [-24.8, -6], [-25.3, 19]];
+function drawCard(c, f) {
+  const m = (x, y) => P(add(add(f.c, mul(f.u, x)), mul(f.v, y)));
+  const k = P(f.c)[2];
+  const camP = [cam.x, -cam.D0, cam.h], seeFront = dot(f.n, sub(camP, f.c)) > 0;
+  const path = pts => pts.forEach((p, i) => { const q = m(p[0], p[1]); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); });
+  c.save(); c.lineJoin = 'round'; c.lineCap = 'round';
+  c.beginPath(); path(CARD_OUT); c.closePath(); path(CARD_HOLE); c.closePath();
+  c.fillStyle = rgb(seeFront ? [206, 202, 192] : [186, 182, 172]); c.fill('evenodd');
+  c.lineWidth = 2.3 * k; c.strokeStyle = INK; c.stroke();
+  if (seeFront) {
+    c.lineWidth = 1.5 * k;
+    // speaker slot, app squares, home button: drawn by hand
+    c.beginPath(); path([[-7, 48.2], [7, 48]]); c.stroke();
+    [[-21, -0.3], [-7, 0.2], [7, -0.15], [21, 0.25]].forEach(([x, r], i) => {
+      const s = 4.6, y = -16 + (i % 2 ? 0.4 : -0.3), cs = Math.cos(r * 0.2), sn = Math.sin(r * 0.2);
+      c.beginPath(); path([[-s, -s], [s, -s], [s, s], [-s, s]].map(([a, b]) => [x + a * cs - b * sn, y + a * sn + b * cs])); c.closePath(); c.stroke();
+    });
+    c.beginPath(); for (let i = 0; i <= 18; i++) { const a = i / 18 * TAU, q = m(Math.cos(a) * 6.2, -37 + Math.sin(a) * 6.2); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); } c.stroke();
+  }
+  c.restore();
+}
+function drawBall(c, st) {
+  const [X, Y, k] = P(st.pos), r = BALL_R * k, q = st.sq || 0;
+  c.save(); c.translate(X, Y + (MIRROR ? -1 : 1) * r * 0.12 * q); if (MIRROR) c.scale(1, -1);
+  c.scale(1 + 0.1 * q, 1 - 0.13 * q);
+  c.beginPath(); c.arc(0, 0, r + DIM.outline * 0.8 * k, 0, TAU); c.fillStyle = INK; c.fill();
+  c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fillStyle = rgb([226, 224, 218]); c.fill();
+  c.save(); c.beginPath(); c.arc(0, 0, r, 0, TAU); c.clip();
+  c.rotate(st.rot);
+  c.fillStyle = rgb([96, 96, 102]); c.fillRect(-r, -r * 0.24, 2 * r, r * 0.48);       // a dark band that shows the roll
+  c.beginPath(); c.arc(0, 0, r * 0.2, 0, TAU); c.fillStyle = rgb([226, 224, 218]); c.fill();
+  c.restore();
+  c.beginPath(); c.arc(-r * 0.35, -r * 0.4 * (MIRROR ? -1 : 1), r * 0.2, 0, TAU); c.fillStyle = 'rgba(255,255,255,0.55)'; c.fill();
+  c.restore();
+}
+function drawPhone(c, st) {
+  const L = 13, Wd = 6.5, Th = 1.3;
+  const pt = (sa, sw, sn) => add(add(add(st.c, mul(st.a, sa * L)), mul(st.r, sw * Wd)), mul(st.n, sn * Th));
+  const face = sn => [pt(-1, -1, sn), pt(1, -1, sn), pt(1, 1, sn), pt(-1, 1, sn)];
+  const camP = [cam.x, -cam.D0, cam.h], toCam = sub(camP, st.c), k = P(st.c)[2];
+  const screenUp = dot(st.n, toCam) > 0;
+  c.save(); c.lineJoin = 'round';
+  // the slab: both faces filled dark with an outline, then the face we see
+  for (const sn of [-1, 1]) { poly(c, face(sn)); c.fillStyle = '#16171a'; c.fill(); c.lineWidth = 2.6 * k; c.strokeStyle = INK; c.stroke(); }
+  poly(c, face(screenUp ? 1 : -1));
+  if (screenUp) { const b = clamp(0.35 + 0.65 * st.glow, 0, 1.2); c.fillStyle = rgb(mixc([40, 44, 52], [236, 242, 255], Math.min(1, b))); }
+  else c.fillStyle = '#2a2b30';
+  c.fill();
+  c.restore();
+}
+function drawFinger(c, J, w) {
+  if (w < 0.05) return;
+  const h = J.hand.R, tip = add(h, add(mul(J.Ft, 2.5), [0, 0, 13 * w]));
+  const a = P(h), b = P(tip), k = a[2];
+  c.save(); c.lineCap = 'round';
+  c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]);
+  c.strokeStyle = INK; c.lineWidth = (5 + 2 * DIM.outline) * k; c.stroke();
+  c.strokeStyle = rgb(FIG_NEAR); c.lineWidth = 5 * k; c.stroke();
+  c.restore();
+}
+
+// the sofa, side view: backrest on the left, the seat runs into the room
+function drawSofa(c, warm) {
+  const tint = (a, b) => rgb(mixc(a, b, warm));
+  const col = k => ({ front: tint([74, 76, 84].map(v => v * k), [92, 74, 58].map(v => v * k)), top: tint([96, 98, 108].map(v => v * k), [124, 98, 74].map(v => v * k)),
+                      side: tint([56, 58, 64].map(v => v * k), [70, 56, 44].map(v => v * k)), edge: 'rgba(0,0,0,0.35)' });
+  const { x0, x1, d0, d1 } = SOFA;
+  box(c, { x0, x1, d0: d1 - 26, d1, z0: 8, z1: 128 }, col(0.95));                    // far armrest
+  box(c, { x0, x1: x0 + 36, d0, d1: d1 - 26, z0: 8, z1: 206 }, col(0.9));            // backrest
+  box(c, { x0: x0 + 36, x1, d0, d1: d1 - 26, z0: 8, z1: 54 }, col(0.78));            // base
+  box(c, { x0: x0 + 36, x1: x1 + 2, d0: d0 - 1, d1: d1 - 26, z0: 54, z1: SEAT }, col(1.08));   // seat cushion
+  box(c, { x0: x0 + 30, x1: x0 + 52, d0: d0 + 1, d1: d1 - 27, z0: SEAT, z1: 186 }, col(1.0));  // back cushion
+  // little feet
+  for (const fx of [x0 + 6, x1 - 12]) box(c, { x0: fx, x1: fx + 6, d0: d0 + 4, d1: d0 + 10, z0: 0, z1: 8 }, col(0.5));
+  // seams: a dark line under the cushion and along the backrest
+  c.save(); c.strokeStyle = 'rgba(0,0,0,0.45)'; c.lineWidth = 2;
+  let a = P([x0 + 36, d0 - 1, 54]), b = P([x1 + 2, d0 - 1, 54]); c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  a = P([x0 + 36, d0, 54]); b = P([x0 + 36, d0, 206]); c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  c.restore();
+}
+
+// ---------------------------------------------------------------- light
+// The room is lit by a light map: ambient + lamp + phone, multiplied over the finished scene,
+// so the father's head and hands are bright only where the phone light reaches.
+const LM = document.createElement('canvas'); LM.width = W / 4; LM.height = H / 4;
+const lmc = LM.getContext('2d');
+function lightPass(ambient, lights) {
+  lmc.setTransform(1, 0, 0, 1, 0, 0); lmc.globalCompositeOperation = 'source-over';
+  lmc.fillStyle = rgb(ambient); lmc.fillRect(0, 0, LM.width, LM.height);
+  lmc.setTransform(0.25, 0, 0, 0.25, 0, 0); lmc.globalCompositeOperation = 'lighter';
+  for (const L of lights) {
+    if (L.a <= 0.002) continue;
+    lmc.save(); lmc.translate(L.x, L.y); lmc.scale(1, L.sy || 1);
+    const g = lmc.createRadialGradient(0, 0, 0, 0, 0, L.r);
+    g.addColorStop(0, rgb(L.col, L.a)); g.addColorStop(L.mid || 0.45, rgb(L.col, L.a * 0.4)); g.addColorStop(1, rgb(L.col, 0));
+    lmc.fillStyle = g; lmc.fillRect(-L.r, -L.r, 2 * L.r, 2 * L.r); lmc.restore();
+  }
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(LM, 0, 0, W, H); ctx.restore();
+}
+function glowAt(x, y, r, col, a, op = 'lighter') {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = op;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+
+// ---------------------------------------------------------------- camera
+const CAMX = new Track(290).to(0, 6.0, 286, E.sine).to(6.0, 7.45, 244, E.io).to(7.75, 9.4, 300, E.io).to(12.3, 14.9, 276, E.io);
+const CAMZ = new Track(1.74).to(0, 6.0, 1.8, E.sine).to(6.0, 7.45, 2.3, E.io).to(7.75, 9.4, 2.0, E.io).to(10.4, 12.0, 2.1, E.io).to(12.3, 14.9, 2.02, E.io).to(15.0, 18.0, 2.1, E.sine);
+
+// ---------------------------------------------------------------- drawing
+function draw(t) {
+  const warm = sstep(T.warm0, T.warm1, t);
+  const lamp = mixc(COLD, WARMC, warm);
+  cam.x = CAMX.at(t); cam.zoom = CAMZ.at(t); cam.hy = 600; cam.h = 175;
+
+  const u = DAD.warp(t);
+  const dj = DAD.pose(t), ph = phoneState(dj, u);
+  const k1 = t < T.gone ? KID1.pose(t) : null;
+  const k2 = t > T.back0 - 0.05 ? KID2.pose(t) : null;
+  const ball = t < T.drop ? { pos: add(k1.hand.L, [0, -1.5, -4]), rot: 0.4, sq: Math.exp(-Math.pow((t - T.squeak) / 0.05, 2)) } : BALL.state(t);
+  const holding = t < T.release;
+  const card = holding ? (k2 ? cardFrame(t, k2) : null) : CARD_FALL.state(t);
+
+  const floorY = P([0, WALL, 0])[1];
+  // wall and floor (base colours; the light map shades them)
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb(mixc([60, 62, 70], [78, 64, 50], warm))); g.addColorStop(1, rgb(mixc([84, 86, 94], [112, 92, 70], warm)));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb(mixc([96, 96, 102], [128, 104, 78], warm))); g.addColorStop(1, rgb(mixc([46, 46, 50], [60, 48, 36], warm)));
+  ctx.fillStyle = g; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.save(); ctx.globalAlpha = 0.22; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+  for (let d = WALL; d > -300; d -= 36) { const y = P([0, d, 0])[1]; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.restore();
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, floorY - 3, W, 5);
+  // soft shadow under the sofa
+  {
+    const a = P([(SOFA.x0 + SOFA.x1) / 2, SOFA.d0 + 30, 0]);
+    ctx.save(); ctx.translate(a[0], a[1]); ctx.scale(1, 0.16);
+    const gg = ctx.createRadialGradient(0, 0, 0, 0, 0, 200 * a[2]); gg.addColorStop(0, 'rgba(0,0,0,0.55)'); gg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(0, 0, 200 * a[2], 0, TAU); ctx.fill(); ctx.restore();
+  }
+
+  // figures with what they hold
+  const dadExtra = () => {
+    const props = [{ d: dj.hand.R[1] - 0.6, draw: () => drawFinger(ctxOf, dj, sstep(0.45, 0.95, DG.wait.at(u))) }];
+    if (!ph.placed) props.push({ d: ph.c[1] - 1.5, draw: () => drawPhone(ctxOf, ph) });
+    return { props };
+  };
+  let ctxOf = ctx;
+  const k1Extra = () => ({ props: t < T.drop ? [{ d: -1e4, draw: () => drawBall(ctxOf, ball) }] : [] });
+  const k2Extra = () => {
+    if (!holding || !card) return {};
+    const props = [{ d: card.front ? -1e4 : 1e4, draw: () => drawCard(ctxOf, card) }];
+    if (card.front) for (const side of ['R', 'L']) props.push({ d: -1e4 - 1, draw: () => dotJoint(ctxOf, k2.hand[side], rgb(side === 'L' ? FIG_NEAR : FIG_FAR), DIM.limbW * 0.5) });
+    return { props };
+  };
+  const items = (c) => {
+    ctxOf = c;
+    const list = [{ d: SOFA.d1, draw: () => drawSofa(c, warm) }];
+    list.push({ d: dj.P[1], draw: () => drawFigure(c, DAD, dj, dadExtra()) });
+    if (k1) list.push({ d: k1.P[1], draw: () => drawFigure(c, KID1, k1, k1Extra()) });
+    if (k2) list.push({ d: k2.P[1] - 0.5, draw: () => drawFigure(c, KID2, k2, k2Extra()) });
+    if (ph.placed) list.push({ d: ph.c[1], draw: () => drawPhone(c, ph) });
+    if (t >= T.drop) list.push({ d: ball.pos[1], draw: () => drawBall(c, ball) });
+    if (!holding) list.push({ d: card.c[1] + 20, draw: () => drawCard(c, card) });
+    list.sort((a, b) => b.d - a.d);
+    for (const it of list) it.draw();
+    ctxOf = ctx;
+  };
+  reflection(c => items(c), floorY, 0.3);
+  contactShadow(ctx, dj, 0.5);
+  if (k1) contactShadow(ctx, k1, 0.5, KID1.s);
+  if (k2) contactShadow(ctx, k2, 0.5, KID2.s);
+  items(ctx);
+
+  // light map: dark room, a dim cold lamp, the phone glowing on his head and hands
+  const lp = P(LAMP), pp = P(add(ph.c, mul(ph.n, 4))), pf = P([ph.c[0], ph.c[1], 0]);
+  const lap = P([LAP[0], LAP[1], 150]), lapF = P([LAP[0] + 20, LAP[1], 0]);
+  const pg = ph.glow;
+  lightPass(mixc([29, 31, 37], [62, 50, 38], warm), [
+    { x: lp[0], y: lp[1] + 250 * lp[2] / 1.9, r: 640, col: mixc(COLD, WARML, warm), a: lerp(0.28, 0.55, warm), sy: 0.95, mid: 0.4 },
+    { x: lp[0], y: lp[1] + 20, r: 260, col: mixc(COLD, WARML, warm), a: lerp(0.2, 0.42, warm) },
+    { x: pp[0], y: pp[1] - 8, r: 230 * pp[2] / 1.9, col: GLOWC, a: Math.min(pg, 1.25), mid: 0.28 },
+    { x: pf[0], y: pf[1], r: 230 * pf[2] / 1.9, col: GLOWC, a: 0.22 * pg, sy: 0.28 },
+    { x: lap[0], y: lap[1], r: 520, col: WARML, a: 0.3 * warm },
+    { x: lapF[0], y: lapF[1], r: 420, col: WARML, a: 0.3 * warm, sy: 0.24 },
+  ]);
+
+  // the phone: the brightest thing in the room
+  if (!ph.placed || pg > 0.01) {
+    glowAt(pp[0], pp[1], 80 * pp[2] / 1.9, GLOWC, 0.55 * Math.min(pg, 1.3));
+    glowAt(pp[0], pp[1] - 10, 170 * pp[2] / 1.9, GLOWC, 0.12 * Math.min(pg, 1.3));
+  }
+  // pendant lamp
+  ctx.save();
+  ctx.strokeStyle = '#1c1c20'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], 0); ctx.lineTo(lp[0], lp[1] - 44); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lp[0] - 11, lp[1] - 46); ctx.lineTo(lp[0] + 11, lp[1] - 46); ctx.lineTo(lp[0] + 48, lp[1]); ctx.lineTo(lp[0] - 48, lp[1]); ctx.closePath();
+  ctx.fillStyle = '#101012'; ctx.fill(); ctx.strokeStyle = '#26262b'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 48, 6.5, 0, 0, TAU); ctx.fillStyle = rgb(mixc([110, 116, 126], WARMC, warm)); ctx.fill();
+  ctx.restore();
+  glowAt(lp[0], lp[1] + 6, 170, lamp, lerp(0.12, 0.42, warm));
+  // the warm glow around the two of them, and on the floor
+  if (warm > 0) {
+    glowAt(lap[0], lap[1], 360, WARMC, 0.1 * warm);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.translate(lapF[0], lapF[1] + 20); ctx.scale(1, 0.22);
+    g = ctx.createRadialGradient(0, 0, 0, 0, 0, 340);
+    g.addColorStop(0, rgb(WARMC, 0.18 * warm)); g.addColorStop(0.55, rgb(WARMC, 0.06 * warm)); g.addColorStop(1, rgb(WARMC, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 340, 0, TAU); ctx.fill(); ctx.restore();
+  }
+  vignette(lerp(0.8, 0.66, warm));
+  captionAt(t, 'I WISH I WAS', T.text0, T.text1, 46, 12, 168);
+  captionAt(t, 'YOUR PHONE.', T.text0 + 0.12, T.text1, 46, 12, 232);
+}
+
+// ---------------------------------------------------------------- checks, render, cues
+const CHECK_FIGS = [[DAD, 0, T.end], [KID1, 0, T.gone], [KID2, T.back0 - 0.3, T.end]];
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.fadeOut, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  const steps = [];
+  for (const c of KID1.cues) if (c.t < T.gone + 0.6) steps.push(c);
+  for (const c of KID2.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  const ball = BALL.init();
+  return {
+    story: { ...T, HOLD, taps: TAPS, ballHits: ball.hits, cardSlap: CARD_FALL.slap(), phoneOnSofa: T.phone0 + 0.52, kidGoneX: KID1.worldRoot(T.gone)[0] },
+    steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end,
+  };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+window.__debug = { DAD, KID1, KID2, BALL, CARD_FALL, cardFrame, phoneState, cam, P, DG };
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>

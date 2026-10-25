@@ -8,7 +8,7 @@ machen kannst. Der ganze Code liegt im Ordner `video/` (Branch `claude/vertical-
 ## 1. Prompt zum Kopieren (für einen neuen Chat mit Claude)
 
 > Nutze das Projekt in `video/` aus dem Repo emyfaked-droid/Brose-Website als Vorlage
-> (Engine in `index.html`, Renderer `scripts/render.js`, Ton `sound-timeline.js` + `scripts/mix.js`).
+> (Engine in `engine.js`, Renderer `scripts/render.js`, Ton `sound-timeline.js` + `scripts/mix.js`).
 > Behalte Stil, Figuren und Geh-Animation exakt bei (siehe `video/VORLAGE.md`).
 > Neue Geschichte: **[hier deine Story mit Zeiten, Texten und Sounds]**.
 > Format 720x1280, 30 fps, ca. **[Länge]** Sekunden. Erst Standbilder und einen Test-Clip zeigen,
@@ -114,3 +114,16 @@ Tag someone you should check on today.
 - Neu in der Engine: Kinder (`{ s: 0.6 }`), Knien (`fig.footGoal`), Rückwärtsschritte (`walk(..., { back: true })`),
   Einfrieren (`fig.warp`), Umarmen (zwei Figuren lesen gegenseitig ihre Pose mit `fig.pose(t, true)`).
 - Aufbau: Szene 2 ist Szene 1 plus 6,0 s, mit vertauschten Rollen. Alle Zeiten stehen im Objekt `T` oben in der Datei.
+
+---
+
+## 8. Dritter Film: I Wish I Was Your Phone
+
+- Datei `i-wish-i-was-your-phone.html`. Befehle: `npm run phone:check`, `phone:stills`, `phone:render`, `phone:mix`, `phone:build`.
+- Licht: eine Lichtkarte (Grundlicht + Lampe + Handy) wird über das fertige Bild multipliziert. So ist nur hell, was das
+  Handy oder die Lampe wirklich anstrahlt.
+- Neu in der Engine: `tr.ox` / `tr.od` (Becken in Weltrichtung verschieben, z. B. Kind hochheben), `extra.props` in
+  `drawFigure` (Requisiten in der Hand werden mit den Armen nach Tiefe sortiert), Untertitel mit eigener Höhe (zweizeilig).
+- Tipp für Arme: Der Ellbogen-Pol darf nie auf der Linie Schulter–Hand liegen, sonst springt der Ellbogen.
+  Sicher ist ein Pol unter der Armmitte (siehe `midPole`).
+- Alle Sounds sind selbst erzeugt (`scripts/make_sfx.py`), also ohne fremde Rechte.

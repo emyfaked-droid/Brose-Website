@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Procedural foley for "Ask Twice": writes the 15 files listed in sfx/README.md as 48 kHz WAV.
+"""Procedural foley for all films in this folder: writes the files listed in sfx/README.md as 48 kHz WAV.
 
 These are *modelled* sounds, not recordings: damped resonant modes (wood, metal, plastic, glass),
 filtered-noise transients, formant-filtered voice pulses, FM bird chirps, a small drum/bass loop and
@@ -581,6 +581,188 @@ def make_cloth_hug():
     save('cloth_hug.wav', reverb(fade(y, 0.02, 0.4), 0.4, 0.15, seed=272), peak=0.7)
 
 
+# ------------------------------------------------------------------ I Wish I Was Your Phone
+def make_phone_scroll():
+    """fingertip taps and short swipes on a phone screen (single taps are cut out by the mixer)"""
+    r = rng(301)
+    buf = np.zeros(int(7.0 * SR))
+    at = 0.2
+    for i in range(14):
+        t = tt(0.3)
+        tick = fft_filter(r.standard_normal(len(t)), 1400, 6000) * np.exp(-t / 0.0022) * 0.9
+        thump = np.sin(2 * np.pi * (200 + 50 * r.random()) * t) * np.exp(-t / 0.011) * 0.55
+        swipe = fft_filter(r.standard_normal(len(t)), 2500, 9000) * np.exp(-((t - 0.045) / 0.028) ** 2) * 0.07
+        place(buf, (tick + thump + swipe) * (0.8 + 0.3 * r.random()), at)
+        at += 0.4 + 0.1 * r.random()
+    save('phone_scroll.wav', reverb(buf, 0.18, 0.07, seed=302), peak=0.8)
+
+
+def chime(t, f, dec):
+    a = np.minimum(t / 0.002, 1)
+    return a * (np.sin(2 * np.pi * f * t) * np.exp(-t / dec) + 0.3 * np.sin(2 * np.pi * 2.0 * f * t) * np.exp(-t / (dec * 0.45))
+                + 0.14 * np.sin(2 * np.pi * 3.01 * f * t) * np.exp(-t / (dec * 0.25)))
+
+
+def make_phone_notification():
+    """a soft two-note ding from a small phone speaker"""
+    t = tt(1.3)
+    y = chime(t, 1318.5, 0.32)
+    t2 = np.maximum(t - 0.11, 0)
+    y += chime(t2, 1975.5, 0.42) * (t > 0.11) * 0.85
+    y = fft_filter(y, 650, 9000, 2)
+    # silence after the ring, so the mixer's onset detection finds the first note
+    y = np.concatenate([reverb(fade(y, 0, 0.2), 0.3, 0.12, seed=311), np.zeros(int(0.7 * SR))])
+    save('phone_notification.wav', y, peak=0.8)
+
+
+def make_phone_buzz():
+    """the vibration motor, twice, muffled by the hand holding it"""
+    r = rng(321)
+    t = tt(0.95)
+    gate = ((t > 0.0) & (t < 0.27)) | ((t > 0.4) & (t < 0.67))
+    env = fft_filter(gate.astype(float), None, 40, 2)
+    f = 168 + 6 * np.sin(2 * np.pi * 3 * t)
+    ph = 2 * np.pi * np.cumsum(f) / SR
+    motor = np.sin(ph) + 0.5 * np.sin(2 * ph + 0.3) + 0.3 * np.sin(3 * ph) + 0.15 * np.sign(np.sin(ph))
+    rattle = fft_filter(r.standard_normal(len(t)), 600, 2500) * (0.5 + 0.5 * np.sin(ph)) * 0.25
+    save('phone_buzz.wav', fft_filter((motor + rattle) * env, 60, 1400, 2), peak=0.7)
+
+
+def cloth_burst(r, t, at, dur, amp, lo=400, hi=5000):
+    n = r.standard_normal(len(t))
+    band = fft_filter(n, lo, hi, 3)
+    crackle = np.abs(fft_filter(r.standard_normal(len(t)), 20, 900, 2)); crackle /= crackle.max()
+    tc = t - at
+    env = np.where(tc > 0, (1 - np.exp(-np.maximum(tc, 0) / 0.012)) * np.exp(-np.maximum(tc, 0) / dur), 0)
+    return band * env * (0.3 + 0.7 * crackle ** 0.8) * amp
+
+
+def make_cloth_tug():
+    """two quick tugs on a sleeve (0.28 s apart, like the animation)"""
+    r = rng(331)
+    t = tt(1.0)
+    y = np.zeros_like(t)
+    for at, amp in [(0.0, 1.0), (0.28, 0.8)]:
+        y += cloth_burst(r, t, at, 0.07, amp)
+        tc = np.maximum(t - at, 0)
+        y += np.sin(2 * np.pi * (95 + 30 * np.exp(-tc / 0.02)) * tc) * np.exp(-tc / 0.04) * 0.35 * amp * (t > at)
+    save('cloth_tug.wav', reverb(fade(y, 0, 0.2), 0.3, 0.12, seed=332), peak=0.75)
+
+
+def squeak(r, t, f0, f1, dur):
+    tc = np.clip(t, 0, dur)
+    f = (f0 + (f1 - f0) * np.sin(np.pi / 2 * tc / dur)) * (1 + 0.03 * np.sin(2 * np.pi * 37 * t))
+    ph = 2 * np.pi * np.cumsum(f) / SR
+    s = sum(np.sin(k * ph) / k ** 1.3 for k in range(1, 8))
+    env = np.clip(t / 0.014, 0, 1) * np.clip((dur - t) / 0.045, 0, 1) * (t >= 0)
+    breath = fft_filter(r.standard_normal(len(t)), 1800, 7000) * 0.15
+    return (s + breath) * env
+
+
+def make_toy_squeak():
+    """a rubber squeeze toy: squeak on the squeeze, a softer one when it lets go"""
+    r = rng(341)
+    t = tt(0.9)
+    y = squeak(r, t, 1150, 1720, 0.2)
+    t2 = t - 0.32
+    y += squeak(r, t2, 1500, 1180, 0.16) * 0.45 * (t2 >= 0)
+    y = formants(y, [(2300, 1800, 1.0), (4600, 2400, 0.45), (900, 800, 0.3)])
+    rub = fft_filter(r.standard_normal(len(t)), 300, 2500) * np.exp(-t / 0.05) * 0.08
+    save('toy_squeak.wav', reverb(y + rub, 0.3, 0.12, seed=342), peak=0.8)
+
+
+def make_ball_bounce_roll():
+    """a small rubber ball: four bounces (same timing as the animation) and a slow roll over the floor"""
+    r = rng(351)
+    t = tt(3.6)
+    y = np.zeros_like(t)
+    for at, amp in [(0.0, 1.0), (0.287, 0.5), (0.431, 0.27), (0.503, 0.15)]:
+        tb = tt(0.3)
+        bonk = modes(tb, [(212, 0.05, 0.9), (436, 0.03, 0.4), (830, 0.016, 0.2), (1460, 0.008, 0.1)])
+        tick = fft_filter(r.standard_normal(len(tb)), 1000, 5000) * np.exp(-tb / 0.0018) * 0.6
+        floor = modes(tb, [(132, 0.06, 0.45), (208, 0.05, 0.3), (350, 0.035, 0.18)])
+        place(y, (bonk + tick + floor) * amp, at)
+    # the roll: a soft rumble that slows down and fades
+    roll_env = np.clip((t - 0.52) / 0.15, 0, 1) * np.clip((3.4 - t) / 2.8, 0, 1) ** 1.6
+    rumble = fft_filter(r.standard_normal(len(t)), 50, 380, 2)
+    rumble /= np.abs(rumble).max()
+    grit = fft_filter(r.standard_normal(len(t)), 1200, 4500, 2)
+    grit /= np.abs(grit).max()
+    y += (rumble * 0.22 + grit * 0.025) * roll_env * (0.8 + 0.2 * np.sin(2 * np.pi * 1.7 * t))
+    save('ball_bounce_roll.wav', reverb(y, 0.4, 0.15, seed=352), peak=0.85)
+
+
+def make_cardboard_handle():
+    """a big piece of cardboard being carried and lifted: rustle, flex, scrape"""
+    r = rng(361)
+    t = tt(1.7)
+    y = np.zeros_like(t)
+    for at, dur, amp in [(0.05, 0.12, 0.45), (0.5, 0.1, 0.4), (0.92, 0.14, 0.7), (1.12, 0.2, 1.0), (1.38, 0.12, 0.6)]:
+        y += cloth_burst(r, t, at, dur, amp, 700, 7000)
+        tc = np.maximum(t - at, 0)
+        flex = np.sin(2 * np.pi * (120 + 40 * r.random()) * tc + 2 * np.sin(2 * np.pi * 9 * tc)) * np.exp(-tc / 0.07) * 0.3 * amp * (t > at)
+        y += flex
+    save('cardboard_handle.wav', reverb(fade(y, 0.02, 0.25), 0.3, 0.12, seed=362), peak=0.75)
+
+
+def make_phone_on_couch():
+    """a phone put down on a soft couch cushion: a dull, muffled thud"""
+    r = rng(371)
+    t = tt(0.7)
+    thump = np.sin(2 * np.pi * (82 + 30 * np.exp(-t / 0.02)) * t) * np.exp(-t / 0.05) * 1.0
+    fabric = fft_filter(r.standard_normal(len(t)), 120, 1100) * np.exp(-t / 0.028) * 0.6
+    tick = fft_filter(r.standard_normal(len(t)), 1500, 3500) * np.exp(-t / 0.003) * 0.08
+    save('phone_on_couch.wav', reverb(thump + fabric + tick, 0.25, 0.1, seed=372), peak=0.8)
+
+
+def make_cardboard_drop():
+    """a flat sheet of cardboard slapping onto a wooden floor"""
+    r = rng(381)
+    t = tt(1.0)
+    slap = fft_filter(r.standard_normal(len(t)), 250, 4500) * np.exp(-t / 0.016) * 1.2
+    body = modes(t, [(188, 0.05, 0.6), (326, 0.04, 0.45), (560, 0.03, 0.3), (930, 0.02, 0.15)])
+    floor = np.sin(2 * np.pi * (78 + 25 * np.exp(-t / 0.02)) * t) * np.exp(-t / 0.07) * 0.7
+    # a corner flaps down a moment later
+    tb = np.maximum(t - 0.09, 0)
+    flap = fft_filter(r.standard_normal(len(t)), 400, 3000) * np.exp(-tb / 0.01) * 0.25 * (t > 0.09)
+    save('cardboard_drop.wav', reverb(slap + body + floor + flap, 0.45, 0.18, seed=382), peak=0.85)
+
+
+def make_couch_creak():
+    """the sofa frame creaks and the springs give as he shifts his weight"""
+    r = rng(391)
+    t = tt(1.4)
+    y = np.zeros_like(t)
+    # stick-slip creak: a train of small pulses exciting the wooden frame
+    at, i = 0.04, 0
+    while at < 0.62:
+        rate = 140 + 110 * np.sin(np.pi * at / 0.62) + 20 * r.standard_normal()
+        tp = tt(0.06)
+        pulse = modes(tp, [(420, 0.008, 0.6), (690, 0.006, 0.4), (1130, 0.004, 0.25)]) * (0.5 + 0.5 * np.sin(np.pi * at / 0.62))
+        place(y, pulse * (0.7 + 0.3 * r.random()), at)
+        at += 1.0 / max(rate, 60)
+        i += 1
+    # cushion compression and a faint spring
+    cush = fft_filter(r.standard_normal(len(t)), 80, 900, 2) * np.exp(-((t - 0.35) / 0.25) ** 2) * 0.35
+    spring = (np.sin(2 * np.pi * 92 * t) + 0.4 * np.sin(2 * np.pi * 276 * t)) * np.exp(-t / 0.35) * 0.12 * np.minimum(t / 0.05, 1)
+    save('couch_creak.wav', reverb(fade(y + cush + spring, 0.01, 0.3), 0.45, 0.2, seed=392), peak=0.75)
+
+
+def make_footsteps_barefoot():
+    """light barefoot steps on a wooden floor: soft skin thump, no shoe click"""
+    r = rng(401)
+    buf = np.zeros(int(7.0 * SR))
+    for i in range(10):
+        t = tt(0.4)
+        thump = np.sin(2 * np.pi * (78 + 14 * r.random() + 30 * np.exp(-t / 0.015)) * t) * np.exp(-t / 0.035) * 1.2
+        slap = fft_filter(r.standard_normal(len(t)), 500, 2600) * np.exp(-t / 0.006) * 0.35
+        wood = modes(t, [(150 + 20 * r.random(), 0.06, 0.35), (240 + 30 * r.random(), 0.045, 0.22), (400 + 40 * r.random(), 0.03, 0.12)])
+        heel_toe = np.zeros_like(t)
+        place(heel_toe, fft_filter(r.standard_normal(len(tt(0.1))), 300, 1800) * np.exp(-tt(0.1) / 0.01) * 0.25, 0.06 + 0.02 * r.random())
+        place(buf, (thump + slap + wood + heel_toe) * (0.85 + 0.3 * r.random()), 0.2 + i * 0.62)
+    save('footsteps_barefoot.wav', reverb(buf, 0.3, 0.14, seed=402), peak=0.8)
+
+
 if __name__ == '__main__':
     make_footsteps()
     make_door_close()
@@ -605,3 +787,14 @@ if __name__ == '__main__':
     make_whoosh()
     make_knee_floor()
     make_cloth_hug()
+    make_phone_scroll()
+    make_phone_notification()
+    make_phone_buzz()
+    make_cloth_tug()
+    make_toy_squeak()
+    make_ball_bounce_roll()
+    make_cardboard_handle()
+    make_phone_on_couch()
+    make_cardboard_drop()
+    make_couch_creak()
+    make_footsteps_barefoot()
