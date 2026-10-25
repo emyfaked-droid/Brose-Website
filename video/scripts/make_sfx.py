@@ -763,6 +763,240 @@ def make_footsteps_barefoot():
     save('footsteps_barefoot.wav', reverb(buf, 0.3, 0.14, seed=402), peak=0.8)
 
 
+
+# ================================================================== MOTIVATION (bus stop, four days)
+def place_wrap(buf, snd, at):
+    """add snd at `at` seconds, wrapping around the end (for seamless loops)"""
+    i = int(at * SR) % len(buf)
+    idx = (np.arange(len(snd)) + i) % len(buf)
+    np.add.at(buf, idx, snd)
+
+
+def periodic_noise(n, seed, lo=None, hi=None, order=2):
+    """filtered noise that loops seamlessly (the FFT filter is circular)"""
+    return fft_filter(rng(seed).standard_normal(n), lo, hi, order)
+
+
+def make_street_day():
+    """edge of town by day: open air, a far-off road, a few birds"""
+    r = rng(501)
+    n = int(12.0 * SR)
+    t = np.arange(n) / SR
+    air = periodic_noise(n, 502, 40, 900, 2) * 0.5
+    road = periodic_noise(n, 503, 60, 420, 2) * (0.6 + 0.4 * np.sin(2 * np.pi * t / 6.0) ** 2) * 0.5
+    birds = np.zeros(n)
+    def chirp(f0, f1, dur):
+        tc = tt(dur); u = tc / dur
+        ph = 2 * np.pi * np.cumsum(f0 + (f1 - f0) * u) / SR
+        return (np.sin(ph) + 0.25 * np.sin(2 * ph)) * np.sin(np.pi * u) ** 0.8
+    for at in [0.6, 2.3, 3.1, 5.4, 7.2, 8.0, 10.1, 11.2]:
+        for i in range(int(2 + 3 * r.random())):
+            f = 3200 + 1600 * r.random()
+            place_wrap(birds, chirp(f, f * (0.8 + 0.4 * r.random()), 0.06 + 0.05 * r.random()) * (0.5 + 0.5 * r.random()), at + i * (0.1 + 0.05 * r.random()))
+    birds = reverb(fft_filter(birds, 1800, 8000, 2), 1.0, 0.4, seed=504)
+    save('street_day.wav', air + road + birds * 0.22, peak=0.6)
+
+
+def make_car_pass_far():
+    """one car on a road far away: a dull swell that rises and falls in pitch"""
+    r = rng(511)
+    t = tt(4.0)
+    c = 1.7
+    env = np.exp(-((t - c) / 0.85) ** 2)
+    eng = np.zeros_like(t)
+    f = 95 * (1 + 0.06 * np.tanh((c - t) / 0.4))           # a little Doppler
+    ph = 2 * np.pi * np.cumsum(f) / SR
+    eng = (np.sin(ph) + 0.5 * np.sin(2 * ph) + 0.25 * np.sin(3 * ph)) * 0.25
+    tyres = fft_filter(r.standard_normal(len(t)), 200, 1400, 2)
+    y = (tyres + eng) * env
+    y = fft_filter(y, 40, 1200, 2)
+    save('car_pass_far.wav', reverb(fade(y, 0.3, 0.6), 1.4, 0.35, seed=512), peak=0.6)
+
+
+def make_neon_buzz():
+    """the sign's transformer hum: mains harmonics with a buzzy edge and a faint crackle, loops seamlessly (6 s)"""
+    n = int(6.0 * SR)
+    t = np.arange(n) / SR
+    x = np.sin(2 * np.pi * 100 * t)
+    buzz = np.sign(x) * np.abs(x) ** 0.35                     # clipped, rich in harmonics
+    hum = 0.6 * np.sin(2 * np.pi * 100 * t) + 0.35 * np.sin(2 * np.pi * 200 * t) + 0.2 * np.sin(2 * np.pi * 300 * t)
+    y = hum + fft_filter(buzz, 180, 3200, 2) * 0.35
+    y *= 1 + 0.06 * np.sin(2 * np.pi * t / 1.5)                 # slow wobble (period divides the loop)
+    crackle = periodic_noise(n, 521, 2000, 8000, 2) * (periodic_noise(n, 522, None, 3, 1) > 0.012) * 0.08
+    save('neon_buzz.wav', y + crackle, peak=0.55)
+
+
+def make_bench_creak():
+    """sitting down on a slatted bench: a body thump, then the slats creak and settle"""
+    r = rng(531)
+    t = tt(1.2)
+    thump = np.sin(2 * np.pi * (70 + 40 * np.exp(-t / 0.02)) * t) * np.exp(-t / 0.06) * 1.3
+    knock = modes(t, [(180, 0.08, 0.6), (290, 0.06, 0.4), (520, 0.04, 0.25)])
+    creak = np.zeros_like(t)
+    at = 0.09
+    while at < 0.7:
+        rate = 160 + 90 * np.sin(np.pi * (at - 0.09) / 0.6) + 25 * r.standard_normal()
+        tp = tt(0.05)
+        pulse = modes(tp, [(510, 0.007, 0.6), (820, 0.005, 0.35), (1300, 0.004, 0.2)]) * np.sin(np.pi * (at - 0.09) / 0.61)
+        place(creak, pulse * (0.6 + 0.4 * r.random()), at)
+        at += 1.0 / max(rate, 60)
+    cloth = fft_filter(r.standard_normal(len(t)), 600, 5000, 2) * np.exp(-((t - 0.1) / 0.12) ** 2) * 0.12
+    save('bench_creak.wav', reverb(fade(thump + knock + creak * 0.8 + cloth, 0.0, 0.3), 0.5, 0.2, seed=532), peak=0.8)
+
+
+def make_rain():
+    """rain on the shelter roof and the street: hiss, drops on the roof panel, a low patter; loops (8 s)"""
+    r = rng(541)
+    n = int(8.0 * SR)
+    hiss = periodic_noise(n, 542, 400, 9000, 2) * 0.35
+    low = periodic_noise(n, 543, 60, 500, 2) * 0.4
+    drops = np.zeros(n)
+    td = tt(0.04)
+    for i in range(1400):
+        f = 1800 + 3200 * r.random()
+        d = modes(td, [(f, 0.004 + 0.004 * r.random(), 1.0), (f * 1.6, 0.003, 0.4)])
+        place_wrap(drops, d * (0.2 + 0.8 * r.random() ** 2), r.random() * 8.0)
+    roof = np.zeros(n)
+    tr = tt(0.12)
+    for i in range(260):     # heavier drops drumming on the roof panel
+        f = 300 + 250 * r.random()
+        place_wrap(roof, modes(tr, [(f, 0.03, 1.0), (f * 2.3, 0.015, 0.4)]) * (0.3 + 0.7 * r.random()), r.random() * 8.0)
+    y = hiss + low + drops * 0.18 + roof * 0.12
+    save('rain.wav', reverb(y, 0.6, 0.25, seed=544), peak=0.6)
+
+
+def make_winter_wind():
+    """cold wind: noise bands that swell and whistle a little; loops (8 s)"""
+    n = int(8.0 * SR)
+    t = np.arange(n) / SR
+    y = np.zeros(n)
+    for k, (fc, bw, per, ph) in enumerate([(320, 260, 8.0, 0.0), (650, 300, 4.0, 1.3), (1150, 220, 8.0 / 3, 2.1), (2100, 400, 2.0, 0.6)]):
+        band = periodic_noise(n, 551 + k, fc - bw / 2, fc + bw / 2, 3)
+        gust = 0.55 + 0.45 * np.sin(2 * np.pi * t / per + ph)
+        y += band * gust * (1.0 if k < 2 else 0.5)
+    # a faint whistle that comes and goes with the gusts
+    whistle = np.sin(2 * np.pi * np.cumsum(880 + 60 * np.sin(2 * np.pi * t / 4.0)) / SR) * (np.sin(2 * np.pi * t / 8.0) ** 4) * 0.05
+    rumble = periodic_noise(n, 559, 30, 180, 2) * 0.5
+    save('winter_wind.wav', y + whistle + rumble, peak=0.6)
+
+
+def make_night_crickets():
+    """a summer night: several crickets, each with its own rhythm, and quiet air; loops (12 s)"""
+    r = rng(561)
+    n = int(12.0 * SR)
+    y = np.zeros(n)
+    for c in range(5):
+        fc = 4300 + 900 * r.random()
+        pulse_rate = 26 + 10 * r.random()        # wing strokes per second within a chirp
+        chirp_len = 0.08 + 0.12 * r.random()
+        period = 0.35 + 0.5 * r.random()
+        gain = (0.35 + 0.65 * r.random()) * (1.0 if c < 2 else 0.4)
+        tc = tt(chirp_len)
+        carrier = np.sin(2 * np.pi * fc * tc)
+        am = np.clip(np.sin(2 * np.pi * pulse_rate * tc), 0, 1) ** 2
+        chirp = carrier * am * np.sin(np.pi * tc / chirp_len)
+        at = r.random() * period
+        while at < 12.0:
+            place_wrap(y, chirp * gain * (0.8 + 0.2 * r.random()), at)
+            at += period * (0.95 + 0.1 * r.random())
+    y = reverb(y, 0.9, 0.4, seed=562)
+    air = periodic_noise(n, 563, 60, 700, 2) * 0.08
+    save('night_crickets.wav', y * 0.5 + air, peak=0.55)
+
+
+def make_footsteps_street():
+    """shoes on a concrete pavement: a hard heel click, the sole, a little grit"""
+    r = rng(571)
+    buf = np.zeros(int(7.5 * SR))
+    for i in range(11):
+        t = tt(0.45)
+        click = fft_filter(r.standard_normal(len(t)), 1500, 7000) * np.exp(-t / 0.0035) * 1.1
+        thud = np.sin(2 * np.pi * (95 + 20 * r.random() + 50 * np.exp(-t / 0.012)) * t) * np.exp(-t / 0.03) * 0.9
+        sole = fft_filter(r.standard_normal(len(t)), 400, 2500) * np.exp(-((t - 0.055) / 0.03) ** 2) * 0.35
+        grit = fft_filter(r.standard_normal(len(t)), 3000, 9000) * np.exp(-((t - 0.07) / 0.05) ** 2) * 0.08
+        place(buf, (click + thud + sole + grit) * (0.8 + 0.4 * r.random()), 0.2 + i * 0.65)
+    save('footsteps_street.wav', reverb(buf, 0.7, 0.18, seed=572), peak=0.8)
+
+
+def make_footsteps_puddle():
+    """running steps through rain water: a soft thump and a splash with droplets"""
+    r = rng(581)
+    buf = np.zeros(int(7.5 * SR))
+    for i in range(11):
+        t = tt(0.45)
+        thud = np.sin(2 * np.pi * (85 + 20 * r.random() + 40 * np.exp(-t / 0.012)) * t) * np.exp(-t / 0.03) * 0.8
+        splash = fft_filter(r.standard_normal(len(t)), 700, 6000) * (np.exp(-t / 0.05) - np.exp(-t / 0.004)) * 1.0
+        drops = np.zeros_like(t)
+        for k in range(14):
+            f = 900 + 2600 * r.random()
+            place(drops, modes(tt(0.03), [(f * (1 + 0.5 * tt(0.03) / 0.03), 0.006, 1.0)]) * (0.3 + 0.7 * r.random()), 0.02 + 0.16 * r.random() ** 1.5)
+        place(buf, (thud + splash + drops * 0.35) * (0.8 + 0.4 * r.random()), 0.2 + i * 0.65)
+    save('footsteps_puddle.wav', reverb(buf, 0.6, 0.2, seed=582), peak=0.8)
+
+
+def make_footsteps_snow():
+    """running steps in fresh snow: a muffled crunch of many tiny grains"""
+    r = rng(591)
+    buf = np.zeros(int(7.5 * SR))
+    for i in range(11):
+        t = tt(0.4)
+        thud = np.sin(2 * np.pi * (70 + 15 * r.random()) * t) * np.exp(-t / 0.04) * 0.6
+        crunch = np.zeros_like(t)
+        dur = 0.09 + 0.05 * r.random()
+        for k in range(90):
+            at = dur * r.random() ** 0.8
+            g = fft_filter(r.standard_normal(len(tt(0.006))), 1200, 6000, 2) * np.exp(-tt(0.006) / 0.0012)
+            place(crunch, g * (0.4 + 0.6 * r.random()) * (1 - at / (dur * 1.1)), at)
+        crunch = fft_filter(crunch, 500, 5000, 2)
+        place(buf, (thud + crunch * 1.4) * (0.8 + 0.4 * r.random()), 0.2 + i * 0.65)
+    save('footsteps_snow.wav', reverb(buf, 0.35, 0.1, seed=592), peak=0.8)
+
+
+def make_jog_breathing():
+    """out of breath after a run: quick deep breaths in and out that slowly calm down (3 s)"""
+    r = rng(601)
+    n = int(3.2 * SR)
+    y = np.zeros(n)
+    at, per = 0.05, 0.55
+    while at < 3.0:
+        for kind, dur, gain in [('in', per * 0.38, 0.55), ('out', per * 0.55, 1.0)]:
+            tb = tt(dur); u = tb / dur
+            src = r.standard_normal(len(tb))
+            if kind == 'in':
+                vt = formants(src, [(800, 500, 1.0), (1700, 600, 0.6), (3000, 900, 0.3)])
+                env = np.sin(np.pi * u ** 0.7) ** 1.5
+            else:
+                vt = formants(src, [(600, 400, 1.0), (1200, 500, 0.7), (2600, 800, 0.3)])
+                env = np.sin(np.pi * u ** 0.45) ** 1.2 * (1 - 0.3 * u)
+            place(y, fft_filter(vt, 250, 6000, 2) * env * gain * (0.85 + 0.3 * r.random()), at)
+            at += dur * (0.95 if kind == 'in' else 1.0)
+        at += per * 0.07
+        per *= 1.04                      # calming down
+    save('jog_breathing.wav', reverb(y, 0.4, 0.12, seed=602), peak=0.75)
+
+
+def make_neon_flicker_off():
+    """the tube stutters and dies: a click, three buzzy zaps on the sign's flicker frames, a last tink"""
+    r = rng(611)
+    t = tt(1.4)
+    y = np.zeros_like(t)
+    # same pattern as FLICK in motivation.html, relative to 14.40 s: (on from, on to, level)
+    on = [(0.06, 0.17, 1.0), (0.22, 0.31, 0.7), (0.39, 0.44, 0.45)]
+    click = fft_filter(r.standard_normal(len(tt(0.03))), 1500, 9000) * np.exp(-tt(0.03) / 0.002)
+    place(y, click * 1.2, 0.0)
+    for a, b, v in on:
+        tz = tt(b - a)
+        x = np.sin(2 * np.pi * 100 * tz)
+        zap = (np.sign(x) * np.abs(x) ** 0.2) * 0.6 + fft_filter(r.standard_normal(len(tz)), 1500, 8000) * 0.5
+        zap *= np.minimum(1, tz / 0.004) * np.minimum(1, (b - a - tz) / 0.006)
+        place(y, zap * v, a)
+        place(y, click * 0.8 * v, a)
+        place(y, click * 0.6 * v, b)
+    tink = modes(tt(0.6), [(3100, 0.08, 0.5), (4700, 0.05, 0.3)])
+    place(y, tink * 0.25, 0.47)
+    save('neon_flicker_off.wav', reverb(y, 0.5, 0.18, seed=612), peak=0.8)
+
+
 if __name__ == '__main__':
     make_footsteps()
     make_door_close()
@@ -798,3 +1032,7 @@ if __name__ == '__main__':
     make_cardboard_drop()
     make_couch_creak()
     make_footsteps_barefoot()
+    for f in (make_street_day, make_car_pass_far, make_neon_buzz, make_bench_creak, make_rain, make_winter_wind,
+              make_night_crickets, make_footsteps_street, make_footsteps_puddle, make_footsteps_snow, make_jog_breathing,
+              make_neon_flicker_off):
+        f()

@@ -1,8 +1,8 @@
-# Stick-figure shorts (Ask Twice, It Ends With You, I Wish I Was Your Phone)
+# Stick-figure shorts (Ask Twice, It Ends With You, I Wish I Was Your Phone, Motivation)
 
 Three films share one engine (`engine.js`): `index.html` = **Ask Twice**, `it-ends-with-you.html` = **It Ends With You**,
-`i-wish-i-was-your-phone.html` = **I Wish I Was Your Phone**.
-Use `FILM=<page name>` (or the `npm run iewy:*` / `npm run phone:*` scripts) to point the render, check and mix scripts at another film.
+`i-wish-i-was-your-phone.html` = **I Wish I Was Your Phone**, `motivation.html` = **Motivation**.
+Use `FILM=<page name>` (or the `npm run iewy:*` / `npm run phone:*` / `npm run mot:*` scripts) to point the render, check and mix scripts at another film.
 
 
 A 19-second vertical (720×1280, 30 fps) stick-figure short drawn entirely in code,
@@ -105,3 +105,22 @@ sofa, the lamp turns from cold white to warm yellow, the child drops the cardboa
 - Sound: `FILES_PHONE` / `timelinePhone` in `sound-timeline.js`. Thumb taps, ball bounces, the cardboard slap and barefoot
   steps come from the animation's own times; at 10.4 s everything drops to the room tone at -40 dB for 1.5 s.
 - `npm run phone:check | phone:stills | phone:render | phone:mix | phone:build`; output `out/i-wish-i-was-your-phone.mp4`.
+
+## Motivation (`motivation.html`)
+
+19 s. A bus stop at the edge of town (side view): shelter, bench, a pole with a neon sign box reading **MOTIVATION** (the only
+colour, warm yellow) and a timetable **NEXT BUS: SOON**. Four days, cross-dissolved (0.4 s), each with its own weather and light:
+**DAY 1** (soft grey day) A and B wait, look down the road, A shrugs and walks off, B sits down; **DAY 30** (rain, puddles that
+mirror the sign) A jogs past behind the shelter while B sits hunched; **DAY 180** (snow that piles up on the bench and on B's head
+and back, breath clouds) A runs past, B looks at his watch once; **DAY 365** (night, one street lamp) B gets up stiffly and taps
+the timetable, A jogs in and stops next to him, out of breath. **IT NEVER CAME.** The sign flickers three times and dies, A nods
+"come on", B hesitates, takes one heavy step and walks with him. **START WITHOUT IT.**
+
+- New in the engine (the other three films render pixel-identical, 75 frames checked): `tr.hyaw` (head yaw, for looking
+  around), `tr.pant` (fast breathing after a run), `fig.walkMix(t, to, m1, n1, m2)` (first n1 steps in one gait, then another,
+  speed and posture blend), and a reworked run cycle for `jog` / `run`: the heel kicks up behind after the toe-off, the knee
+  drives forward, the shin reaches out onto the heel; the first two and the last two steps of a run are shorter (getting going,
+  braking), and the step phase follows the real footfalls. Foot locking still holds (`npm run mot:check`).
+- Sound: `FILES_MOT` / `timelineMot` in `sound-timeline.js`. The weather beds cross-fade on the cuts, footsteps follow the day
+  (dry, puddle, snow), the neon buzz is cut on the sign's flicker frames. 12 new generated sounds in `scripts/make_sfx.py`.
+- `npm run mot:check | mot:stills | mot:render | mot:mix | mot:build`; output `out/motivation.mp4` (-14.1 LUFS, -1.7 dBTP).
