@@ -1,8 +1,8 @@
-# Stick-figure shorts (Ask Twice, It Ends With You, I Wish I Was Your Phone)
+# Stick-figure shorts (Ask Twice, It Ends With You, I Wish I Was Your Phone, Tired For You)
 
-Three films share one engine (`engine.js`): `index.html` = **Ask Twice**, `it-ends-with-you.html` = **It Ends With You**,
-`i-wish-i-was-your-phone.html` = **I Wish I Was Your Phone**.
-Use `FILM=<page name>` (or the `npm run iewy:*` / `npm run phone:*` scripts) to point the render, check and mix scripts at another film.
+Four films share one engine (`engine.js`): `index.html` = **Ask Twice**, `it-ends-with-you.html` = **It Ends With You**,
+`i-wish-i-was-your-phone.html` = **I Wish I Was Your Phone**, `tired-for-you.html` = **Tired For You**.
+Use `FILM=<page name>` (or the `npm run iewy:*` / `phone:*` / `tired:*` scripts) to point the render, check and mix scripts at another film.
 
 
 A 19-second vertical (720×1280, 30 fps) stick-figure short drawn entirely in code,
@@ -105,3 +105,23 @@ sofa, the lamp turns from cold white to warm yellow, the child drops the cardboa
 - Sound: `FILES_PHONE` / `timelinePhone` in `sound-timeline.js`. Thumb taps, ball bounces, the cardboard slap and barefoot
   steps come from the animation's own times; at 10.4 s everything drops to the room tone at -40 dB for 1.5 s.
 - `npm run phone:check | phone:stills | phone:render | phone:mix | phone:build`; output `out/i-wish-i-was-your-phone.mp4`.
+
+## Tired For You (`tired-for-you.html`)
+
+20 s, present -> a rewound "tape" of his week -> present. Saturday: the father asleep on the sofa, the child waits with its ball
+and gives up (**DAD IS ALWAYS TIRED.**). Rewind (scanlines, torn strips, blur, **EARLIER THIS WEEK**). 5:30 AM: alarm, he gets up
+stiffly, stretches his back, takes JOB 1 and leaves. 6:10 PM: home, drops the bag, the child runs to him, he kneels and pats its
+head, takes JOB 2 and leaves again. 11:40 PM: he comes in, drops the bag, falls sideways onto the sofa. Fast-forward back to
+Saturday: the child understands, drags a blanket over, lays it over him on tiptoes and sits down against the sofa while the lamp
+turns warm. **HE'S NOT LAZY. / HE'S TIRED FOR YOU.**
+
+- The flashback is a montage: short tape skips cut between the moments of his day; every shot has its own figures (`SHOTS`).
+- The blanket is a cloth simulation: 15 x 11 particles with distance constraints (Verlet), floor friction, collisions with the
+  sofa and with the sleeping father (capsules); two points follow the child's hands until it lets go, then a soft pull lays it
+  out over him. It is integrated on a fixed 1/240 s grid, so every frame is deterministic.
+- People in the hall are drawn through the door opening only; the leaf (opening outward) covers them when it shuts.
+- New in the engine (the other films render pixel-identical): `roll2` and `rollSh` (lying on the side), `dropL`/`dropR`
+  (a heavy bag pulls one shoulder down), `kdir` on foot goals (knee direction, e.g. sitting on the floor), caption colour.
+- Sound: `FILES_TIRED` / `timelineTired`; the snore is laid on his in-breaths (the breathing period is the file's period).
+  `mix.js` now re-checks the true peak after AAC encoding and limits lower if the encoder pushed it over the ceiling.
+- `npm run tired:check | tired:stills | tired:render | tired:mix | tired:build`; output `out/tired-for-you.mp4`.

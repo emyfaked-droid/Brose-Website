@@ -53,3 +53,9 @@ Then run `npm run mix` (or `npm run build` to re-render the picture as well).
 "barefoot steps wooden floor", "fabric sleeve tug", "rubber toy squeak", "small ball bounce roll floor",
 "cardboard handling rustle", "phone dropped on couch", "cardboard drop floor", "sofa creak". Taps and barefoot steps are
 cut out one by one, so a recording of separate taps / steps with small gaps works best.
+
+## Extra files for "Tired For You"
+
+`soft_snore`, `tape_rewind`, `tired_sigh`, `keys`, `bag_drop`, `night_outside`, `sofa_flop`, `blanket_rustle` (plus the existing
+`room_tone`, `clock_tick`, `phone_alarm`, `door_open`, `door_close`, `footsteps_wood`, `footsteps_barefoot`). Search terms are in
+`FILES_TIRED` in `sound-timeline.js`. A real `soft_snore` recording should breathe about every 3.6 s (that is the film's breathing).

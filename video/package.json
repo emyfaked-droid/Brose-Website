@@ -19,7 +19,12 @@
     "phone:stills": "FILM=i-wish-i-was-your-phone node scripts/stills.js",
     "phone:render": "FILM=i-wish-i-was-your-phone node scripts/render.js",
     "phone:mix": "FILM=i-wish-i-was-your-phone node scripts/mix.js",
-    "phone:build": "npm run phone:check && npm run phone:render && npm run phone:mix"
+    "phone:build": "npm run phone:check && npm run phone:render && npm run phone:mix",
+    "tired:check": "FILM=tired-for-you node scripts/check.js && FILM=tired-for-you node scripts/popcheck.js",
+    "tired:stills": "FILM=tired-for-you node scripts/stills.js",
+    "tired:render": "FILM=tired-for-you node scripts/render.js",
+    "tired:mix": "FILM=tired-for-you node scripts/mix.js",
+    "tired:build": "npm run tired:check && npm run tired:render && npm run tired:mix"
   },
   "dependencies": {
     "playwright": "^1.50.0"

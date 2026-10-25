@@ -176,6 +176,9 @@ class Fig {
       yaw: o.yaw, pf: 0, pl: 0, pz: 0, lean: 3, slump: 0, roll: 0, twist: 0,
       head: 0, headRoll: 0, shDrop: 0, breath: 1, dance: 0, laugh: 0, idle: 1, bounce: 0, settle: 1,
       ox: 0, od: 0,   // pelvis offset in world axes (skeleton units), e.g. a child being lifted
+      roll2: 0,       // extra sideways roll of the upper spine only (lying on the side: roll -150, roll2 60)
+      rollSh: 0,      // rotates the shoulder and hip lines with a sideways roll (lying on the side)
+      dropL: 0, dropR: 0,   // pull one shoulder down (carrying something heavy)
       aSwL: 4, aOutL: 9, aElL: 12, aSwR: 4, aOutR: 9, aElR: 12,
     };
     for (const k in defaults) tr[k] = new Track(defaults[k]);
@@ -361,7 +364,7 @@ class Fig {
       const toe = [heel[0] + f[0] * FL * cc, heel[1] + f[1] * FL * cc, heel[2] + FL * sn];
       const lo = Math.min(heel[2], toe[2]);
       if (lo < 0) { heel[2] -= lo; toe[2] -= lo; ank[2] -= lo; }
-      feet[side] = { heel, toe, ank, pitch: th, yaw: yw, kyaw: tg.kyaw === undefined ? undefined : angLerp(ft.yaw, tg.kyaw, w), planted: w >= 1, u: w >= 1 ? 1 : w * 0.7, plant: g };
+      feet[side] = { heel, toe, ank, pitch: th, yaw: yw, kyaw: tg.kyaw === undefined ? undefined : angLerp(ft.yaw, tg.kyaw, w), planted: w >= 1, u: w >= 1 ? 1 : w * 0.7, plant: g, kdir: tg.kdir, kw: w };
     }
     J.feet = feet;
 
@@ -395,7 +398,10 @@ class Fig {
     let Pv = [root[0] + F[0] * pf + R[0] * pl + tr.ox.at(t), root[1] + F[1] * pf + R[1] * pl + tr.od.at(t), H0 + pz + br * 0.6];
     // hip rotation in the walk: the swinging leg's hip comes forward
     const fl = { L: gw > 0 ? this.legFwd('L', t) : 0, R: gw > 0 ? this.legFwd('R', t) : 0 };
-    const hipOf = (side, P) => { const sg = side === 'R' ? 1 : -1; return add(add(P, mul(R, sg * DIM.hipW)), mul(F, 2.6 * fl[side] * gw)); };
+    // a sideways roll (lying on the side) turns the hip and shoulder lines with the body
+    const rs = tr.rollSh.at(t) * D2R;
+    const Rh = rs ? norm(add(mul(R, Math.cos(rs)), [0, 0, -Math.sin(rs)])) : R;
+    const hipOf = (side, P) => { const sg = side === 'R' ? 1 : -1; return add(add(P, mul(Rh, sg * DIM.hipW)), mul(F, 2.6 * fl[side] * gw)); };
     // never let the pelvis rise above what the planted legs can reach
     for (const side of ['L', 'R']) {
       const ft = feet[side], wgt = ft.planted ? 1 : sstep(0.72, 1, ft.u);
@@ -412,7 +418,8 @@ class Fig {
       // knees point between where the body and the foot face (angular mean, never cancels out)
       const ky = ft.kyaw === undefined ? angLerp(yaw, ft.yaw, 0.5) : ft.kyaw;
       const kF = fwd(ky), kR = rgt(ky);
-      const pole = add(add(hp, mul(kF, 140)), add(mul(kR, sg * 18), [0, 0, -25]));
+      let pole = add(add(hp, mul(kF, 140)), add(mul(kR, sg * 18), [0, 0, -25]));
+      if (ft.kdir) pole = lerp3(pole, add(hp, mul(norm(ft.kdir), 140)), ft.kw);   // e.g. knees up when sitting on the floor
       const [kn, an] = ik2(hp, ft.ank, DIM.thigh, DIM.shin, pole);
       const off = sub(an, ft.ank);
       J.hip[side] = hp; J.knee[side] = kn; J.ank[side] = an; J.toe[side] = add(ft.toe, off); J.heel[side] = add(ft.heel, off);
@@ -430,7 +437,7 @@ class Fig {
     const twist = tr.twist.at(t) - (fl.L - fl.R) * (wk ? wk.m.twist : 4) * gw;      // shoulders counter-rotate against the hips
     const Ft = fwd(yaw + twist), Rt = rgt(yaw + twist);
     const shake = Math.sin(TAU * 8.5 * t + sd) * lg;
-    let N = madd(C, sdir(lean + slump, roll, Ft, Rt), DIM.torso * 0.5 + br * 0.9);
+    let N = madd(C, sdir(lean + slump, roll + tr.roll2.at(t) * D2R, Ft, Rt), DIM.torso * 0.5 + br * 0.9);
     N[2] += shake * 2.6;
     J.C = C; J.N = N; J.Ft = Ft; J.Rt = Rt;
 
@@ -446,7 +453,8 @@ class Fig {
     const shDrop = tr.shDrop.at(t);
     for (const side of ['L', 'R']) {
       const sg = side === 'R' ? 1 : -1, S = side;
-      let sh = add(add(N, mul(Rt, sg * DIM.shW)), [0, 0, -4 - shDrop + br * 1.1 + shake * 0.8]);
+      const Rts = rs ? norm(add(mul(Rt, Math.cos(rs)), [0, 0, -Math.sin(rs)])) : Rt;
+      let sh = add(add(N, mul(Rts, sg * DIM.shW)), [0, 0, -4 - shDrop - tr['drop' + S].at(t) + br * 1.1 + shake * 0.8]);
       sh = madd(sh, Ft, shDrop * 0.7);
       let sw = tr['aSw' + S].at(t), out = tr['aOut' + S].at(t), el = tr['aEl' + S].at(t);
       sw += dance * 3 * Math.sin(PI * beat + sd + sg);
@@ -693,7 +701,7 @@ function box(c, b, col) {
 }
 
 // letter-spaced monospace caption with a soft fade
-function caption(text, a, rise, size = 50, sp = 15, y0 = 196) {
+function caption(text, a, rise, size = 50, sp = 15, y0 = 196, col = [244, 242, 236]) {
   if (a <= 0.002) return;
   ctx.save();
   ctx.font = `800 ${size}px "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", monospace`;
@@ -703,14 +711,14 @@ function caption(text, a, rise, size = 50, sp = 15, y0 = 196) {
   let x = W / 2 - total / 2;
   const y = y0 - rise;
   ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 18;
-  ctx.fillStyle = `rgba(244,242,236,${a})`;
+  ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${a})`;
   for (const ch of text) { ctx.fillText(ch, x, y); x += cw + sp; }
   ctx.restore();
 }
-function captionAt(t, text, t0, t1, size, sp, y0) {
+function captionAt(t, text, t0, t1, size, sp, y0, col) {
   const a = sstep(t0, t0 + 0.28, t) * (1 - sstep(t1 - 0.35, t1, t));
   const rise = 10 * (1 - E.out(inv(t0, t0 + 0.5, t)));
-  caption(text, a, rise, size, sp, y0);
+  caption(text, a, rise, size, sp, y0, col);
 }
 
 // film grain (seeded, so it is deterministic per frame)

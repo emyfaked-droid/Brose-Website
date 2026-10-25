@@ -763,6 +763,128 @@ def make_footsteps_barefoot():
     save('footsteps_barefoot.wav', reverb(buf, 0.3, 0.14, seed=402), peak=0.8)
 
 
+# ------------------------------------------------------------------ Tired For You
+def make_soft_snore():
+    """a man snoring softly: a low flutter on every in-breath, a breathy out-breath; one breath = 3.6 s (the film's breathing)"""
+    r = rng(501)
+    period, n = 3.6, 2
+    t = tt(period * n)
+    y = np.zeros_like(t)
+    for k in range(n):
+        tc = t - k * period
+        inh = np.clip(tc / 1.55, 0, 1) * (tc >= 0) * (tc < 1.55)
+        env_in = np.sin(np.pi * inh) ** 1.5 * (tc >= 0) * (tc < 1.55)
+        flutter = 0.55 + 0.45 * np.sign(np.sin(2 * np.pi * (31 + 4 * inh) * tc))       # soft palate rattle
+        body = fft_filter(r.standard_normal(len(t)), 70, 520, 2) * flutter
+        y += formants(body, [(260, 140, 1.0), (520, 220, 0.5), (1100, 400, 0.15)]) * env_in * 1.0
+        exh = (tc >= 1.8) & (tc < 3.3)
+        env_out = np.where(exh, np.sin(np.pi * np.clip((tc - 1.8) / 1.5, 0, 1)) ** 2, 0)
+        y += fft_filter(r.standard_normal(len(t)), 250, 1800, 2) * env_out * 0.18
+    save('soft_snore.wav', fft_filter(y, 50, 3000, 2), peak=0.7)
+
+
+def make_tape_rewind():
+    """a video tape rewinding: a clunk, the motor whine running up, the tape hiss, a clunk when it stops"""
+    r = rng(511)
+    t = tt(0.75)
+    y = np.zeros_like(t)
+    tb = tt(0.12)
+    clunk = (np.sin(2 * np.pi * (140 + 60 * np.exp(-tb / 0.01)) * tb) * np.exp(-tb / 0.03) + fft_filter(r.standard_normal(len(tb)), 600, 4000) * np.exp(-tb / 0.006) * 0.6)
+    place(y, clunk, 0.0)
+    place(y, clunk * 0.7, 0.58)
+    run = (t > 0.03) & (t < 0.58)
+    u = np.clip((t - 0.03) / 0.55, 0, 1)
+    f = 500 + 1500 * np.sin(np.pi / 2 * u) ** 1.2
+    ph = 2 * np.pi * np.cumsum(f) / SR
+    whine = (np.sin(ph) + 0.35 * np.sin(2 * ph) + 0.15 * np.sin(3.01 * ph)) * 0.22
+    hiss = fft_filter(r.standard_normal(len(t)), 2500, 9000, 2) * 0.25 * (0.6 + 0.4 * np.sin(2 * np.pi * 23 * t))
+    env = np.clip((t - 0.03) / 0.05, 0, 1) * np.clip((0.58 - t) / 0.04, 0, 1) * run
+    y += (whine + hiss) * env
+    save('tape_rewind.wav', y, peak=0.8)
+
+
+def make_tired_sigh():
+    """a long, tired out-breath with a little voice in it"""
+    r = rng(521)
+    t = tt(1.4)
+    env = np.minimum(t / 0.09, 1) * np.exp(-np.maximum(t - 0.09, 0) / 0.45)
+    breath = fft_filter(r.standard_normal(len(t)), 200, 4000, 2)
+    f0 = 118 - 30 * np.clip(t / 1.0, 0, 1)
+    ph = 2 * np.pi * np.cumsum(f0) / SR
+    voice = sum(np.sin(k * ph) / k ** 1.6 for k in range(1, 12)) * 0.35 * np.exp(-t / 0.35)
+    y = formants(breath + voice, [(720, 160, 1.0), (1150, 200, 0.6), (2500, 400, 0.25)]) * env
+    save('tired_sigh.wav', reverb(fade(y, 0.01, 0.3), 0.35, 0.12, seed=522), peak=0.7)
+
+
+def make_keys():
+    """a bunch of keys jingling as the bag is lifted"""
+    r = rng(531)
+    t = tt(0.8)
+    y = np.zeros_like(t)
+    for at in [0.0, 0.03, 0.07, 0.12, 0.16, 0.22, 0.27, 0.35, 0.41, 0.5]:
+        ts = tt(0.2)
+        f = 3200 + 5200 * r.random()
+        tink = modes(ts, [(f, 0.03 + 0.04 * r.random(), 1.0), (f * 1.51, 0.02, 0.5), (f * 2.37, 0.012, 0.3)])
+        place(y, tink * (0.4 + 0.6 * r.random()) * np.exp(-at / 0.35), at + 0.004 * r.standard_normal())
+    save('keys.wav', reverb(y, 0.3, 0.12, seed=532), peak=0.7)
+
+
+def make_bag_drop():
+    """a heavy bag dropped on a wooden floor: dull thud, fabric slap, something inside knocks"""
+    r = rng(541)
+    t = tt(1.0)
+    thud = np.sin(2 * np.pi * (62 + 40 * np.exp(-t / 0.02)) * t) * np.exp(-t / 0.11) * 1.6
+    slap = fft_filter(r.standard_normal(len(t)), 180, 2200) * np.exp(-t / 0.025) * 0.8
+    wood = modes(t, [(128, 0.09, 0.5), (205, 0.07, 0.35), (340, 0.05, 0.2)])
+    y = thud + slap + wood
+    for at in (0.035, 0.08):
+        ts = tt(0.1)
+        place(y, modes(ts, [(900 + 400 * r.random(), 0.015, 0.25), (1700, 0.01, 0.12)]), at)
+    save('bag_drop.wav', reverb(y, 0.4, 0.15, seed=542), peak=0.85)
+
+
+def make_night_outside():
+    """distant city at night: a low traffic bed, now and then a car passing far away"""
+    r = rng(551)
+    n = int(12.0 * SR)
+    t = np.arange(n) / SR
+    bed = fft_filter(r.standard_normal(n), 40, 400, 2)
+    bed /= np.abs(bed).max()
+    y = bed * 0.5
+    for at, dur in [(1.5, 4.0), (6.0, 3.5), (9.0, 3.0)]:
+        env = np.exp(-((t - at - dur / 2) / (dur / 3.2)) ** 2)
+        car = fft_filter(r.standard_normal(n), 150, 1300, 2)
+        y += car / np.abs(car).max() * env * 0.5
+    save('night_outside.wav', fade(y, 0.4, 0.4), peak=0.5)
+
+
+def make_sofa_flop():
+    """a tired man falls onto a sofa: a big soft whump, the cushion breathes out, the springs give"""
+    r = rng(561)
+    t = tt(1.4)
+    whump = np.sin(2 * np.pi * (48 + 30 * np.exp(-t / 0.04)) * t) * np.exp(-t / 0.18) * 1.6
+    cush = fft_filter(r.standard_normal(len(t)), 90, 1200, 2) * np.exp(-t / 0.08) * 0.9
+    air = fft_filter(r.standard_normal(len(t)), 300, 3000, 2) * np.exp(-((t - 0.12) / 0.12) ** 2) * 0.25
+    spring = (np.sin(2 * np.pi * 88 * t) + 0.5 * np.sin(2 * np.pi * 263 * t)) * np.exp(-t / 0.4) * 0.18
+    creak = np.zeros_like(t)
+    at = 0.05
+    while at < 0.35:
+        place(creak, modes(tt(0.05), [(380, 0.007, 0.5), (640, 0.005, 0.3)]), at)
+        at += 1 / (110 + 60 * r.random())
+    save('sofa_flop.wav', reverb(whump + cush + air + spring + creak * 0.3, 0.45, 0.18, seed=562), peak=0.85)
+
+
+def make_blanket_rustle():
+    """a soft blanket dragged over the floor, lifted and laid down, smoothed"""
+    r = rng(571)
+    t = tt(2.2)
+    y = np.zeros_like(t)
+    for at, dur, amp, lo, hi in [(0.0, 0.5, 0.5, 200, 2500), (0.35, 0.6, 0.6, 200, 2500), (0.9, 0.25, 1.0, 300, 4500),
+                                 (1.15, 0.3, 0.8, 300, 4500), (1.5, 0.2, 0.45, 400, 3000), (1.75, 0.2, 0.4, 400, 3000)]:
+        y += cloth_burst(r, t, at, dur, amp, lo, hi)
+    save('blanket_rustle.wav', reverb(fade(y, 0.05, 0.3), 0.35, 0.12, seed=572), peak=0.7)
+
+
 if __name__ == '__main__':
     make_footsteps()
     make_door_close()
@@ -798,3 +920,11 @@ if __name__ == '__main__':
     make_cardboard_drop()
     make_couch_creak()
     make_footsteps_barefoot()
+    make_soft_snore()
+    make_tape_rewind()
+    make_tired_sigh()
+    make_keys()
+    make_bag_drop()
+    make_night_outside()
+    make_sofa_flop()
+    make_blanket_rustle()

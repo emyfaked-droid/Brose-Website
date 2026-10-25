@@ -1,0 +1,948 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tired For You</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   TIRED FOR YOU: present (Saturday) -> a rewound tape of his week -> present.
+   The flashback is a montage: short "tape skips" jump between moments.
+   Every shot has its own figures; the engine lives in engine.js.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story
+const T = {
+  fadeIn: 0.5,
+  // part 1: Saturday
+  kidIn: 0.6, give: 2.4, text1a: 1.0, text1b: 3.4,
+  rew0: 3.6, rew1: 4.0,
+  // part 2: his day (tape skips at the cuts)
+  m0: 4.0, alarm: 4.2, sit0: 4.28, sit1: 4.86, stand0: 4.8, stand1: 5.1, stretch0: 4.98, cutM: 5.25,
+  grabM: 5.38, walkM: 5.5,
+  e0: 6.4, dropE: 6.38, inE: 6.55, run: 6.9, kneel0: 7.45, pat0: 7.88, pat1: 8.3, cutE: 8.35,
+  grabE: 8.52, walkE: 8.66,
+  n0: 9.6, dropN: 9.98, cutN: 10.35, fall0: 10.42, flop: 10.62,
+  fwd0: 12.0, fwd1: 12.4,
+  // part 3: Saturday
+  p3: 12.4, out0: 13.0, back: 13.8, lay0: 14.6, release: 15.12, lay1: 15.8, sit: 16.2,
+  warm0: 15.8, warm1: 17.0,
+  textA0: 14.2, textA1: 19.2, textB0: 16.2, textB1: 19.2,
+  fadeOut: 19.2, end: 20.0,
+  stills: [1.5, 3.8, 5.0, 7.8, 10.8, 13.0, 15.2, 17.5],
+};
+
+// ---------------------------------------------------------------- the room
+const WALL = 175;
+const DOOR = { x0: 130, x1: 280, z1: 395 };                 // same size as in Ask Twice; opens outward into the hall
+const SOFA = { x0: 300, x1: 560, d0: 105, d1: 175, seat: 84, arm: 118, back: 172, armW: 22 };
+const WIN = { x0: 600, x1: 708, z0: 150, z1: 330 };
+const LAMP = [430, 128, 338];
+const BAG = { w: 54, d: 28, h: 44 };
+const HOME = { 'JOB 1': [92, 158], 'JOB 2': [34, 158] };    // both bags wait next to the door
+const SLEEP_P = [404, 128, 97];                             // the father's pelvis when he sleeps on the sofa
+const COLDL = [190, 196, 206], WARMC = [255, 196, 112], WARML = [255, 222, 176], GREYTXT = [244, 242, 236];
+const WINC = { day: [150, 154, 162], dawn: [30, 46, 96], dusk: [86, 88, 98], night: [5, 6, 9] };
+
+// ---------------------------------------------------------------- gaits
+const KID_IN = { ...MOOD.bouncy, name: 'kid', L: 90, cad: 3.0, ta: 0.25, td: 0.3, lift: 12, bob: 6, up: 1.3, arm: 14, elbow: 8 };
+const KID_RUN = { ...MOOD.jog, name: 'kidrun', cad: 3.2, ta: 0.22, td: 0.28 };
+const KID_DRAG = { ...MOOD.bouncy, name: 'kiddrag', L: 100, cad: 3.1, ta: 0.25, td: 0.3, lift: 9, bob: 4, arm: 0, elbow: 0, lean: 8 };
+const FORCED = { ...MOOD.forced, ta: 0.25, td: 0.3 };
+const HEAVY_IN = { ...MOOD.heavy, name: 'heavy', L: 30, cad: 2.1, ta: 0.3, td: 0.35 };
+
+// ---------------------------------------------------------------- shots
+// which shot is on screen when; every shot has its own figures and camera
+const SHOTS = [
+  { id: 'P1', t0: 0, t1: T.rew0, cam: 'tight', label: 'SATURDAY', win: 'day' },
+  { id: 'M1', t0: T.m0, t1: T.cutM, cam: 'wide', label: '5:30 AM', win: 'dawn' },
+  { id: 'M2', t0: T.cutM, t1: T.e0, cam: 'wide', label: '5:30 AM', win: 'dawn' },
+  { id: 'E1', t0: T.e0, t1: T.cutE, cam: 'wide', label: '6:10 PM', win: 'dusk' },
+  { id: 'E2', t0: T.cutE, t1: T.n0, cam: 'wide', label: '6:10 PM', win: 'dusk' },
+  { id: 'N1', t0: T.n0, t1: T.cutN, cam: 'wide', label: '11:40 PM', win: 'night' },
+  { id: 'N2', t0: T.cutN, t1: T.fwd0, cam: 'wide', label: '11:40 PM', win: 'night' },
+  { id: 'P3', t0: T.p3, t1: T.end + 1, cam: 'tight', label: 'SATURDAY', win: 'day' },
+];
+const shotAt = t => SHOTS.find(s => t >= s.t0 && t < s.t1) || SHOTS[SHOTS.length - 1];
+const SKIPS = [T.cutM, T.e0, T.cutE, T.n0, T.cutN];            // tape skips (jump cuts) inside the flashback
+
+// ---------------------------------------------------------------- helpers
+const sc = (v, s) => [v[0] * s, v[1] * s, v[2] * s];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+// elbow pole below the middle of the arm (never in line with the arm, so the elbow cannot flip)
+const midPole = (side, fn, down = 60, out = 18) => (t, J) => add(lerp3(J.sh[side], fn(t, J), 0.5), add(mul(J.Rt, (side === 'R' ? 1 : -1) * out), [0, 0, -down]));
+
+// asleep on the sofa: on his left side, facing the room, head on the right armrest, lower legs hanging over the left one
+const SLEEP = { roll2: 82, headRoll: 12 };
+function sleepPose(F, ox0 = 0, od0 = 0) {
+  const tr = F.tr, r = F.worldRoot(0);
+  tr.roll.v0 = -150; tr.roll2.v0 = SLEEP.roll2; tr.rollSh.v0 = -90; tr.headRoll.v0 = SLEEP.headRoll; tr.head.v0 = 0; tr.lean.v0 = 0;
+  tr.ox.v0 = SLEEP_P[0] - r[0] + ox0; tr.od.v0 = SLEEP_P[1] - r[1] + od0; tr.pz.v0 = SLEEP_P[2] - H0;
+  tr.breath.v0 = 2.6; tr.idle.v0 = 0.25;
+  const feet = {
+    R: F.footGoal('R', () => ({ ank: [288, 121, 58], pitch: -20, yaw: 180, kyaw: 270, kdir: [0.15, -0.2, 1] })),
+    L: F.footGoal('L', () => ({ ank: [292, 135, 50], pitch: -14, yaw: 180, kyaw: 270, kdir: [0.15, 0.1, 1] })),
+  };
+  feet.R.v0 = 1; feet.L.v0 = 1;
+  const handR = (t, J) => add(J.hip.R, [14, -10, 6]), handL = (t, J) => [492, 102, SOFA.seat + 5];   // top hand on his hip, the other arm on the cushion in front of him
+  const toRoom = (side, fn) => (t, J) => add(lerp3(J.sh[side], fn(t, J), 0.5), [0, -34, side === 'R' ? 4 : -6]);
+  const hands = { R: F.goal('R', handR, toRoom('R', handR)), L: F.goal('L', handL, toRoom('L', handL)) };
+  hands.R.v0 = 1; hands.L.v0 = 1;
+  return { feet, hands };
+}
+
+// a bag: where it is and how it hangs. state(t) -> { pos (bottom centre), rot, carried }
+function bagTrack(name, home) {
+  const ev = [];   // { t, kind: 'carry' | 'drop' | 'place', fig, side, at }
+  return {
+    name, home, ev,
+    carry(t, fig, side) { ev.push({ t, kind: 'carry', fig, side }); return this; },
+    drop(t, at) { ev.push({ t, kind: 'drop', at }); return this; },
+    place(t, at) { ev.push({ t, kind: 'place', at }); return this; },
+    state(t) {
+      let st = { pos: [home[0], home[1], 0], rot: 0, carried: false, sq: 0 };
+      let last = null;
+      for (const e of ev) if (e.t <= t) last = e;
+      if (!last) return st;
+      if (last.kind === 'place') return { pos: [last.at[0], last.at[1], 0], rot: 0, carried: false, sq: 0 };
+      if (last.kind === 'carry') {
+        const J = last.fig.pose(t), h = J.hand[last.side];
+        return { pos: [h[0], h[1], h[2] - BAG.h - 9], rot: 0, carried: true, hand: h, sq: 0 };
+      }
+      // drop: falls from the hand it hung from, lands, squashes a little
+      const prev = ev[ev.indexOf(last) - 1];
+      const J = prev.fig.pose(last.t), h = J.hand[prev.side];
+      const z0 = h[2] - BAG.h - 9, tau = t - last.t, tf = Math.sqrt(2 * Math.max(z0, 1) / 1800);
+      const at = last.at || [h[0], h[1]];
+      if (tau < tf) return { pos: [lerp(h[0], at[0], tau / tf), lerp(h[1], at[1], tau / tf), z0 - 900 * tau * tau], rot: 0.08 * tau / tf, carried: false, sq: 0 };
+      const k = tau - tf;
+      return { pos: [at[0], at[1], 0], rot: 0.08 * Math.exp(-k * 10), carried: false, sq: Math.exp(-k * 14) * Math.cos(k * 40) };
+    },
+    landT() { const d = ev.find(e => e.kind === 'drop'); if (!d) return null; const prev = ev[ev.indexOf(d) - 1]; const h = prev.fig.pose(d.t).hand[prev.side]; return d.t + Math.sqrt(2 * Math.max(h[2] - BAG.h - 9, 1) / 1800); },
+  };
+}
+
+// ---------------------------------------------------------------- PART 1 / PART 3: the father asleep
+const DADS = new Fig('DADS', { x: 430, d: 72, yaw: 270, seed: 1.1 });
+sleepPose(DADS);
+
+// part 1: the child comes in with its ball, waits, gives up
+const KID1 = new Fig('KID1', { x: 735, d: 72, yaw: 180, seed: 3.3, s: 0.6 });
+(function kid1() {
+  const K = KID1, tr = K.tr;
+  tr.breath.v0 = 1.2;
+  const arrive = K.walk(T.kidIn, [600, 72], KID_IN, 'L');
+  // ball raised toward the father, waiting
+  const up = (t, J) => add(J.sh.L, add(add(mul(J.Ft, 34), mul(J.Rt, -4)), [0, 0, 6 + 2 * Math.sin(t * 3.1)]));
+  const g = K.goal('L', up, midPole('L', up));
+  g.to(arrive - 0.15, arrive + 0.2, 1, E.out2).to(T.give, T.give + 0.45, 0, E.io);
+  tr.head.to(arrive - 0.1, arrive + 0.3, 8, E.io);
+  // gives up: shoulders drop, turns away
+  tr.slump.to(T.give, T.give + 0.5, 12, E.io); tr.shDrop.to(T.give, T.give + 0.5, 5, E.io);
+  tr.head.to(T.give, T.give + 0.5, 18, E.io);
+  K.turn(T.give + 0.35, T.give + 0.8, 300, { steps: 2, lift: 4, mood: 'kid' });
+})();
+
+// part 3: looks at him, gets the blanket, covers him, sits down against the sofa
+const KID3A = new Fig('KID3A', { x: 600, d: 72, yaw: 180, seed: 3.3, s: 0.6 });   // looks, turns, walks out
+const KID3B = new Fig('KID3B', { x: 722, d: 66, yaw: 180, seed: 4.4, s: 0.6 });   // comes back with the blanket
+const LAY = [468, 62];
+const CLOTH_X = 448;            // where the blanket ends up along the sofa (over his hip and chest)
+(function kid3() {
+  {
+    const K = KID3A, tr = K.tr;
+    tr.breath.v0 = 1.2; tr.slump.v0 = 6; tr.head.v0 = 10;
+    tr.headRoll.to(T.p3 + 0.1, T.p3 + 0.5, 13, E.io).to(T.out0 - 0.1, T.out0 + 0.2, 0, E.io);   // it understands
+    tr.slump.to(T.p3 + 0.1, T.p3 + 0.5, 3, E.io);
+    K.turn(T.out0, T.out0 + 0.24, 360, { steps: 4, lift: 4, mood: 'kid' });
+    K.walk(T.out0 + 0.2, [780, 72], KID_IN, 'R');
+  }
+  {
+    const K = KID3B, tr = K.tr;
+    tr.breath.v0 = 1.2;
+    const end = K.walk(13.2, LAY, KID_DRAG, 'L');
+    // both hands behind, dragging the blanket
+    const drag = side => (t, J) => add(J.sh[side], add(add(mul(J.Ft, -26), mul(J.Rt, (side === 'R' ? 1 : -1) * 5)), [0, 0, -56]));
+    const dR = K.goal('R', drag('R'), midPole('R', drag('R'), 30, 30)), dL = K.goal('L', drag('L'), midPole('L', drag('L'), 30, 30));
+    dR.v0 = 1; dL.v0 = 1;
+    // turns to the sofa, lifts the edge up and over him on tiptoes, lets go, smooths it
+    K.turn(end - 0.05, end + 0.2, 90, { steps: 2, lift: 4, mood: 'kid' });
+    const lift = side => (t, J) => {
+      const sg = side === 'R' ? 1 : -1, e = E.io(inv(T.lay0 + 0.05, T.release - 0.02, t));
+      const low = [LAY[0] - sg * 12, LAY[1] + 12, 52], high = [LAY[0] - sg * 20, LAY[1] + 26, 168], over = [LAY[0] - sg * 22, LAY[1] + 64, 140];
+      const p = lerp3(lerp3(low, high, e), lerp3(high, over, e), e);
+      return K.toSkel(p);
+    };
+    const smooth = side => (t, J) => {
+      const sg = side === 'R' ? 1 : -1, u = t - T.release - 0.1;
+      return K.toSkel([LAY[0] - sg * 11 + 9 * Math.sin(u * 7.5 + (side === 'R' ? 0 : 1.2)), LAY[1] + 48, 112 + 2 * Math.sin(u * 15)]);
+    };
+    const lR = K.goal('R', lift('R'), midPole('R', lift('R'), 50, 26)), lL = K.goal('L', lift('L'), midPole('L', lift('L'), 50, 26));
+    lR.to(T.lay0 - 0.2, T.lay0 + 0.3, 1, E.io).to(T.lay1 - 0.05, T.lay1 + 0.2, 0, E.io); lL.to(T.lay0 - 0.18, T.lay0 + 0.32, 1, E.io).to(T.lay1 - 0.03, T.lay1 + 0.22, 0, E.io);
+    dR.to(T.lay0 + 0.3, T.lay0 + 0.5, 0); dL.to(T.lay0 + 0.32, T.lay0 + 0.52, 0);   // (hidden under the lift goals by then)
+    const sR = K.goal('R', smooth('R'), midPole('R', smooth('R'), 50, 26)), sL = K.goal('L', smooth('L'), midPole('L', smooth('L'), 50, 26));
+    sR.to(T.release, T.release + 0.25, 1, E.io).to(T.lay1 - 0.05, T.lay1 + 0.2, 0, E.io);
+    sL.to(T.release + 0.03, T.release + 0.28, 1, E.io).to(T.lay1 - 0.03, T.lay1 + 0.22, 0, E.io);
+    // tiptoes
+    for (const side of ['L', 'R']) {
+      K.footGoal(side, t => { const f = K.footAt(side, t), g = groundFoot(f.plant ? f.plant.pos : [f.heel[0], f.heel[1]], -34, f.yaw); return { ank: g.ank, pitch: -34, yaw: f.yaw }; })
+       .to(T.lay0 + 0.25, T.lay0 + 0.5, 1, E.io).to(T.release + 0.15, T.release + 0.4, 0, E.io);
+    }
+    tr.pz.to(T.lay0 + 0.25, T.lay0 + 0.5, 12, E.io).to(T.release + 0.15, T.release + 0.4, 0, E.io);
+    tr.lean.to(T.lay0 + 0.3, T.release, 10, E.io).to(T.release, T.release + 0.3, 16, E.io).to(T.lay1, T.lay1 + 0.3, 2, E.io);
+    tr.head.to(T.lay0, T.lay0 + 0.4, -8, E.io).to(T.release, T.release + 0.3, 18, E.io).to(T.lay1, T.lay1 + 0.3, 4, E.io);
+    // turns round and sits on the floor, its back against the sofa
+    K.turn(T.lay1 + 0.05, T.sit + 0.05, 300, { steps: 4, lift: 4, mood: 'kid' });
+    const s = K.s, seatP = [LAY[0] - 12, 92, 9];
+    const r0 = K.worldRoot(T.sit + 0.1);
+    tr.ox.to(T.sit + 0.05, T.sit + 0.65, (seatP[0] - r0[0]) / s, E.io); tr.od.to(T.sit + 0.05, T.sit + 0.65, (seatP[1] - r0[1]) / s, E.io);
+    tr.pz.to(T.sit + 0.05, T.sit + 0.65, seatP[2] / s - H0, E.io);
+    tr.lean.to(T.sit + 0.05, T.sit + 0.35, 22, E.io).to(T.sit + 0.4, T.sit + 0.85, -20, E.io);
+    tr.head.to(T.sit + 0.4, T.sit + 0.9, -4, E.io); tr.headRoll.to(T.sit + 0.5, T.sit + 1.0, 12, E.io);
+    tr.idle.to(T.sit + 0.6, T.sit + 1.0, 0.4);
+    for (const side of ['L', 'R']) {
+      const sg = side === 'R' ? 1 : -1;
+      const Fs = fwd(300), Rs = rgt(300);
+      K.footGoal(side, () => ({ ank: K.toSkel(add([seatP[0] + Fs[0] * 62 + Rs[0] * sg * 7, seatP[1] + Fs[1] * 62 + Rs[1] * sg * 7, 5], [0, 0, 0])), pitch: 20, yaw: 300, kdir: [0.3, -0.5, 1] }))
+       .to(T.sit + 0.15, T.sit + 0.6, 1, E.io);
+    }
+    const lap = side => (t, J) => add(lerp3(J.hip[side], J.knee[side], 0.65), [0, 0, 8]);
+    K.goal('R', lap('R'), midPole('R', lap('R'), 10, 45)).to(T.sit + 0.65, T.sit + 1.05, 1, E.io);
+    K.goal('L', lap('L'), midPole('L', lap('L'), 10, 45)).to(T.sit + 0.68, T.sit + 1.08, 1, E.io);
+  }
+})();
+
+// ---------------------------------------------------------------- PART 2: his day
+// morning 1: the alarm, gets up stiffly, back stretch
+const DM1 = new Fig('DM1', { x: 416, d: 60, yaw: 250, seed: 1.1 });
+(function m1() {
+  const F = DM1, tr = F.tr;
+  tr.yaw.v0 = 270;
+  const sp = sleepPose(F);
+  // stirs, pushes himself up to sitting on the front edge, feet to the floor
+  tr.head.to(T.alarm + 0.05, T.alarm + 0.25, -10, E.out2);
+  for (const k of ['roll', 'roll2', 'rollSh']) tr[k].to(T.sit0, T.sit1, 0, E.io);
+  tr.headRoll.to(T.sit0, T.sit1, 0, E.io); tr.head.to(T.sit0 + 0.2, T.sit1, 14, E.io);
+  tr.yaw.to(T.sit0 + 0.1, T.sit1, 250, E.io);
+  const r = F.worldRoot(0);
+  tr.ox.to(T.sit0, T.sit1, 426 - r[0], E.io); tr.od.to(T.sit0, T.sit1, 116 - r[1], E.io); tr.pz.to(T.sit0, T.sit1, 92 - H0, E.io);
+  tr.lean.to(T.sit0 + 0.2, T.sit1, 16, E.io); tr.slump.to(T.sit0 + 0.2, T.sit1, 10, E.io);
+  tr.breath.to(T.sit0, T.sit1, 1.6); tr.idle.to(T.sit0, T.sit1, 0.6);
+  sp.feet.R.to(T.sit0 + 0.08, T.sit1 - 0.02, 0, E.io); sp.feet.L.to(T.sit0 + 0.12, T.sit1, 0, E.io);
+  // arms: a chain of goals, each rising over the one before (later goals win), so an arm never drops back to its
+  // hanging pose in between: right hand pushes on the seat, then both hands go to the knees, then to the lower back
+  const room = fn => (t, J) => add(lerp3(J.sh.R, fn(t, J), 0.5), [0, -34, 4]);
+  const push = (t, J) => [446, 108, SOFA.seat + 2];
+  F.goal('R', push, room(push)).to(T.sit0, T.sit0 + 0.35, 1, E.io);
+  const knee = side => (t, J) => add(J.knee[side], [0, 0, 8]);
+  F.goal('R', knee('R'), midPole('R', knee('R'), 15, 50)).to(T.sit1 - 0.14, T.stand0 + 0.12, 1, E.io);
+  F.goal('L', knee('L'), (t, J) => add(lerp3(J.sh.L, knee('L')(t, J), 0.5), [8, -40, -12])).to(T.sit0 + 0.12, T.sit1, 1, E.io);
+  tr.ox.to(T.stand0, T.stand1, 0, E.io); tr.od.to(T.stand0, T.stand1, 0, E.io); tr.pz.to(T.stand0, T.stand1, 0, E.io);
+  tr.lean.to(T.stand0, T.stand0 + 0.12, 34, E.io).to(T.stand0 + 0.14, T.stand1 + 0.05, 2, E.io);
+  // back stretch: hands on the lower back, leans back, looks up
+  const back = side => (t, J) => add(add(J.C, mul(J.F, -12)), add(mul(J.R, (side === 'R' ? 1 : -1) * 10), [0, 0, -18]));
+  F.goal('R', back('R'), midPole('R', back('R'), 15, 50)).to(T.stretch0, T.cutM, 1, E.io);
+  F.goal('L', back('L'), midPole('L', back('L'), 15, 50)).to(T.stretch0 + 0.02, T.cutM, 1, E.io);
+  tr.lean.to(T.stretch0 + 0.05, T.cutM, -14, E.out2); tr.head.to(T.stretch0, T.cutM, -16, E.io); tr.slump.to(T.stretch0, T.cutM, -4, E.io);
+})();
+
+// heavy bag in one hand: arm straight, that shoulder pulled down, body leaning the other way
+function carryPose(F, side, t0, t1, ease = E.io) {
+  const tr = F.tr, sg = side === 'R' ? 1 : -1;
+  const hang = (t, J) => add(add(J.sh[side], mul(J.Rt, sg * 7)), [0, 0, -(DIM.upper + DIM.fore) * 0.985]);
+  const g = F.goal(side, hang, (t, J) => add(J.sh[side], add(mul(J.Ft, -40), [0, 0, -40])));
+  g.to(t0, t1, 1, ease);
+  tr['drop' + side].to(t0, t1, 7, ease);
+  tr.roll.to(t0, t1, -sg * 6, ease);
+  return g;
+}
+// bends down and takes a bag by its handle: returns the goal weight
+function pickUp(F, side, bag, t0, tg) {
+  const tr = F.tr, handle = [bag.home[0], bag.home[1], BAG.h + 9];
+  const g = F.goal(side, () => handle, midPole(side, () => handle, 20, 30));
+  g.to(t0, tg, 1, E.io);
+  tr.lean.to(t0, tg, 52, E.io); tr.pz.to(t0, tg, -52, E.io); tr.head.to(t0, tg, 22, E.io);
+  tr.lean.to(tg + 0.02, tg + 0.36, 4, E.io); tr.pz.to(tg + 0.02, tg + 0.36, 0, E.io); tr.head.to(tg + 0.04, tg + 0.42, 4, E.io);
+  return g;
+}
+
+// morning 2: takes JOB 1 and leaves
+const BAG1 = bagTrack('JOB 1', HOME['JOB 1']), BAG2 = bagTrack('JOB 2', HOME['JOB 2']);
+const DM2 = new Fig('DM2', { x: 100, d: 126, yaw: 90, seed: 1.3 });
+const OUT = [330, 245];
+(function m2() {
+  const F = DM2, tr = F.tr;
+  tr.lean.v0 = 52; tr.pz.v0 = -52; tr.head.v0 = 22;
+  const g = pickUp(F, 'R', BAG1, T.cutM - 0.2, T.grabM);
+  g.v0 = 0.9;
+  carryPose(F, 'R', T.grabM, T.grabM + 0.22);
+  tr.slump.to(T.grabM, T.walkM, 3);
+  F.walk(T.walkM, OUT, FORCED, 'L');
+})();
+
+// evening 1: in the doorway, drops JOB 1, two heavy steps in toward the child, kneels, pats the child's head
+const DE = new Fig('DE', { x: 188, d: 200, yaw: 270, seed: 1.5 });
+const KE = new Fig('KE', { x: 430, d: 92, yaw: 165, seed: 3.8, s: 0.6 });
+const KY = 330;                                            // he kneels facing the child (right, a little toward the room)
+const KROOT = [216, 162];
+const KF = fwd(KY), KR = rgt(KY), KP = add([KROOT[0], KROOT[1], 0], mul(KF, 20));   // pelvis when kneeling
+(function e1() {
+  const F = DE, tr = F.tr;
+  tr.slump.v0 = 12; tr.head.v0 = 14; tr.shDrop.v0 = 4;
+  const gC = carryPose(F, 'R', 0, 0.01); gC.v0 = 1; tr.dropR.v0 = 7; tr.roll.v0 = -6;
+  gC.to(T.dropE + 0.02, T.dropE + 0.3, 0, E.io); tr.dropR.to(T.dropE, T.dropE + 0.3, 0, E.io); tr.roll.to(T.dropE, T.dropE + 0.4, 0, E.io);
+  F.walk(T.inE - 0.05, KROOT, { ...HEAVY_IN, cad: 2.4 }, 'L');
+  tr.yaw.to(T.kneel0 - 0.05, T.kneel0 + 0.3, KY, E.io);
+  // kneels on the right knee (shin flat behind him), the left foot forward
+  const ZP = 88, KN = add(KP, mul(KF, -Math.sqrt(82 * 82 - (ZP - 8) ** 2)));
+  F.footGoal('R', () => ({ ank: add(add(KN, mul(KF, -80)), add(mul(KR, 9), [0, 0, 7])), pitch: 0, yaw: KY + 180, kyaw: KY, lift: 14 })).to(T.kneel0 + 0.1, T.kneel0 + 0.32, 1, E.io);
+  F.footGoal('L', () => ({ ank: add(add(KP, mul(KF, 85)), add(mul(KR, -9), [0, 0, 7])), pitch: 0, yaw: KY, lift: 30 })).to(T.kneel0, T.kneel0 + 0.38, 1, E.io);
+  tr.pf.to(T.kneel0, T.kneel0 + 0.45, 20, E.io);
+  tr.pz.to(T.kneel0 + 0.05, T.kneel0 + 0.4, ZP - H0, E.io);
+  tr.lean.to(T.kneel0 + 0.2, T.kneel0 + 0.5, 12, E.io); tr.head.to(T.kneel0, T.kneel0 + 0.4, 10, E.io); tr.slump.to(T.kneel0, T.kneel0 + 0.5, 4, E.io);
+  // pats the child's head twice
+  const pat = (t, J) => {
+    const k = KE.pose(t), u = clamp((t - T.pat0) / (T.pat1 - T.pat0)), bob = Math.abs(Math.sin(PI * 2 * u)) * 7;
+    return add(k.Hc, add(mul(KF, -4), [0, 0, 15 + bob]));
+  };
+  F.goal('R', pat, midPole('R', pat, 40, 20)).to(T.pat0 - 0.25, T.pat0 + 0.05, 1, E.io);
+  F.goal('L', (t, J) => add(lerp3(J.hip.L, J.knee.L, 0.8), [0, 0, 8]), (t, J) => add(J.sh.L, add(mul(J.Rt, -20), [0, 0, -40]))).to(T.kneel0 + 0.2, T.kneel0 + 0.5, 1, E.io);
+})();
+// the child hears the door, runs to him, gets its head patted
+(function ke() {
+  const K = KE, tr = K.tr;
+  tr.head.to(T.e0 + 0.05, T.e0 + 0.3, -4, E.io);
+  const to = add(KP, mul(KF, 84));
+  K.walk(T.run, [to[0], to[1]], KID_RUN, 'L');
+  tr.head.to(T.pat0 - 0.1, T.pat0 + 0.15, 10, E.io);
+  tr.bounce.to(T.pat0, T.pat0 + 0.15, 0.6).to(T.pat1, T.pat1 + 0.2, 0);
+})();
+
+// evening 2: picks up JOB 2 and goes again; the child stays and looks at the door
+const DE2 = new Fig('DE2', { x: 46, d: 126, yaw: 90, seed: 1.5 });
+const KE2 = new Fig('KE2', { x: 300, d: 120, yaw: 140, seed: 3.8, s: 0.6 });
+(function e2() {
+  const F = DE2, tr = F.tr;
+  tr.lean.v0 = 52; tr.pz.v0 = -52; tr.head.v0 = 22; tr.slump.v0 = 6;
+  const g = pickUp(F, 'R', BAG2, T.cutE - 0.2, T.grabE); g.v0 = 0.9;
+  carryPose(F, 'R', T.grabE, T.grabE + 0.22);
+  F.walk(T.walkE, OUT, FORCED, 'L');
+  const K = KE2.tr; K.slump.v0 = 8; K.head.v0 = 10; K.shDrop.v0 = 3;
+  K.yaw.to(T.walkE + 0.3, T.walkE + 0.9, 120, E.io);
+})();
+
+// night 1: the door opens slowly, he stands there, lets JOB 2 drop
+const DN1 = new Fig('DN1', { x: 214, d: 200, yaw: 270, seed: 1.7 });
+(function n1() {
+  const F = DN1, tr = F.tr;
+  tr.slump.v0 = 17; tr.head.v0 = 20; tr.shDrop.v0 = 6; tr.lean.v0 = 6; tr.breath.v0 = 1.6;
+  const gC = carryPose(F, 'R', 0, 0.01); gC.v0 = 1; tr.dropR.v0 = 7; tr.roll.v0 = -6;
+  gC.to(T.dropN + 0.02, T.dropN + 0.35, 0, E.io); tr.dropR.to(T.dropN, T.dropN + 0.3, 0, E.io); tr.roll.to(T.dropN, T.dropN + 0.4, 0, E.io);
+  tr.slump.to(T.dropN, T.dropN + 0.4, 19);
+})();
+// night 2: in front of the sofa, sways, falls sideways onto it and is asleep at once
+const DN2 = new Fig('DN2', { x: 430, d: 72, yaw: 270, seed: 1.1 });
+(function n2() {
+  const F = DN2, tr = F.tr;
+  tr.slump.v0 = 17; tr.head.v0 = 20; tr.shDrop.v0 = 6; tr.lean.v0 = 6;
+  tr.roll.v0 = 2; tr.roll.to(T.cutN, T.fall0, -4, E.io);
+  const sp = sleepPose(F);
+  // undo the sleep pose at the start and fall into it
+  const r = F.worldRoot(0);
+  const target = { roll: -150, roll2: SLEEP.roll2, rollSh: -90, headRoll: SLEEP.headRoll, head: 0, lean: 0, ox: SLEEP_P[0] - r[0], od: SLEEP_P[1] - r[1], pz: SLEEP_P[2] - H0, breath: 2.6, idle: 0.25 };
+  const start = { roll: 2, roll2: 0, rollSh: 0, headRoll: 0, head: 20, lean: 6, ox: 0, od: 0, pz: 0, breath: 1.6, idle: 0.6 };
+  for (const k in start) { tr[k].v0 = start[k]; tr[k].segs = []; }
+  tr.roll.to(T.cutN, T.fall0, -5, E.io);
+  const f0 = T.fall0, f1 = T.flop;
+  tr.roll.to(f0, f1, -120, E.in2).to(f1, f1 + 0.3, target.roll, E.out2);
+  tr.roll2.to(f0 + 0.05, f1 + 0.3, target.roll2, E.io);
+  tr.rollSh.to(f0, f1 + 0.2, target.rollSh, E.io);
+  tr.headRoll.to(f0 + 0.05, f1 + 0.4, target.headRoll, E.io);
+  tr.head.to(f0, f1 + 0.4, 0, E.io); tr.lean.to(f0, f1, 0, E.io); tr.slump.to(f0, f1 + 0.3, 0, E.io); tr.shDrop.to(f0, f1 + 0.3, 0, E.io);
+  tr.ox.to(f0, f1, target.ox * 0.85, E.in2).to(f1, f1 + 0.4, target.ox, E.io);
+  tr.od.to(f0, f1, target.od, E.in2);
+  tr.pz.to(f0, f1, target.pz - 4, E.in2).to(f1, f1 + 0.25, target.pz, E.out2);
+  tr.breath.to(f1 + 0.2, f1 + 0.8, target.breath); tr.idle.to(f1, f1 + 0.5, target.idle);
+  // legs swing up over the armrest, arms settle
+  sp.feet.R.v0 = 0; sp.feet.L.v0 = 0; sp.hands.R.v0 = 0; sp.hands.L.v0 = 0;
+  sp.feet.L.to(f1, f1 + 0.6, 1, E.io); sp.feet.R.to(f1 + 0.05, f1 + 0.65, 1, E.io);
+  sp.hands.R.to(f0, f1, 1, E.io); sp.hands.L.to(f0, f1, 1, E.io);
+  // the hands brace on the seat as he goes down, then let go into the sleeping pose
+  const brace = side => (t, J) => [side === 'R' ? 486 : 500, side === 'R' ? 100 : 116, SOFA.seat + 6];
+  for (const side of ['R', 'L']) F.goal(side, brace(side), (t, J) => add(lerp3(J.sh[side], brace(side)(t, J), 0.5), [0, -36, -10])).to(f0, f1 - 0.04, 1, E.io).to(f1 + 0.25, f1 + 0.85, 0, E.io);
+})();
+
+// bag events per shot (each shot has its own copy of the day; see bagsFor)
+function bagsFor(shot) {
+  const b1 = bagTrack('JOB 1', HOME['JOB 1']), b2 = bagTrack('JOB 2', HOME['JOB 2']);
+  if (shot === 'M2') b1.carry(T.grabM, DM2, 'R');
+  if (shot === 'E1') b1.carry(-1, DE, 'R').drop(T.dropE, null);
+  if (shot === 'E2') b2.carry(T.grabE, DE2, 'R');
+  if (shot === 'N1') { b1.place(-1, [124, 186]); b2.carry(-1, DN1, 'R').drop(T.dropN, null); }
+  if (shot === 'N2') { b1.place(-1, [124, 186]); b2.place(-1, [205, 186]); }
+  return [b1, b2];
+}
+const BAGS = {};
+for (const s of SHOTS) BAGS[s.id] = bagsFor(s.id);
+
+// ---------------------------------------------------------------- the blanket (cloth simulation)
+// A 15 x 11 grid of particles with distance constraints (Verlet), gravity, floor friction and collisions with
+// the sofa and the sleeping father. Two points of one edge follow the child's hands until it lets go.
+// It is integrated on a fixed 1/240 s grid from SIM0, so frame t always gives the same shape.
+const CLOTH = (() => {
+  const NI = 15, NJ = 11, LI = 200, LJ = 150, di = LI / (NI - 1), dj = LJ / (NJ - 1);
+  const X0 = 744, J0 = 8, N = NI * NJ, id = (i, j) => i * NJ + j;
+  const SIM0 = 13.2, DT = 1 / 240, G = 1500;
+  const cons = [];
+  const link = (a, b, k) => cons.push([a, b, 0, k]);
+  for (let i = 0; i < NI; i++) for (let j = 0; j < NJ; j++) {
+    if (i + 1 < NI) link(id(i, j), id(i + 1, j), 1);
+    if (j + 1 < NJ) link(id(i, j), id(i, j + 1), 1);
+    if (i + 1 < NI && j + 1 < NJ) { link(id(i, j), id(i + 1, j + 1), 0.6); link(id(i + 1, j), id(i, j + 1), 0.6); }
+    if (i + 2 < NI) link(id(i, j), id(i + 2, j), 0.12);
+    if (j + 2 < NJ) link(id(i, j), id(i, j + 2), 0.12);
+  }
+  const rest = () => { const p = new Float64Array(N * 3); for (let i = 0; i < NI; i++) for (let j = 0; j < NJ; j++) { const k = id(i, j) * 3; p[k] = X0 + i * di; p[k + 1] = J0 + j * dj; p[k + 2] = 0.7; } return p; };
+  const p0 = rest();
+  for (const c of cons) { const a = c[0] * 3, b = c[1] * 3; c[2] = Math.hypot(p0[a] - p0[b], p0[a + 1] - p0[b + 1], p0[a + 2] - p0[b + 2]); }
+  const PINS = [id(0, 3), id(0, 7)];
+  // after the child lets go, a soft pull toward a laid-out blanket (the collisions with his body still shape it):
+  // a profile across the sofa (depth d, height z) from behind him, over him, down the front of the seat, onto the floor
+  const PROF = [[150, 102], [140, 124], [126, 136], [110, 124], [98, 100], [93, 82], [91, 42], [90, 2], [62, 1]];
+  const profAt = s => {
+    for (let k = 1; k < PROF.length; k++) {
+      const a = PROF[k - 1], b = PROF[k], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (s <= L || k === PROF.length - 1) { const u = Math.min(1, s / L); return [lerp(a[0], b[0], u), lerp(a[1], b[1], u)]; }
+      s -= L;
+    }
+  };
+  const TGT = new Float64Array(N * 3);
+  for (let i = 0; i < NI; i++) for (let j = 0; j < NJ; j++) { const k = id(i, j) * 3, q = profAt(i * di * 0.96); TGT[k] = CLOTH_X + (j - (NJ - 1) / 2) * dj * 0.94; TGT[k + 1] = q[0]; TGT[k + 2] = q[1]; }
+  const pinned = t => t >= SIM0 && t < T.release;
+  const boxes = [
+    { x0: SOFA.x0, x1: SOFA.x1, d0: SOFA.d0, d1: SOFA.d1, z0: 0, z1: SOFA.seat },
+    { x0: SOFA.x0, x1: SOFA.x0 + SOFA.armW, d0: SOFA.d0, d1: SOFA.d1, z0: 0, z1: SOFA.arm },
+    { x0: SOFA.x1 - SOFA.armW, x1: SOFA.x1, d0: SOFA.d0, d1: SOFA.d1, z0: 0, z1: SOFA.arm },
+    { x0: SOFA.x0, x1: SOFA.x1, d0: SOFA.d1 - 17, d1: SOFA.d1, z0: 0, z1: SOFA.back },
+  ];
+  // the sleeping father as capsules (he barely moves, so 30 Hz is plenty)
+  let capT = -1, caps = null;
+  const capsules = t => {
+    const q = Math.floor(t * 30) / 30;
+    if (q === capT) return caps;
+    const J = DADS.pose(q), r = DIM.limbW / 2 + 3;
+    caps = [[J.P, J.C, r + 2], [J.C, J.N, r + 2], [J.N, J.NT, r], [J.Hc, J.Hc, DIM.headR + 3]];
+    for (const s of ['L', 'R']) caps.push([J.hip[s], J.knee[s], r], [J.knee[s], J.ank[s], r], [J.sh[s], J.el[s], r], [J.el[s], J.hand[s], r]);
+    capT = q; return caps;
+  };
+  let st = null;
+  function stepOnce(t) {
+    const { p, q } = st;
+    const pin = pinned(t);
+    let hands = null;
+    if (pin) { const J = KID3B.pose(t); hands = [add(J.hand.R, [0, 0, -3]), add(J.hand.L, [0, 0, -3])]; }
+    for (let k = 0; k < N; k++) {
+      const a = k * 3;
+      const onFloor = p[a + 2] < 1.2;
+      const fr = onFloor ? 0.16 : 0.03;
+      const v = [0, 1, 2].map(c => (p[a + c] - q[a + c]) * (1 - (c < 2 ? fr : 0.03)));
+      const sp = Math.hypot(v[0], v[1], v[2]), vmax = 520 * DT;      // no whip: a blanket never flies faster than this
+      const f = sp > vmax ? vmax / sp : 1;
+      for (let c = 0; c < 3; c++) { q[a + c] = p[a + c]; p[a + c] += v[c] * f + (c === 2 ? -G * DT * DT : 0); }
+    }
+    const gk = 1 - Math.exp(-7 * sstep(T.release + 0.05, T.release + 0.6, t) * DT);
+    if (gk > 0) for (let k = 0; k < N * 3; k++) p[k] += (TGT[k] - p[k]) * gk;
+    const cs = capsules(t);
+    for (let it = 0; it < 8; it++) {
+      for (const [ia, ib, L0, kk] of cons) {
+        const a = ia * 3, b = ib * 3;
+        const dx = p[b] - p[a], dy = p[b + 1] - p[a + 1], dz = p[b + 2] - p[a + 2];
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6;
+        if (kk < 1 && d < L0) continue;                           // bending/shear only resist stretching: the cloth folds freely
+        const f = (d - L0) / d * 0.5 * kk;
+        p[a] += dx * f; p[a + 1] += dy * f; p[a + 2] += dz * f;
+        p[b] -= dx * f; p[b + 1] -= dy * f; p[b + 2] -= dz * f;
+      }
+      if (pin) PINS.forEach((k, i) => { p[k * 3] = hands[i][0]; p[k * 3 + 1] = hands[i][1]; p[k * 3 + 2] = hands[i][2]; });
+      // collisions: push out, and move the previous position along so the push adds no speed (plus contact friction)
+      const push = (a, nx, ny, nz) => {
+        const dx = nx - p[a], dy = ny - p[a + 1], dz = nz - p[a + 2];
+        p[a] = nx; p[a + 1] = ny; p[a + 2] = nz;
+        q[a] = lerp(q[a] + dx, p[a], 0.3); q[a + 1] = lerp(q[a + 1] + dy, p[a + 1], 0.3); q[a + 2] = lerp(q[a + 2] + dz, p[a + 2], 0.3);
+      };
+      for (let k = 0; k < N; k++) {
+        const a = k * 3;
+        if (p[a + 2] < 0.7) push(a, p[a], p[a + 1], 0.7);
+        for (const bx of boxes) {
+          const m = 2.2;
+          if (p[a] > bx.x0 - m && p[a] < bx.x1 + m && p[a + 1] > bx.d0 - m && p[a + 1] < bx.d1 + m && p[a + 2] < bx.z1 + m) {
+            const pen = [p[a] - (bx.x0 - m), bx.x1 + m - p[a], p[a + 1] - (bx.d0 - m), bx.d1 + m - p[a + 1], bx.z1 + m - p[a + 2]];
+            let bi = 0; for (let i = 1; i < 5; i++) if (pen[i] < pen[bi]) bi = i;
+            if (bi === 0) push(a, bx.x0 - m, p[a + 1], p[a + 2]); else if (bi === 1) push(a, bx.x1 + m, p[a + 1], p[a + 2]);
+            else if (bi === 2) push(a, p[a], bx.d0 - m, p[a + 2]); else if (bi === 3) push(a, p[a], bx.d1 + m, p[a + 2]); else push(a, p[a], p[a + 1], bx.z1 + m);
+          }
+        }
+        for (const [A, B, r] of cs) {
+          const ab = sub(B, A), ap = [p[a] - A[0], p[a + 1] - A[1], p[a + 2] - A[2]];
+          const L2 = dot(ab, ab), u = L2 > 1e-6 ? clamp(dot(ap, ab) / L2) : 0;
+          const cx = A[0] + ab[0] * u, cy = A[1] + ab[1] * u, cz = A[2] + ab[2] * u;
+          const ex = p[a] - cx, ey = p[a + 1] - cy, ez = p[a + 2] - cz, d = Math.sqrt(ex * ex + ey * ey + ez * ez);
+          if (d < r && d > 1e-6) { const f = r / d; push(a, cx + ex * f, cy + ey * f, cz + ez * f); }
+        }
+      }
+    }
+  }
+  function at(t) {
+    if (t <= SIM0) return rest();
+    const n = Math.floor((t - SIM0) / DT);
+    if (!st || st.n > n) st = { n: 0, p: rest(), q: rest() };
+    while (st.n < n) { stepOnce(SIM0 + st.n * DT); st.n++; }
+    return st.p;
+  }
+  return { at, NI, NJ, id, SIM0 };
+})();
+
+function drawCloth(c, p) {
+  const { NI, NJ, id } = CLOTH;
+  const W3 = k => [p[k * 3], p[k * 3 + 1], p[k * 3 + 2]];
+  const V = (i, j) => W3(id(clamp(i, 0, NI - 1), clamp(j, 0, NJ - 1)));
+  // a normal per particle from its neighbours, so the shading is smooth instead of faceted
+  const nrm = [];
+  for (let i = 0; i < NI; i++) for (let j = 0; j < NJ; j++) {
+    const n = cross(sub(V(i + 1, j), V(i - 1, j)), sub(V(i, j + 1), V(i, j - 1)));
+    nrm[id(i, j)] = norm(n[2] < 0 ? mul(n, -1) : n);
+  }
+  const Ld = norm([0.3, -0.5, 0.8]);
+  const quads = [];
+  for (let i = 0; i < NI - 1; i++) for (let j = 0; j < NJ - 1; j++) {
+    const ks = [id(i, j), id(i + 1, j), id(i + 1, j + 1), id(i, j + 1)], pts = ks.map(W3);
+    quads.push({ i, j, ks, pts, depth: pts.reduce((s, q) => s + q[1], 0) / 4 - pts.reduce((s, q) => s + q[2], 0) / 4 * 0.05 });
+  }
+  quads.sort((x, y) => y.depth - x.depth);
+  c.save(); c.lineJoin = 'round'; c.lineCap = 'round';
+  for (const q of quads) {
+    const n = norm(q.ks.reduce((s, k) => add(s, nrm[k]), [0, 0, 0]));
+    const zc = q.pts.reduce((s, v) => s + v[2], 0) / 4;
+    const sh = (0.8 + 0.2 * Math.abs(dot(n, Ld))) * (0.86 + 0.14 * clamp(zc / 90));
+    const col = rgb([176 * sh, 176 * sh, 181 * sh]);
+    const pp = q.pts.map(P);
+    c.beginPath(); pp.forEach((v, k) => k ? c.lineTo(v[0], v[1]) : c.moveTo(v[0], v[1])); c.closePath();
+    c.fillStyle = col; c.fill(); c.strokeStyle = col; c.lineWidth = 1.3; c.stroke();
+    const k = pp[0][2];
+    c.strokeStyle = INK; c.lineWidth = 2.4 * k;
+    const edge = (u, v) => { c.beginPath(); c.moveTo(pp[u][0], pp[u][1]); c.lineTo(pp[v][0], pp[v][1]); c.stroke(); };
+    if (q.j === 0) edge(0, 1);
+    if (q.i === NI - 2) edge(1, 2);
+    if (q.j === NJ - 2) edge(2, 3);
+    if (q.i === 0) edge(3, 0);
+  }
+  c.restore();
+}
+
+// ---------------------------------------------------------------- the ball
+const BALL_R = 9;
+function drawBall(c, pos) {
+  const [X, Y, k] = P(pos), r = BALL_R * k;
+  c.save(); c.translate(X, Y); if (MIRROR) c.scale(1, -1);
+  c.beginPath(); c.arc(0, 0, r + DIM.outline * 0.8 * k, 0, TAU); c.fillStyle = INK; c.fill();
+  c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fillStyle = rgb([224, 222, 216]); c.fill();
+  c.save(); c.beginPath(); c.arc(0, 0, r, 0, TAU); c.clip(); c.rotate(0.5);
+  c.fillStyle = rgb([96, 96, 102]); c.fillRect(-r, -r * 0.24, 2 * r, r * 0.48); c.restore();
+  c.restore();
+}
+// part 3: it still holds the ball and puts it down when it turns to go
+const BALL3_DROP = T.out0 + 0.05;
+function ball3(t) {
+  if (t < BALL3_DROP) return add(KID3A.pose(t).hand.L, [0, -1.5, -3]);
+  const J = KID3A.pose(BALL3_DROP), h = add(J.hand.L, [0, -1.5, -3]), tau = t - BALL3_DROP, tf = Math.sqrt(2 * (h[2] - BALL_R) / 1800);
+  if (tau < tf) return [h[0], h[1], h[2] - 900 * tau * tau];
+  const u = tau - tf;
+  return [h[0] - 14 * (1 - Math.exp(-u * 2)), h[1], BALL_R + 6 * Math.exp(-u * 6) * Math.abs(Math.sin(u * 14))];
+}
+
+// ---------------------------------------------------------------- set pieces
+function drawSofa(c, warm) {
+  const tint = k => ({ front: rgb(mixc([92, 95, 106], [118, 96, 74], warm).map(v => v * k)), top: rgb(mixc([122, 125, 136], [150, 122, 94], warm).map(v => v * k)),
+                       side: rgb(mixc([66, 68, 76], [86, 70, 54], warm).map(v => v * k)), edge: 'rgba(0,0,0,0.45)' });
+  const { x0, x1, d0, d1, seat, arm, back, armW } = SOFA;
+  box(c, { x0, x1, d0: d1 - 17, d1, z0: 8, z1: back }, tint(0.9));                                // backrest
+  box(c, { x0: x0 + armW, x1: x1 - armW, d0, d1: d1 - 17, z0: 8, z1: 52 }, tint(0.78));           // base
+  box(c, { x0: x0 + armW, x1: x1 - armW, d0: d0 - 1, d1: d1 - 17, z0: 52, z1: seat }, tint(1.08)); // seat cushion
+  box(c, { x0, x1: x0 + armW, d0: d0 - 3, d1, z0: 8, z1: arm }, tint(1.0));                       // armrests
+  box(c, { x0: x1 - armW, x1, d0: d0 - 3, d1, z0: 8, z1: arm }, tint(1.0));
+  for (const fx of [x0 + 6, x1 - 12]) box(c, { x0: fx, x1: fx + 6, d0: d0 + 2, d1: d0 + 8, z0: 0, z1: 8 }, tint(0.5));
+  // a pillow against the right armrest
+  const pc = P([x1 - armW - 22, d0 + 26, seat + 14]), pk = pc[2];
+  c.save(); c.translate(pc[0], pc[1]); if (MIRROR) c.scale(1, -1); c.rotate(-0.12);
+  c.beginPath(); c.ellipse(0, 0, 26 * pk, 15 * pk, 0, 0, TAU); c.fillStyle = rgb(mixc([150, 152, 160], [176, 152, 124], warm)); c.fill();
+  c.lineWidth = 2 * pk; c.strokeStyle = 'rgba(0,0,0,0.6)'; c.stroke(); c.restore();
+  // the front edges, so the shape reads in the dark
+  c.save(); c.strokeStyle = 'rgba(0,0,0,0.55)'; c.lineWidth = 2; c.lineJoin = 'round';
+  poly(c, [[x0, d0 - 3, 8], [x0 + armW, d0 - 3, 8], [x0 + armW, d0 - 3, arm], [x0, d0 - 3, arm]]); c.stroke();
+  poly(c, [[x1 - armW, d0 - 3, 8], [x1, d0 - 3, 8], [x1, d0 - 3, arm], [x1 - armW, d0 - 3, arm]]); c.stroke();
+  c.restore();
+  c.save(); c.strokeStyle = 'rgba(0,0,0,0.45)'; c.lineWidth = 2;
+  const a = P([x0 + armW, d0 - 1, 52]), b = P([x1 - armW, d0 - 1, 52]); c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  c.restore();
+}
+function drawBag(c, name, st, warm) {
+  const { pos, rot = 0, sq = 0 } = st;
+  const w = BAG.w * (1 + 0.06 * sq), h = BAG.h * (1 - 0.08 * sq), d = BAG.d;
+  const [bx, bd, bz] = pos;
+  const col = k => ({ front: rgb(mixc([92, 94, 102], [112, 96, 78], warm).map(v => v * k)), top: rgb(mixc([120, 122, 130], [140, 120, 96], warm).map(v => v * k)), side: rgb(mixc([66, 68, 74], [82, 70, 56], warm).map(v => v * k)), edge: 'rgba(0,0,0,0.5)' });
+  c.save();
+  const piv = P([bx, bd - d / 2, bz + h]);
+  c.translate(piv[0], piv[1]); c.rotate(rot * (MIRROR ? -1 : 1)); c.translate(-piv[0], -piv[1]);
+  box(c, { x0: bx - w / 2, x1: bx + w / 2, d0: bd - d / 2, d1: bd + d / 2, z0: bz, z1: bz + h }, col(1));
+  // outline of the front, rounded strap on top
+  poly(c, [[bx - w / 2, bd - d / 2, bz], [bx + w / 2, bd - d / 2, bz], [bx + w / 2, bd - d / 2, bz + h], [bx - w / 2, bd - d / 2, bz + h]]);
+  const k = P([bx, bd, bz])[2];
+  c.lineWidth = 2.2 * k; c.strokeStyle = INK; c.lineJoin = 'round'; c.stroke();
+  c.beginPath();
+  for (let i = 0; i <= 12; i++) { const a = PI * i / 12, q = P([bx - 13 * Math.cos(a), bd, bz + h + 10 * Math.sin(a)]); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }
+  c.lineWidth = 3 * k; c.stroke();
+  // the label, monospace caps
+  if (!MIRROR) {
+    const lc = P([bx, bd - d / 2 - 0.5, bz + h * 0.5]);
+    const lw = 47 * k, lh = 19 * k;
+    c.fillStyle = rgb(mixc([196, 196, 192], [214, 200, 176], warm)); c.fillRect(lc[0] - lw / 2, lc[1] - lh / 2, lw, lh);
+    c.lineWidth = 1.4 * k; c.strokeRect(lc[0] - lw / 2, lc[1] - lh / 2, lw, lh);
+    c.fillStyle = INK; c.font = `800 ${14.5 * k}px "JetBrains Mono", "DejaVu Sans Mono", monospace`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(name, lc[0], lc[1] + 0.5 * k);
+  }
+  c.restore();
+}
+function doorAngle(shot, t) {
+  const open = (a, b) => E.io(inv(a, b, t)), shut = (a, b) => 1 - E.in2(inv(a, b, t));
+  if (shot === 'M2') return 75 * open(T.walkM + 0.1, T.walkM + 0.32) * shut(6.06, 6.22);
+  if (shot === 'E1') return 82 * open(T.e0 - 0.12, T.e0 + 0.22);
+  if (shot === 'E2') return 75 * open(T.walkE + 0.12, T.walkE + 0.32) * shut(T.walkE + 0.56, T.walkE + 0.72);
+  if (shot === 'N1') return 70 * E.sine(inv(T.n0, T.n0 + 0.6, t));
+  return 0;
+}
+function drawDoor(c, ang, hall) {
+  const { x0, x1, z1 } = DOOR;
+  const frame = [[x0, WALL, 0], [x1, WALL, 0], [x1, WALL, z1], [x0, WALL, z1]];
+  poly(c, frame.map((p, i) => [p[0] + (i === 0 || i === 3 ? -8 : 8), p[1], p[2] + (i >= 2 ? 8 : 0)])); c.fillStyle = '#0c0d10'; c.fill();
+  // the hall behind the opening, a little light in it
+  if (ang >= 0.5) { poly(c, frame); c.fillStyle = rgb(hall); c.fill(); }
+}
+// the door leaf, drawn after anyone standing in the hall: closed it hides them, open it swings out (hinge on the left)
+function drawLeaf(c, ang) {
+  const { x0, x1, z1 } = DOOR, w = x1 - x0;
+  const frame = [[x0, WALL, 0], [x1, WALL, 0], [x1, WALL, z1], [x0, WALL, z1]];
+  if (ang < 0.5) {
+    poly(c, frame); c.fillStyle = rgb([52, 54, 60]); c.fill();
+    const kn = P([x1 - 14, WALL, 190]);
+    c.beginPath(); c.arc(kn[0], kn[1], 4 * kn[2], 0, TAU); c.fillStyle = rgb([120, 122, 128]); c.fill();
+    return;
+  }
+  c.save(); poly(c, frame); c.clip();
+  const a = ang * D2R, ex = x0 + Math.cos(a) * w, ed = WALL + Math.sin(a) * w;
+  poly(c, [[x0, WALL + 1, 0], [ex, ed, 0], [ex, ed, z1], [x0, WALL + 1, z1]]);
+  c.fillStyle = rgb([40, 42, 47]); c.fill(); c.strokeStyle = 'rgba(0,0,0,0.6)'; c.lineWidth = 2; c.stroke();
+  c.restore();
+}
+function drawWindow(c, col, warm) {
+  const { x0, x1, z0, z1 } = WIN;
+  const fr = [[x0 - 7, WALL, z0 - 7], [x1 + 7, WALL, z0 - 7], [x1 + 7, WALL, z1 + 7], [x0 - 7, WALL, z1 + 7]];
+  poly(c, fr); c.fillStyle = '#121316'; c.fill();
+  poly(c, [[x0, WALL, z0], [x1, WALL, z0], [x1, WALL, z1], [x0, WALL, z1]]);
+  const top = P([0, WALL, z1])[1], bot = P([0, WALL, z0])[1];
+  const g = c.createLinearGradient(0, top, 0, bot);
+  g.addColorStop(0, rgb(col.map(v => v * 1.08))); g.addColorStop(1, rgb(col.map(v => v * 0.82)));
+  c.fillStyle = g; c.fill();
+  c.strokeStyle = '#121316'; c.lineWidth = 5;
+  const m1 = P([(x0 + x1) / 2, WALL, z0]), m2 = P([(x0 + x1) / 2, WALL, z1]), h1 = P([x0, WALL, (z0 + z1) / 2]), h2 = P([x1, WALL, (z0 + z1) / 2]);
+  c.beginPath(); c.moveTo(m1[0], m1[1]); c.lineTo(m2[0], m2[1]); c.moveTo(h1[0], h1[1]); c.lineTo(h2[0], h2[1]); c.stroke();
+  // sill
+  box(c, { x0: x0 - 12, x1: x1 + 12, d0: WALL - 10, d1: WALL, z0: z0 - 12, z1: z0 - 6 }, { front: '#1a1b1f', top: '#26272c', side: '#141518' });
+}
+function drawPhone(c, glow) {
+  const p = [478, 84, 1.2], a = [1, 0.12, 0], r = [-0.12, 1, 0];
+  const pt = (sa, sr) => add(add(p, mul(a, sa * 12)), mul(r, sr * 6));
+  poly(c, [pt(-1, -1), pt(1, -1), pt(1, 1), pt(-1, 1)]);
+  c.fillStyle = glow > 0.02 ? rgb(mixc([30, 32, 38], [232, 238, 255], glow)) : '#16171a'; c.fill();
+  c.lineWidth = 2; c.strokeStyle = INK; c.stroke();
+}
+
+// ---------------------------------------------------------------- light
+const LM = document.createElement('canvas'); LM.width = W / 4; LM.height = H / 4;
+const lmc = LM.getContext('2d');
+function lightPass(ambient, lights) {
+  lmc.setTransform(1, 0, 0, 1, 0, 0); lmc.globalCompositeOperation = 'source-over';
+  lmc.fillStyle = rgb(ambient); lmc.fillRect(0, 0, LM.width, LM.height);
+  lmc.setTransform(0.25, 0, 0, 0.25, 0, 0); lmc.globalCompositeOperation = 'lighter';
+  for (const L of lights) {
+    if (L.a <= 0.002) continue;
+    lmc.save(); lmc.translate(L.x, L.y); lmc.scale(1, L.sy || 1);
+    const g = lmc.createRadialGradient(0, 0, 0, 0, 0, L.r);
+    g.addColorStop(0, rgb(L.col, L.a)); g.addColorStop(L.mid || 0.45, rgb(L.col, L.a * 0.4)); g.addColorStop(1, rgb(L.col, 0));
+    lmc.fillStyle = g; lmc.fillRect(-L.r, -L.r, 2 * L.r, 2 * L.r); lmc.restore();
+  }
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(LM, 0, 0, W, H); ctx.restore();
+}
+function glowAt(x, y, r, col, a, op = 'lighter') {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = op;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+
+// ---------------------------------------------------------------- cameras
+const CAMS = { wide: { x: 372, zoom: 1.1, hy: 640, h: 262 }, tight: { x: 458, zoom: 1.62, hy: 610, h: 205 } };
+function setCam(shot, t) {
+  const c = { ...CAMS[shot.cam] };
+  if (shot.id === 'P1') { const e = E.sine(inv(0, T.rew0, t)); c.zoom = lerp(1.58, 1.66, e); }
+  if (shot.id === 'P3') {
+    // pushes in on the sleeping father while the child is away, eases back when it returns, then settles
+    const pin = E.io(inv(12.85, 13.4, t)) * (1 - E.io(inv(13.72, 14.55, t)));
+    c.zoom = lerp(1.62, 2.75, pin); c.x = lerp(458, 486, pin); c.hy = lerp(610, 640, pin); c.h = lerp(205, 150, pin);
+    const fin = E.sine(inv(16.0, 19.5, t)); c.zoom *= lerp(1, 1.06, fin); c.x = lerp(c.x, 470, fin);
+  }
+  Object.assign(cam, c);
+}
+
+// ---------------------------------------------------------------- figures on screen per shot
+function castFor(shot, t) {
+  switch (shot.id) {
+    case 'P1': return [{ f: DADS }, { f: KID1, ball: true }];
+    case 'M1': return [{ f: DM1 }];
+    case 'M2': return [{ f: DM2 }];
+    case 'E1': return [{ f: DE }, { f: KE }];
+    case 'E2': return [{ f: DE2 }, { f: KE2 }];
+    case 'N1': return [{ f: DN1 }];
+    case 'N2': return [{ f: DN2 }];
+    case 'P3': return [{ f: DADS }, ...(t < 13.6 ? [{ f: KID3A }] : []), ...(t >= 13.2 ? [{ f: KID3B }] : [])];
+  }
+  return [];
+}
+
+// draw the room and everything in it for one shot at (story) time t
+function drawScene(shot, t, warm) {
+  setCam(shot, t);
+  const lamp = mixc(COLDL, WARML, warm);
+  const floorY = P([0, WALL, 0])[1];
+  // wall and floor (base colours; the light map shades them)
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb(mixc([62, 64, 72], [80, 66, 52], warm))); g.addColorStop(1, rgb(mixc([86, 88, 96], [116, 96, 72], warm)));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb(mixc([98, 98, 104], [132, 108, 82], warm))); g.addColorStop(1, rgb(mixc([46, 46, 50], [62, 50, 38], warm)));
+  ctx.fillStyle = g; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.save(); ctx.globalAlpha = 0.22; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+  for (let d = WALL; d > -300; d -= 36) { const y = P([0, d, 0])[1]; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.restore();
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, floorY - 3, W, 5);
+  drawWindow(ctx, WINC[shot.win], warm);
+  const ang = doorAngle(shot.id, t);
+  const hall = shot.win === 'night' ? [70, 72, 80] : shot.win === 'dawn' ? [74, 82, 104] : [118, 120, 128];
+  drawDoor(ctx, ang, hall);
+  {
+    const a = P([(SOFA.x0 + SOFA.x1) / 2, SOFA.d0 + 30, 0]);
+    ctx.save(); ctx.translate(a[0], a[1]); ctx.scale(1, 0.16);
+    const gg = ctx.createRadialGradient(0, 0, 0, 0, 0, 220 * a[2]); gg.addColorStop(0, 'rgba(0,0,0,0.55)'); gg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(0, 0, 220 * a[2], 0, TAU); ctx.fill(); ctx.restore();
+  }
+
+  const cast = castFor(shot, t).map(c => ({ ...c, J: c.f.pose(t) }));
+  const bags = BAGS[shot.id] || BAGS.P1;
+  const bagSt = bags.map(b => b.state(t));
+  const cloth = shot.id === 'P3' || shot.id === 'P1' ? CLOTH.at(Math.max(t, 0)) : null;
+  const extraOf = (c, m) => {
+    const extra = { props: [] };
+    bags.forEach((b, i) => { if (bagSt[i].carried && b.ev.some(e => e.fig === m.f)) extra.props.push({ d: bagSt[i].hand[1] + 0.5, draw: () => drawBag(c, b.name, bagSt[i], warm) }); });
+    if (m.ball && t < T.rew0 + 1) extra.props.push({ d: -1e4, draw: () => drawBall(c, add(m.J.hand.L, [0, -1.5, -3])) });
+    if (m.f === KID3A && t < BALL3_DROP) extra.props.push({ d: -1e4, draw: () => drawBall(c, ball3(t)) });
+    return extra;
+  };
+  const behindWall = J => J.P[1] > WALL - 6;
+  const items = (c) => {
+    // people in the hall first: only seen through the opening, the leaf drawn over them
+    const opening = () => { c.save(); poly(c, [[DOOR.x0, WALL, 0], [DOOR.x1, WALL, 0], [DOOR.x1, WALL, DOOR.z1], [DOOR.x0, WALL, DOOR.z1]]); c.clip(); };
+    bags.forEach((b, i) => { if (!bagSt[i].carried && bagSt[i].pos[1] > WALL - 8) { opening(); drawBag(c, b.name, bagSt[i], warm); c.restore(); } });
+    // a leaf opened past ~20 degrees is behind someone standing in the doorway; nearly shut, it is in front
+    if (ang >= 20) drawLeaf(c, ang);
+    for (const m of cast) if (behindWall(m.J)) { opening(); drawFigure(c, m.f, m.J, extraOf(c, m)); c.restore(); }
+    if (ang < 20) drawLeaf(c, ang);
+    const list = [{ d: SOFA.d1 + 1, draw: () => drawSofa(c, warm) }];
+    bags.forEach((b, i) => { if (!bagSt[i].carried && bagSt[i].pos[1] <= WALL - 8) list.push({ d: bagSt[i].pos[1] + 0.5, draw: () => drawBag(c, b.name, bagSt[i], warm) }); });
+    if (shot.id === 'M1') list.push({ d: 84, draw: () => drawPhone(c, t > T.alarm && t < T.alarm + 0.7 ? 0.55 + 0.45 * Math.abs(Math.sin((t - T.alarm) * 9)) : 0) });
+    for (const m of cast) {
+      if (behindWall(m.J)) continue;
+      const isDad = !m.f.s || m.f.s === 1;
+      const dz = isDad && cloth ? m.J.P[1] + 0.3 : m.J.P[1];
+      list.push({ d: dz, draw: () => drawFigure(c, m.f, m.J, extraOf(c, m)) });
+    }
+    if (shot.id === 'P3' && t >= BALL3_DROP) list.push({ d: ball3(t)[1], draw: () => drawBall(c, ball3(t)) });
+    if (cloth) list.push({ d: t < T.lay0 - 0.3 ? 80 : 100, draw: () => drawCloth(c, cloth) });
+    list.sort((a, b) => b.d - a.d);
+    for (const it of list) it.draw();
+  };
+  reflection(c => items(c), floorY, 0.28);
+  for (const m of cast) if (!behindWall(m.J)) contactShadow(ctx, m.J, 0.5, m.f.s);
+  items(ctx);
+
+  // light map: a dark room, the lamp above the sofa, the window, at the end the warm glow
+  const lp = P(LAMP), wn = P([(WIN.x0 + WIN.x1) / 2, WALL, (WIN.z0 + WIN.z1) / 2]), wf = P([(WIN.x0 + WIN.x1) / 2, WALL - 60, 0]);
+  const winc = WINC[shot.win], winA = shot.win === 'day' ? 0.32 : shot.win === 'dusk' ? 0.18 : shot.win === 'dawn' ? 0.2 : 0;
+  const lap = P([450, 110, 110]), lapF = P([450, 90, 0]);
+  const dn = P([(DOOR.x0 + DOOR.x1) / 2, WALL, 150]);
+  lightPass(mixc([62, 64, 72], [72, 60, 46], warm), [
+    { x: lp[0], y: lp[1] + 260 * lp[2] / 1.4, r: 760 * lp[2] / 1.2, col: lamp, a: lerp(0.6, 0.66, warm), sy: 0.95, mid: 0.55 },
+    { x: lp[0], y: lp[1] + 20, r: 240, col: lamp, a: lerp(0.18, 0.4, warm) },
+    { x: wn[0], y: wn[1], r: 300 * wn[2], col: winc.map(v => Math.min(255, v * 1.5)), a: winA },
+    { x: wf[0], y: wf[1], r: 260 * wf[2], col: winc.map(v => Math.min(255, v * 1.5)), a: winA * 0.7, sy: 0.3 },
+    { x: dn[0], y: dn[1], r: 260 * dn[2], col: [150, 156, 170], a: 0.3 * Math.min(1, ang / 40) },
+    { x: lap[0], y: lap[1], r: 500, col: WARML, a: 0.32 * warm },
+    { x: lapF[0], y: lapF[1], r: 420, col: WARML, a: 0.3 * warm, sy: 0.24 },
+  ]);
+  if (shot.id === 'M1' && t > T.alarm && t < T.alarm + 0.7) { const ph = P([478, 84, 2]); glowAt(ph[0], ph[1], 90 * ph[2], [210, 222, 255], 0.5 * Math.abs(Math.sin((t - T.alarm) * 9))); }
+  // pendant lamp
+  ctx.save();
+  ctx.strokeStyle = '#1c1c20'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], 0); ctx.lineTo(lp[0], lp[1] - 40 * lp[2]); ctx.stroke();
+  const k = lp[2];
+  ctx.beginPath(); ctx.moveTo(lp[0] - 10 * k, lp[1] - 42 * k); ctx.lineTo(lp[0] + 10 * k, lp[1] - 42 * k); ctx.lineTo(lp[0] + 44 * k, lp[1]); ctx.lineTo(lp[0] - 44 * k, lp[1]); ctx.closePath();
+  ctx.fillStyle = '#101012'; ctx.fill(); ctx.strokeStyle = '#26262b'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 44 * k, 6 * k, 0, 0, TAU); ctx.fillStyle = rgb(mixc([130, 134, 140], WARMC, warm)); ctx.fill();
+  ctx.restore();
+  glowAt(lp[0], lp[1] + 6, 160 * k, lamp, lerp(0.12, 0.45, warm));
+  if (warm > 0) {
+    glowAt(lap[0], lap[1], 340, WARMC, 0.1 * warm);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.translate(lapF[0], lapF[1] + 20); ctx.scale(1, 0.22);
+    g = ctx.createRadialGradient(0, 0, 0, 0, 0, 340);
+    g.addColorStop(0, rgb(WARMC, 0.18 * warm)); g.addColorStop(0.55, rgb(WARMC, 0.06 * warm)); g.addColorStop(1, rgb(WARMC, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 340, 0, TAU); ctx.fill(); ctx.restore();
+  }
+  vignette(lerp(0.78, 0.66, warm));
+}
+
+// ---------------------------------------------------------------- tape effects
+const TAPE = document.createElement('canvas'); TAPE.width = W; TAPE.height = H;
+const tctx = TAPE.getContext('2d');
+// scanlines, tracking bands that roll (up for rewind, down for forward), torn horizontal strips, a little blur
+function tapeFx(strength, dir, seed) {
+  if (strength <= 0.01) return;
+  tctx.setTransform(1, 0, 0, 1, 0, 0); tctx.clearRect(0, 0, W, H);
+  tctx.filter = `blur(${(1.4 * strength).toFixed(2)}px)`; tctx.drawImage(cv, 0, 0); tctx.filter = 'none';
+  const r = mulberry32(seed | 0);
+  ctx.save();
+  ctx.drawImage(TAPE, 0, 0);
+  // torn strips
+  for (let i = 0; i < 9; i++) {
+    const y = Math.floor(r() * H), h = 6 + Math.floor(r() * 34), dx = (r() - 0.5) * 46 * strength;
+    ctx.drawImage(TAPE, 0, y, W, h, dx, y, W, h);
+  }
+  // grey wash and scanlines
+  ctx.fillStyle = `rgba(150,150,150,${0.1 * strength})`; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = `rgba(200,200,200,${0.11 * strength})`;
+  for (let y = 0; y < H; y += 4) ctx.fillRect(0, y, W, 1);
+  // rolling tracking bands
+  const off = (seed * 37 * dir) % H;
+  for (let b = 0; b < 3; b++) {
+    const y = ((off + b * 430) % H + H) % H, hh = 18 + b * 7;
+    const gb = ctx.createLinearGradient(0, y, 0, y + hh);
+    gb.addColorStop(0, 'rgba(220,220,220,0)'); gb.addColorStop(0.5, `rgba(220,220,220,${0.32 * strength})`); gb.addColorStop(1, 'rgba(220,220,220,0)');
+    ctx.fillStyle = gb; ctx.fillRect(0, y, W, hh);
+  }
+  ctx.restore();
+}
+function osd(text, a) {   // small VHS-style indicator top left
+  if (a <= 0.01) return;
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#f2f2ee';
+  ctx.font = '700 26px "JetBrains Mono", "DejaVu Sans Mono", monospace'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 8;
+  ctx.fillText(text, 44, 92); ctx.restore();
+}
+
+// ---------------------------------------------------------------- frame
+function draw(t) {
+  const warm = sstep(T.warm0, T.warm1, t);
+  let shot, st = t, fx = 0, dir = 1, label = null;
+  if (t >= T.rew0 && t < T.rew1) { shot = SHOTS[0]; st = T.rew0 - (t - T.rew0) * 8.4; fx = 1; dir = -1; label = 'EARLIER THIS WEEK'; }
+  else if (t >= T.fwd0 && t < T.fwd1) { shot = SHOTS[6]; st = T.fwd0 + (t - T.fwd0) * 6; fx = 1; dir = 1; label = 'SATURDAY'; }
+  else shot = shotAt(t);
+  drawScene(shot, st, shot.id === 'P3' ? warm : 0);
+  // the time, small and grey at the bottom
+  ctx.save();
+  ctx.font = '600 30px "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", monospace';
+  ctx.textBaseline = 'middle'; ctx.fillStyle = 'rgba(150,152,158,0.85)';
+  const tl = label ? '' : shot.label, cw = ctx.measureText('0').width, sp = 9, tw = tl.length * cw + (tl.length - 1) * sp;
+  let xx = W / 2 - tw / 2; for (const ch of tl) { ctx.fillText(ch, xx, 1196); xx += cw + sp; }
+  ctx.restore();
+  // tape skips between the moments of his day
+  for (const s of SKIPS) { const d = Math.abs(t - s); if (d < 0.07) fx = Math.max(fx, 0.75 * (1 - d / 0.07)); }
+  if (fx > 0) tapeFx(fx, dir, Math.floor(t * FPS) + 7);
+  if (label) {
+    osd(dir < 0 ? '<< REW' : '>> FF', 1);
+    caption(label, 1, 0, 40, 10, H / 2 - 40);
+  }
+  captionAt(t, 'DAD IS ALWAYS TIRED.', T.text1a, T.text1b, 36, 8);
+  captionAt(t, "HE'S NOT LAZY.", T.textA0, T.textA1, 40, 10, 186);
+  captionAt(t, "HE'S TIRED FOR YOU.", T.textB0, T.textB1, 40, 10, 248, [255, 206, 120]);
+}
+
+// ---------------------------------------------------------------- checks, render, cues
+const CHECK_FIGS = [[DADS, 0, T.end], [KID1, 0, T.rew0], [DM1, T.m0, T.cutM], [DM2, T.cutM - 0.2, T.e0], [DE, T.e0 - 0.1, T.cutE], [KE, T.e0, T.cutE],
+  [DE2, T.cutE, T.n0], [DN1, T.n0, T.cutN], [DN2, T.cutN, T.fwd0], [KID3A, T.p3, 13.6], [KID3B, 13.2, T.end]];
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.fadeOut, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  // only steps that are on screen in their shot
+  const steps = [];
+  const inShot = (f, t) => castFor(shotAt(t), t).some(c => c.f === f) && !(t >= T.rew0 && t < T.rew1) && !(t >= T.fwd0 && t < T.fwd1);
+  // the child of part 3 is two figures (out, back in): only one of them is heard at a time
+  const audible = (f, t) => inShot(f, t) && !(f === KID3A && t > 13.4) && !(f === KID3B && t < 13.6);
+  for (const f of [KID1, DM2, DE, KE, DE2, KID3A, KID3B, DN2, DM1, DN1]) for (const c of f.cues) if (audible(f, c.t)) steps.push({ ...c, kid: f.s !== 1, hall: f.worldRoot(c.t)[1] > WALL - 4 });
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  // breathing: the snore goes on every in-breath (sin rising through zero minus a quarter period)
+  const ph = DADS.seed, inhale0 = (-PI / 2 - ph) * 3.6 / TAU;
+  const lands = { e: bagsFor('E1')[0].landT(), n: bagsFor('N1')[1].landT() };
+  return {
+    story: { ...T, inhale0, bagE: lands.e, bagN: lands.n, shutM: 6.22, shutE: T.walkE + 0.72, keysM: T.grabM + 0.06, keysE: T.grabE + 0.06 },
+    steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end,
+  };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+window.__debug = { DADS, KID1, KID3A, KID3B, DM1, DM2, DE, KE, DE2, KE2, DN1, DN2, CLOTH, cam, P, bagsFor };
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>

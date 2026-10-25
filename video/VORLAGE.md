@@ -127,3 +127,17 @@ Tag someone you should check on today.
 - Tipp für Arme: Der Ellbogen-Pol darf nie auf der Linie Schulter–Hand liegen, sonst springt der Ellbogen.
   Sicher ist ein Pol unter der Armmitte (siehe `midPole`).
 - Alle Sounds sind selbst erzeugt (`scripts/make_sfx.py`), also ohne fremde Rechte.
+
+---
+
+## 9. Vierter Film: Tired For You
+
+- Datei `tired-for-you.html`. Befehle: `npm run tired:check`, `tired:stills`, `tired:render`, `tired:mix`, `tired:build`.
+- Aufbau mit Einstellungen (`SHOTS`): jede Einstellung hat eigene Figuren und eine eigene Kamera. Zwischen den Momenten des
+  Tages springt das "Band" mit kurzen Störstreifen (Montage), so passen viele Handlungen in wenige Sekunden.
+- Die Decke ist eine kleine Stoff-Simulation (Partikel + Abstände, Boden, Sofa, Körper des Vaters). Tipp: Kollisionen so
+  auflösen, dass sie keine Geschwindigkeit erzeugen, sonst springt der Stoff hoch.
+- Neu in der Engine: auf der Seite liegen (`roll2`, `rollSh`), schwere Tasche zieht eine Schulter runter (`dropL`/`dropR`),
+  Kniebeuge-Richtung für Fußziele (`kdir`), Untertitel in Farbe.
+- Ton: Wenn ein Film sehr leise ist, hebt die Normalisierung auf -14 LUFS alles stark an. Laute Einzelgeräusche
+  (Türen, Taschen) deshalb eher leise ansetzen, sonst muss der Limiter zu viel abfangen.

@@ -192,7 +192,15 @@ function loudness(file) {
 
   if (!fs.existsSync(VIDEO)) { console.error(`${path.relative(ROOT, VIDEO)} missing: run \`node scripts/render.js\` first`); process.exit(1); }
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
-  run('ffmpeg', ['-v', 'error', '-y', '-i', VIDEO, '-i', mixed, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', String(SR), '-shortest', '-movflags', '+faststart', OUT]);
-  const fin = loudness(OUT);
+  const mux = () => run('ffmpeg', ['-v', 'error', '-y', '-i', VIDEO, '-i', mixed, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', String(SR), '-shortest', '-movflags', '+faststart', OUT]);
+  mux();
+  let fin = loudness(OUT);
+  // AAC can add overshoot on hard-limited transients: if the encoded file is over the ceiling, limit lower and encode again
+  for (let k = 0, lim = limit; k < 3 && fin.TP > CEILING_DBTP; k++) {
+    lim *= Math.pow(10, -(fin.TP - CEILING_DBTP + 0.3) / 20);
+    run('ffmpeg', ['-v', 'error', '-y', '-i', raw, '-af', `aresample=${SR * 4},volume=${gain.toFixed(2)}dB,alimiter=limit=${lim.toFixed(4)}:attack=1.5:release=80:level=false:latency=1,aresample=${SR}`, '-ar', String(SR), '-c:a', 'pcm_s24le', mixed]);
+    mux(); fin = loudness(OUT);
+    console.log(`  AAC peak over the ceiling: limiter at ${(20 * Math.log10(lim)).toFixed(2)} dB -> ${fin.I} LUFS, true peak ${fin.TP} dBTP`);
+  }
   console.log(`\nwrote ${path.relative(ROOT, OUT)}: ${fin.I} LUFS integrated, true peak ${fin.TP} dBTP (AAC 192k)`);
 })();

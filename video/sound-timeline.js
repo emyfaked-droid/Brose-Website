@@ -201,8 +201,76 @@ function timelinePhone(S, cues) {
   return C;
 }
 
+// =====================================================================
+// TIRED FOR YOU (tired-for-you.html). Times come from the page (cues.story): the snore sits on his in-breaths,
+// bags, doors, keys and the flop on the frames where they happen, footsteps on the heel contacts.
+// =====================================================================
+const FILES_TIRED = {
+  'room_tone.mp3':          { search: '"quiet apartment room tone"', use: 'bed under the whole film (-32 dB)' },
+  'soft_snore.mp3':         { search: '"man snoring softly"', use: 'Saturday, on every in-breath (-26 dB)' },
+  'clock_tick.mp3':         { search: '"wall clock ticking"', use: 'single ticks once a second (-30 dB)' },
+  'tape_rewind.mp3':        { search: '"vhs tape rewind"', use: 'rewind at 3.6 s, played backwards for the fast-forward at 12.0 s' },
+  'phone_alarm.mp3':        { search: '"phone alarm morning"', use: '5:30 alarm' },
+  'tired_sigh.mp3':         { search: '"tired sigh exhale"', use: 'as he sits up' },
+  'keys.mp3':               { search: '"keys jingle"', use: 'when he takes a bag' },
+  'door_close.mp3':         { search: '"apartment door close"', use: 'the door shuts behind him' },
+  'door_open.mp3':          { search: '"apartment door open"', use: 'he comes home' },
+  'bag_drop.mp3':           { search: '"heavy bag drop floor"', use: 'the bag lands' },
+  'night_outside.mp3':      { search: '"distant city night traffic"', use: 'quiet under the night scene' },
+  'sofa_flop.mp3':          { search: '"falling onto sofa"', use: 'he lets himself fall onto the sofa' },
+  'blanket_rustle.mp3':     { search: '"blanket rustle"', use: 'the child drags and lays the blanket' },
+  'footsteps_wood.mp3':     { search: '"footsteps wooden floor"', use: 'the father (hard, heavy)' },
+  'footsteps_barefoot.mp3': { search: '"barefoot steps wooden floor"', use: 'the child (light)' },
+};
+
+function timelineTired(S, cues) {
+  const C = [], add = c => C.push(c), END = S.end;
+  const tape = t => (t >= S.rew0 && t < S.rew1) || (t >= S.fwd0 && t < S.fwd1);
+  add({ file: 'room_tone.mp3', at: 0, dur: END, vol: -32, fadeIn: 0.6, fadeOut: 0.9, loop: true });
+  // the clock, once a second, quiet during the tape effects
+  for (let i = 0; 0.5 + i < END - 0.4; i++) { const t = 0.5 + i; if (!tape(t)) add({ file: 'clock_tick.mp3', slice: i % 8, at: t, vol: -30, align: 'onset', fadeOut: 0.05 }); }
+  // the snore follows his breathing (one breath = 3.6 s, the file has the same period)
+  const P = 3.6, off = t => (((t - S.inhale0) % P) + P) % P;
+  add({ file: 'soft_snore.mp3', at: 0, offset: off(0), dur: S.rew0, vol: -26, fadeIn: 0.4, fadeOut: 0.15, loop: true });
+  add({ file: 'soft_snore.mp3', at: S.p3, offset: off(S.p3), dur: END - S.p3, vol: -26, fadeIn: 0.25, fadeOut: 0.8, loop: true });
+  // tape: rewind into the week, the same sound backwards out of it
+  add({ file: 'tape_rewind.mp3', at: S.rew0 - 0.03, dur: 0.75, vol: -21, fadeOut: 0.05 });
+  add({ file: 'tape_rewind.mp3', at: S.fwd0 - 0.03, dur: 0.75, vol: -22, fadeOut: 0.05, filter: 'areverse' });
+  // morning
+  add({ file: 'phone_alarm.mp3', at: S.alarm, dur: S.sit0 + 0.45 - S.alarm, vol: -31, fadeIn: 0.01, fadeOut: 0.08, loop: true });
+  add({ file: 'tired_sigh.mp3', at: 4.6, vol: -20, fadeOut: 0.3 });
+  add({ file: 'keys.mp3', at: S.keysM, vol: -26, align: 'onset', fadeOut: 0.1 });
+  add({ file: 'door_close.mp3', at: S.shutM, vol: -21, align: 'onset', fadeOut: 0.3 });
+  // evening
+  add({ file: 'door_open.mp3', at: S.e0, vol: -22, align: 'onset', fadeOut: 0.3 });
+  add({ file: 'bag_drop.mp3', at: S.bagE, vol: -20, align: 'onset', fadeOut: 0.3 });
+  add({ file: 'keys.mp3', at: S.keysE, vol: -26, align: 'onset', fadeOut: 0.1 });
+  add({ file: 'door_close.mp3', at: S.shutE, vol: -21, align: 'onset', fadeOut: 0.3 });
+  // night
+  add({ file: 'door_open.mp3', at: S.n0, vol: -24, align: 'onset', fadeOut: 0.3, rate: 0.9 });
+  add({ file: 'night_outside.mp3', at: S.n0, dur: S.fwd0 - S.n0, vol: -30, fadeIn: 0.4, fadeOut: 0.3, loop: true });
+  add({ file: 'bag_drop.mp3', at: S.bagN, vol: -21, align: 'onset', fadeOut: 0.3, rate: 0.95 });
+  add({ file: 'sofa_flop.mp3', at: S.flop, vol: -19, align: 'onset', fadeOut: 0.4 });
+  // Saturday: the blanket
+  add({ file: 'blanket_rustle.mp3', at: S.back, dur: S.lay1 - S.back, vol: -24, fadeIn: 0.1, fadeOut: 0.3 });
+  // footsteps on the heel contacts: the father hard and heavy, the child light; behind the door: dull and quieter
+  const VOL = { heavy: -21, forced: -23, kid: -27, kidrun: -26, kiddrag: -28, kidwalk: -27, shuffle: -29 };
+  let n = 0;
+  for (const c of cues.steps) {
+    let vol = VOL[c.mood] ?? (c.kid ? -28 : -22), filter = null;
+    if (c.type === 'settle') vol -= 4;
+    if (c.type === 'shuffle') vol = c.kid ? -31 : -27;
+    if (c.hall) { vol -= 7; filter = 'lowpass=f=900'; }
+    const jitter = ((n * 7919) % 13) / 13 - 0.5;
+    add({ file: c.kid ? 'footsteps_barefoot.mp3' : 'footsteps_wood.mp3', slice: n++, at: c.t, vol: vol + jitter * 2, rate: (c.kid ? 1.1 : (c.mood === 'heavy' ? 0.92 : 1.0)) * (1 + jitter * 0.04),
+          align: 'onset', fadeOut: 0.06, filter, note: `${c.fig} ${c.side} ${c.type} frame ${c.frame}` });
+  }
+  return C;
+}
+
 module.exports = { FILES, timeline, TARGET_LUFS: -14, CEILING_DBTP: -1.5,
   films: {
     'it-ends-with-you': { FILES: FILES_IEWY, timeline: timelineIewy },
     'i-wish-i-was-your-phone': { FILES: FILES_PHONE, timeline: timelinePhone },
+    'tired-for-you': { FILES: FILES_TIRED, timeline: timelineTired },
   } };
