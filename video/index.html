@@ -149,8 +149,8 @@ const DIM = {
   upper: 56, fore: 52,
   thigh: 82, shin: 80,
   ankleH: 7, heel: 5, toe: 18,          // ankle sits above a point 5px in front of the heel
-  hipW: 10, shW: 17, footW: 10,
-  limbW: 20, outline: 4, waistW: 30, chestW: 38,
+  hipW: 7, shW: 12, footW: 8,
+  limbW: 13, outline: 3.5,
 };
 const FL = DIM.heel + DIM.toe;           // heel-to-toe length
 const LEG = DIM.thigh + DIM.shin;
@@ -167,7 +167,10 @@ const MOOD = {
   bouncy: { name: 'bouncy', L: 34, cad: 2.3, lift: 14, bob: 6.5, up: 1.25, down: 0.8, arm: 20, elbow: 16, elBase: 14, landPitch: 18, heelOff: 32, knee: 3, lean: 2, twist: 4 },
   heavy:  { name: 'heavy',  L: 70,  cad: 1.45, lift: 5,  bob: 5.5, up: 0.45, down: 1.35, arm: 7, elbow: 8, elBase: 16, landPitch: 9, heelOff: 20, knee: 7, lean: 6, twist: 3, ta: 0.78, td: 0.86 },
   forced: { name: 'forced', L: 100, cad: 2.3,  lift: 19, bob: 9,   up: 1.35, down: 0.75, arm: 34, elbow: 18, elBase: 24, landPitch: 24, heelOff: 42, knee: 2, lean: 0, twist: 6, ta: 0.42, td: 0.5 },
-  run:    { name: 'run',    L: 88,  cad: 3.1,  lift: 52, bob: 7,   arm: 38, elbow: 24, elBase: 62, landPitch: 7, heelOff: 50, knee: 9, lean: 19, twist: 8, ta: 0.42, td: 0.55, run: true, ds: 0.33, dsEdge: 0.45 },
+  // normal run: long stride, ~40% flight, steady upright-ish lean, elbows ~90 deg with an even swing
+  run:    { name: 'run',    L: 165, cad: 2.85, lift: 34, bob: 6, arm: 34, elbow: 12, elBase: 78, landPitch: 8, heelOff: 42, knee: 8, lean: 14, twist: 6, ta: 0.55, td: 0.65, run: true, ds: 0.30, dsEdge: 0.5 },
+  // easy jog (the look of the reference clip): shorter stride, more ground contact
+  jog:    { name: 'jog',    L: 120, cad: 2.6,  lift: 30, bob: 5, arm: 28, elbow: 10, elBase: 86, landPitch: 8, heelOff: 40, knee: 7, lean: 8, twist: 5, ta: 0.5, td: 0.6, run: true, ds: 0.36, dsEdge: 0.52 },
 };
 // pelvis height over one step: contact, down, passing, up
 const BOB = [[0, 0], [0.13, -1], [0.45, 0.3], [0.72, 1]];
@@ -270,7 +273,7 @@ class Fig {
       return -v * PI / (2 * Td) * Math.sin(PI * (Tt - tau) / Td);
     };
     const tOf = s => { let a = t0, b = t0 + Tt; for (let i = 0; i < 50; i++) { const c = (a + b) / 2; if (sAt(c) < s) a = c; else b = c; } return (a + b) / 2; };
-    const wk = { t0, t1: t0 + Tt, from, to, dir, yaw, D, L, N, v, Ta, Td, T: Tt, sAt, acc, tOf, m };
+    const wk = { t0, t1: t0 + Tt, from, to, dir, yaw, D, L, N, v, Ta, Td, T: Tt, sAt, acc, tOf, m, lead };
     this.moves.push(wk);
     const yNow = this.tr.yaw.at(t0);
     const yTarget = yNow + (((yaw - yNow + 540) % 360) - 180);
@@ -460,7 +463,13 @@ class Fig {
       sh = madd(sh, Ft, shDrop * 0.7);
       let sw = tr['aSw' + S].at(t), out = tr['aOut' + S].at(t), el = tr['aEl' + S].at(t);
       sw += dance * 3 * Math.sin(PI * beat + sd + sg);
-      if (gw > 0 && wk) {
+      if (gw > 0 && wk && wk.m.run) {
+        // running: one even sine swing, tied to the stride phase (0 = the lead-side foot touches down)
+        const th = PI * (wk.sAt(t) / wk.L + wk.m.ds - 1), sgn = side === wk.lead ? 1 : -1;
+        const ph = -sgn * Math.cos(th - 0.25);                 // +1 = this arm fully forward
+        sw += wk.m.arm * ph * gw;
+        el += (wk.m.elBase + wk.m.elbow * ph) * gw;
+      } else if (gw > 0 && wk) {
         const lag1 = this.legFwd(side, t - 0.07), lag2 = this.legFwd(side, t - 0.15);
         sw += -wk.m.arm * lag1 * gw;
         el += (wk.m.elBase + wk.m.elbow * (0.45 + 0.55 * clamp(-lag2, -1, 1))) * gw;
@@ -609,8 +618,7 @@ function drawFigure(c, fig, J, extra = {}) {
       if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
     } });
   }
-  parts.push({ d: torsoD + 0.1, draw: () => strokeLimb(c, [J.N, J.NT], rgb(FIG_NEAR), P(J.N)[2]) });
-  parts.push({ d: torsoD, draw: () => strokeShape(c, [{ pts: [J.P, J.C], w: DIM.waistW }, { pts: [J.C, J.N], w: DIM.chestW }], rgb(FIG_NEAR)) });
+  parts.push({ d: torsoD, draw: () => strokeLimb(c, [J.P, J.C, J.N, J.NT], rgb(FIG_NEAR), P(J.N)[2], true) });
   parts.push({ d: Math.min(torsoD - 0.2, J.Hc[1]), draw: () => {
     const [X, Y, k] = P(J.Hc), r = DIM.headR * k;
     c.beginPath(); c.arc(X, Y, r + DIM.outline * k, 0, TAU); c.fillStyle = INK; c.fill();
@@ -1302,7 +1310,7 @@ window.popCheck = function () {
 window.render = render;
 window.getCues = getCues;
 window.STORY = T;
-window.__debug = { PARTY, HOME, cam, P };
+window.__debug = { PARTY, HOME, WALKTEST, cam, P };
 
 // live preview loop (skipped when the renderer drives the page)
 const qs = new URLSearchParams(location.search);

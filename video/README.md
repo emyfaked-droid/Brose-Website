@@ -53,12 +53,12 @@ All beat times live in the `T` object in `index.html`. The home and morning beat
   half-steps, and the torso overshoots (a damped spring) when the figure stops.
 - **Turns** are shuffle steps: no foot ever pivots on the floor.
 - **Gaits** (`MOOD` in `index.html`): `bouncy` (party), `heavy` (home: short low steps, slumped, little arm swing),
-  `forced` (morning: long, upright, big arm swing), plus a neutral `walk` and a real `run`. The run has flight phases (a
+  `forced` (morning: long, upright, big arm swing), plus a neutral `walk`, an easy `jog` (the look of the reference clip) and a normal `run`. The run has flight phases (a
   half-stance below 0.5 step lengths), the pelvis is lowest in mid-stance and highest in mid-flight, the elbows stay near
   90° and pump, the torso leans forward with speed and rocks back when braking, the heel kicks up behind, the knee drives
   forward. Walks and runs share one planner, so foot locking holds for all of them.
   The test clips (`?test=walk&mood=run&track=1`) show a gait in side view with a tracking camera, like the reference.
-- **Body:** thick limbs (20 px) and a wide tapered torso, head 54 px.
+- **Look:** thin stick figures (13 px limbs and torso, 54 px head), as in the brief.
 - **Idle:** breathing plus slow noise in the weight, lean and head. Nobody is ever perfectly still.
 - **Verification:** `npm run check` measures, for every figure and every 1/120 s, the distance between
   where a planted foot should be and where the leg puts it, and how far a planted heel or toe

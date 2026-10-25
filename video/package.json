@@ -5,7 +5,7 @@
   "scripts": {
     "sfx": "python3 scripts/make_sfx.py",
     "stills": "node scripts/stills.js",
-    "walktest": "for m in heavy forced run walk; do node scripts/render.js --test walk --mood $m && node scripts/render.js --test walk --mood $m --track; done",
+    "walktest": "for m in heavy forced walk jog run; do node scripts/render.js --test walk --mood $m && node scripts/render.js --test walk --mood $m --track; done",
     "check": "node scripts/check.js && node scripts/popcheck.js",
     "render": "node scripts/render.js",
     "mix": "node scripts/mix.js",
