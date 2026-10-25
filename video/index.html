@@ -540,6 +540,24 @@ function strokeLimb(c, pts, col, k, curve) {
   c.strokeStyle = INK; c.lineWidth = (DIM.limbW + 2 * DIM.outline) * k; c.stroke();
   c.strokeStyle = col; c.lineWidth = DIM.limbW * k; c.stroke();
 }
+// torso (curved through the chest) + one leg as a single shape: both outlines first, then both fills
+function strokeBody(c, torso, legs, col) {
+  const tp = torso.map(P), lps = legs.map(l => l.map(P)), k = tp[0][2];
+  const path = () => {
+    c.beginPath();
+    const [a, m, b] = tp;
+    c.moveTo(a[0], a[1]);
+    c.quadraticCurveTo(2 * m[0] - (a[0] + b[0]) / 2, 2 * m[1] - (a[1] + b[1]) / 2, b[0], b[1]);
+    for (let i = 3; i < tp.length; i++) c.lineTo(tp[i][0], tp[i][1]);
+    for (const lp of lps) {
+      c.moveTo(lp[0][0], lp[0][1]);
+      for (let i = 1; i < lp.length; i++) c.lineTo(lp[i][0], lp[i][1]);
+    }
+  };
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  path(); c.strokeStyle = INK; c.lineWidth = (DIM.limbW + 2 * DIM.outline) * k; c.stroke();
+  path(); c.strokeStyle = col; c.lineWidth = DIM.limbW * k; c.stroke();
+}
 // several capsule strokes drawn as ONE outlined shape (outlines first, then fills, so there are no seams)
 function strokeShape(c, parts, col) {
   c.lineCap = 'round'; c.lineJoin = 'round';
@@ -606,10 +624,17 @@ function drawFigure(c, fig, J, extra = {}) {
   const parts = [];
   const torsoD = (J.P[1] + J.N[1]) / 2;
   const shadeFor = d => rgb(mixc(FIG_NEAR, FIG_FAR, sstep(1, 11, d - torsoD) * 0.95));
+  // the leg nearer the camera is drawn together with the torso as ONE shape, so the hip has no seam
+  const legD = side => (J.hip[side][1] + J.knee[side][1] + J.ank[side][1]) / 3;
+  // seen from the front (both legs about equally far away) both legs join the torso
+  const nearLeg = legD('L') <= legD('R') ? 'L' : 'R';
+  const frontal = Math.abs(legD('L') - legD('R')) < 6;
+  const legPts = side => [J.P, J.hip[side], J.knee[side], J.ank[side], J.toe[side]];
+  const bodyLegs = frontal ? ['L', 'R'] : [nearLeg];
   for (const side of ['L', 'R']) {
-    const legPts = [J.P, J.hip[side], J.knee[side], J.ank[side], J.toe[side]];
-    const ld = (J.hip[side][1] + J.knee[side][1] + J.ank[side][1]) / 3;
-    parts.push({ d: ld, draw: () => strokeLimb(c, legPts, shadeFor(ld + (J.hip[side][1] - J.P[1]) * 1.2), P(J.P)[2]) });
+    const ld = legD(side);
+    // the back leg always goes behind the body, so its outline never cuts across the hip
+    if (!bodyLegs.includes(side)) parts.push({ d: Math.max(ld, torsoD + 0.05), draw: () => strokeLimb(c, legPts(side), shadeFor(ld + (J.hip[side][1] - J.P[1]) * 1.2), P(J.P)[2]) });
     const armPts = [J.N, J.sh[side], J.el[side], J.hand[side]];
     const ad = (J.sh[side][1] + J.el[side][1] + J.hand[side][1]) / 3 - 0.5;
     const acol = shadeFor(ad + (J.sh[side][1] - J.N[1]) * 1.2);
@@ -618,7 +643,7 @@ function drawFigure(c, fig, J, extra = {}) {
       if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
     } });
   }
-  parts.push({ d: torsoD, draw: () => strokeLimb(c, [J.P, J.C, J.N, J.NT], rgb(FIG_NEAR), P(J.N)[2], true) });
+  parts.push({ d: torsoD, draw: () => strokeBody(c, [J.P, J.C, J.N, J.NT], bodyLegs.map(legPts), rgb(FIG_NEAR)) });
   parts.push({ d: Math.min(torsoD - 0.2, J.Hc[1]), draw: () => {
     const [X, Y, k] = P(J.Hc), r = DIM.headR * k;
     c.beginPath(); c.arc(X, Y, r + DIM.outline * k, 0, TAU); c.fillStyle = INK; c.fill();
@@ -873,7 +898,7 @@ const HOME = (() => {
   const bed = { x0: 120, x1: 488, d0: 56, d1: WALL, z0: 0, z1: 58 };
   const mattress = { x0: 124, x1: 484, d0: 58, d1: WALL - 2, z0: 58, z1: 98 };
   const table = { x0: 306, x1: 358, d0: -26, d1: 22, z0: 0, z1: 100 };
-  const door = { x0: 520, x1: 618, z1: 236 };
+  const door = { x0: 500, x1: 650, z1: 395 };
   const win = { x0: 196, x1: 364, z0: 168, z1: 352 };
   const clock = [452, WALL, 330];
   const start = [548, 160], stand = [404, 24];
