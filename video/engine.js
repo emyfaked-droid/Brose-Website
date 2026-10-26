@@ -788,6 +788,7 @@ function drawFigureParts(c, fig, J, extra) {
   const frontal = Math.abs(legD('L') - legD('R')) < 6;
   const legPts = side => [J.P, J.hip[side], J.knee[side], J.ank[side], J.toe[side]];
   const bodyLegs = frontal ? ['L', 'R'] : [nearLeg];
+  const bodyArms = [];
   for (const side of ['L', 'R']) {
     const ld = legD(side);
     // the back leg always goes behind the body, so its outline never cuts across the hip
@@ -795,24 +796,14 @@ function drawFigureParts(c, fig, J, extra) {
     const armPts = [J.N, J.sh[side], J.el[side], J.hand[side]];
     const ad = (J.sh[side][1] + J.el[side][1] + J.hand[side][1]) / 3 - 0.5;
     const acol = shadeFor(ad + (J.sh[side][1] - J.N[1]) * 1.2);
+    // an arm in front of the body is drawn together with the torso as ONE shape (no outline at the shoulder)
+    if (ad < torsoD) { bodyArms.push(armPts); if (fig.cup === side) parts.push({ d: ad, draw: () => { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], rgb(FIG_NEAR), DIM.limbW * 0.5); } }); continue; }
     parts.push({ d: ad, draw: () => {
       strokeLimb(c, armPts, acol, P(J.N)[2]);
-      // an arm in front of the body: paint over its outline where it leaves the torso, so the shoulder flows
-      // seamlessly into the upper body (the rest of the arm keeps its outline)
-      if (ad < torsoD) {
-        const k = P(J.N)[2], wk = DIM.limbW * FSCALE * k;
-        c.lineCap = 'round'; c.lineJoin = 'round'; c.lineWidth = wk;
-        const root = [J.N, J.sh[side], lerp3(J.sh[side], J.el[side], 0.28)].map(P);
-        c.beginPath(); c.moveTo(root[0][0], root[0][1]); for (let i = 1; i < root.length; i++) c.lineTo(root[i][0], root[i][1]);
-        c.strokeStyle = acol; c.stroke();
-        const tq = [J.N, lerp3(J.N, J.C, 0.22)].map(P);
-        c.beginPath(); c.moveTo(tq[0][0], tq[0][1]); c.lineTo(tq[1][0], tq[1][1]);
-        c.strokeStyle = rgb(FIG_NEAR); c.stroke();
-      }
       if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
     } });
   }
-  parts.push({ d: torsoD, draw: () => strokeBody(c, [J.P, J.C, J.N, J.NT], bodyLegs.map(legPts), rgb(FIG_NEAR)) });
+  parts.push({ d: torsoD, draw: () => strokeBody(c, [J.P, J.C, J.N, J.NT], [...bodyLegs.map(legPts), ...bodyArms], rgb(FIG_NEAR)) });
   parts.push({ d: Math.min(torsoD - 0.2, J.Hc[1]), draw: () => {
     const [X, Y, k] = P(J.Hc), r = DIM.headR * FSCALE * k;
     c.beginPath(); c.arc(X, Y, r + OL() * k, 0, TAU); c.fillStyle = INK; c.fill();
