@@ -45,7 +45,8 @@ posting text (below) to the commit message or the reply.
 
 - **Minimal stick figures, always:** thin white lines with a black outline, a plain round head. Nothing else on the
   body: no face, no hair, no clothes, no hands/fingers, no shoes, no muscles or extra shapes, no thicker bodies.
-  Far limbs grey. Children: `s: 0.6`. Props (phone, bag, cane) stay simple line shapes.
+  Far limbs grey. Shoulders and hips flow into the torso without a seam (the engine does this; never draw
+  arms or legs with their own outline cap at the body). Children: `s: 0.6`. Props (phone, bag, cane) stay simple line shapes.
 - Dark, almost black set, soft directional light (pendant lamp / street lamp), vignette, glossy floor with reflection,
   film grain. Grayscale plus ONE accent colour (default warm yellow `[255,206,108]`), ideally as the payoff.
 - Labels on objects are fine and help (e.g. a sign "MOTIVATION", a bag "JOB 1"): monospace caps.
