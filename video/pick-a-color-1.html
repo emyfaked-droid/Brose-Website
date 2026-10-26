@@ -1,0 +1,801 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pick-a-color-1</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   PICK A COLOR. (1)  A join-in race: ten coloured runners on a floating
+   track over a black abyss. Falling plates, a wrecking ball, an ice bridge,
+   stampers and a closing gate knock them out two by two; one makes it out.
+   Exception to the house style: ten bright figure colours (with a soft glow),
+   the set stays dark and grey.
+   Who goes out where is fixed by SEED (searched so that every hazard only
+   hits the runners it is meant for: ?search=1..400 lists valid seeds).
+   ===================================================================== */
+const URLQ = new URLSearchParams(location.search);
+const SEED = +(URLQ.get('seed') || 100);
+
+// ---------------------------------------------------------------- story (all times in seconds)
+const T = {
+  fadeIn: 0.5,
+  red: [0.7, 1.3, 1.9], go: 2.5,       // three red lights, then all green
+  plates: 5.0, ball: 9.0, ice: 13.5, stamp: 17.5,
+  gate0: 21.0, duck: 23.48, slam0: 23.7, slam: 23.78,   // the gate grinds down, the winner dives under, it slams shut
+  win: 25.0, text0: 0.35, text1: 24.85, out0: 25.1, fade0: 27.0,
+  end: 28.0,
+  stills: [1.6, 4.95, 8.62, 13.95, 17.1, 23.45, 24.2, 26.3],
+};
+
+// ---------------------------------------------------------------- set (x = along the track, d = depth, z = height)
+const COLS = [
+  [238, 58, 54], [255, 140, 34], [250, 212, 46], [70, 204, 82], [36, 212, 198],
+  [64, 118, 246], [158, 86, 238], [255, 102, 190], [246, 246, 244], [158, 100, 58],
+];
+const LANE = l => 22 + 22 * l;            // ten lanes, one per runner
+const PD0 = -8, PD1 = 250, TH = 64;       // platform depth range and slab thickness
+const PL = 140;                           // falling-plate length
+const RAIL0 = 11, RAIL1 = 231;            // the solid rails on both sides of the plate zone
+const BR0 = 10, BR1 = 232, BTH = 14;      // the ice bridge (thin)
+const BALL = { c: 121, len: 620, R: 52, zLow: 152, A: 1.2 };
+const SBW = 150, SUP = 560;               // stamper block width, raised height of its underside
+const GDOOR = 46;                         // half thickness of the gate door
+const G = 2100;                           // gravity (px/s^2)
+const ACC = [255, 206, 108];
+const XSTART = 34;
+
+// ---------------------------------------------------------------- the race (built from a seed)
+function build(seed, full) {
+  const R = mulberry32(seed * 7919 + 13);
+  const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  const order = shuffle([...Array(10).keys()]);    // pairs knocked out in this order; [8] stops at the gate, [9] wins
+  const lanes = shuffle([...Array(10).keys()]);
+  const WIN = order[9], LOS = order[8];
+  const S = { seed, order, lanes, WIN, LOS, figs: [], moods: [], delay: [], elim: {}, ok: true, why: '' };
+  const fail = w => { S.ok = false; S.why = S.why || w; };
+  const X0 = k => -lanes[k] * 30;   // staggered start grid (lanes further back start further back)
+  S.X0 = X0;
+  const mk = (k, x = X0(k)) => new Fig(`${seed}:${k}`, { x, d: LANE(lanes[k]), yaw: 0, seed: 1.1 + k * 0.77 });
+  for (let k = 0; k < 10; k++) {
+    S.moods.push({ ...MOOD.run, L: 165 * (1 + 0.11 * (R() - 0.5)), cad: 2.85 * (1 + 0.05 * (R() - 0.5)) });
+    S.delay.push(0.02 + 0.3 * R());
+  }
+  // the two finalists run the same pace; the winner's run ends just after the gate, the loser trails by a step or two
+  S.moods[WIN] = S.moods[LOS] = { ...MOOD.run, L: 167, cad: 2.86 };
+  // the stampers' two: well ahead of the finalists or well behind them by then
+  for (const k of [order[6], order[7]]) { const sg = R() < 0.55 ? 1 : -1; S.moods[k] = { ...MOOD.run, L: 167 * (1 + sg * (0.045 + 0.04 * R())), cad: 2.86 }; }
+  // the wrecking ball's two run side by side (a duel), just a hair apart
+  {
+    const c = order[2], d = order[3], others = [...Array(10).keys()].filter(k => k !== c && k !== d && k !== WIN && k !== LOS);
+    const vs = others.map(k => S.moods[k].L * S.moods[k].cad);
+    const front = R() < 0.5;   // the two front-runners get wrecked, or the two stragglers
+    const ref = front ? others[vs.indexOf(Math.max(...vs))] : others[vs.indexOf(Math.min(...vs))];
+    const sg = front ? 1 : -1;
+    S.moods[c] = { ...S.moods[ref], L: S.moods[ref].L * (1 + sg * 0.035) };
+    S.moods[d] = S.moods[c];
+    const v = S.moods[c].L * S.moods[c].cad, eff = k => S.delay[k] - X0(k) / (S.moods[k].L * S.moods[k].cad);
+    const e0 = front ? Math.min(...others.map(eff)) - 0.04 : Math.max(...others.map(eff)) + 0.1;
+    S.delay[c] = Math.max(0, e0 + X0(c) / v);
+    S.delay[d] = Math.max(0, S.delay[c] - X0(c) / v + X0(d) / v + (R() - 0.5) * 0.12);
+  }
+  const tmp = (d, D, m, x0) => { const f = new Fig('tmp', { x: x0, d: 0, yaw: 0 }); f.walk(T.go + d, [D, 0], m, 'R'); return f; };
+  let D = 10300;
+  for (let i = 0; i < 6; i++) { const f = tmp(S.delay[WIN], D, S.moods[WIN], X0(WIN)); D += (24.88 - f.moves[0].t1) * f.moves[0].v; }
+  S.winD = D;
+  const xG = tmp(S.delay[WIN], D, S.moods[WIN], X0(WIN)).rootAt(T.duck)[0];
+  S.XG = xG;
+  // loser: reaches the door (pelvis 62 px before it) at T.slam + 0.16
+  let dl = S.delay[WIN] + 0.3;
+  for (let i = 0; i < 8; i++) {
+    const f = tmp(dl, 16000, S.moods[LOS], X0(LOS));
+    const tHit = timeAtX(f, xG - GDOOR - 44);
+    dl += (T.slam + 0.16 - tHit);
+  }
+  S.delay[LOS] = dl;
+  for (let k = 0; k < 10; k++) {
+    const f = mk(k);
+    f.walk(T.go + S.delay[k], [k === WIN ? D : 16000, LANE(lanes[k])], S.moods[k], 'R');
+    S.figs.push(f);
+  }
+  const F = S.figs;
+  // root x sampled at 240 Hz (fast lookups for the hazard search)
+  const XS = F.map(f => { const a = new Float64Array(30 * 240 + 2); for (let i = 0; i < a.length; i++) a[i] = f.rootAt(i / 240)[0]; return a; });
+  const X = (k, t) => { const i = clamp(t * 240, 0, XS[k].length - 1.001), i0 = Math.floor(i); return lerp(XS[k][i0], XS[k][i0 + 1], i - i0); };
+  const tX = (k, x) => { const a = XS[k]; let lo = 0, hi = a.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (a[m] < x) lo = m; else hi = m; } return (lo + (x - a[lo]) / Math.max(1e-9, a[hi] - a[lo])) / 240; };
+  const alive = (k, t) => !S.elim[k] || t < S.elim[k].t0;
+
+  // ---- 1. falling plates: per-lane plates crumble behind the runners; two drop right under their runner
+  {
+    const a = order[0], b = order[1];
+    const ta = T.plates + (R() - 0.5) * 0.3, tb = ta + 0.45 + R() * 0.35;
+    const x0 = Math.min(X(a, ta), X(b, tb)) - 100 - 3 * PL, x1 = Math.max(X(a, ta), X(b, tb)) + 3 * PL;
+    S.Xp0 = Math.floor(x0 / PL) * PL; S.nP = Math.ceil((x1 - S.Xp0) / PL);
+    S.tiles = [...Array(10)].map(() => [...Array(S.nP)].map(() => ({ t: Infinity })));
+    for (const [v, tv] of [[a, ta], [b, tb]]) {
+      const i = Math.floor((X(v, tv) - 100 - S.Xp0) / PL);
+      const t0 = tX(v, S.Xp0 + i * PL + 100);
+      S.elim[v] = { type: 'plate', t0, tile: i };
+      S.tiles[lanes[v]][i].t = S.tiles[lanes[v]][i + 1].t = t0;
+      S.tiles[lanes[v]][i].hole = S.tiles[lanes[v]][i + 1].hole = true;
+    }
+    for (let k = 0; k < 10; k++) {
+      const row = S.tiles[lanes[k]], e = S.elim[k];
+      for (let i = 0; i < S.nP; i++) {
+        if (row[i].hole) continue;
+        if (e && i > e.tile) { if (R() < 0.6) row[i].t = e.t0 + 0.2 + 0.22 * (i - e.tile) + R() * 0.2; continue; }
+        const tl = tX(k, S.Xp0 + (i + 1) * PL + 100);
+        if (R() < 0.72) row[i].t = tl + 0.06 + 0.4 * R();
+      }
+    }
+    S.plateBreaks = [];
+    for (const row of S.tiles) for (const p of row) if (p.t < Infinity) { p.dz = R(); p.rot = (R() - 0.5) * 0.5; S.plateBreaks.push(p.t); }
+    S.plateBreaks.sort((p, q) => p - q);
+  }
+
+  // ---- 2. wrecking ball: swings across the track (toward the camera), two runners get swept off
+  {
+    const c = order[2], d = order[3];
+    const ballD = (ph, P, t) => { const th = BALL.A * Math.sin(TAU / P * (t - ph)); return [BALL.c - BALL.len * Math.sin(th), BALL.zLow + BALL.len * (1 - Math.cos(th))]; };
+    const contact = (ph, P, ld) => {   // first touch of a lane on the sweep through ph
+      for (let t = ph - P / 4; t < ph + P / 4; t += 1 / 240) { const [bd] = ballD(ph, P, t); if (bd <= ld + BALL.R + 12) return t; }
+      return ph + P / 4;
+    };
+    let best = null;
+    for (let P = 1.8; P <= 2.61 && !best; P += 0.1) for (let ph = T.ball - 0.35; ph <= T.ball + 0.35 && !best; ph += 0.01) {
+      const hc = contact(ph, P, LANE(lanes[c])), hd = contact(ph, P, LANE(lanes[d]));
+      const xc = X(c, hc), xd = X(d, hd);
+      if (Math.abs(xc - xd) > 48) continue;
+      const XB = (xc + xd) / 2;
+      // nobody else may touch it, and the two victims not before their sweep
+      let clash = false;
+      for (let k = 0; k < 10 && !clash; k++) {
+        if (!alive(k, 8)) continue;
+        const tEnd = k === c ? hc - 0.08 : k === d ? hd - 0.08 : 13;
+        for (let t = 6; t < tEnd; t += 1 / 120) {
+          const [bd, bz] = ballD(ph, P, t);
+          if (Math.abs(X(k, t) - XB) < BALL.R + 26 && Math.abs(bd - LANE(lanes[k])) < BALL.R + 16 && bz - BALL.R < 340) { clash = true; break; }
+        }
+      }
+      if (!clash) best = { P, ph, XB, hc, hd };
+    }
+    if (!best) fail('ball');
+    else {
+      S.ball = best;
+      S.ballAt = t => { const [bd, bz] = ballD(best.ph, best.P, t); return [best.XB, bd, bz]; };
+      S.elim[c] = { type: 'ball', t0: best.hc }; S.elim[d] = { type: 'ball', t0: best.hd };
+      S.ballSwings = [];
+      for (let t = best.ph - 6 * best.P; t < T.end; t += best.P / 2) if (t > 3.5 && t < 13) S.ballSwings.push(t);
+    }
+  }
+
+  // ---- 3. ice bridge: two runners slip, slide sideways and go over the edge
+  {
+    const e = order[4], f = order[5];
+    const te = T.ice + (R() - 0.5) * 0.4, tf = te + 0.3 + 0.4 * R();
+    S.XI0 = Math.min(X(e, te), X(f, tf)) - 460; S.XI1 = Math.max(X(e, te), X(f, tf)) + 380;
+    S.elim[e] = { type: 'ice', t0: te }; S.elim[f] = { type: 'ice', t0: tf };
+  }
+
+  // ---- 4. stampers: two blocks slam down in turn; each throws one runner back and off the track
+  {
+    const g = order[6], h = order[7];
+    const low = (s, t) => stampZ(s, t) < 380;
+    let best = null;
+    for (let P = 1.5; P <= 2.61 && !best; P += 0.1) for (let tg = T.stamp - 0.9; tg <= T.stamp + 0.8 && !best; tg += 0.02) for (let dt = -1.8; dt <= 1.8; dt += 0.05) {
+      const th = tg + dt, off = ((dt % P) + P) % P;
+      if (th < 16.6 || th > 19.2 || off < 0.3 * P || off > 0.7 * P) continue;
+      const X1 = X(g, tg) + 44 + SBW / 2, X2 = X(h, th) + 44 + SBW / 2;
+      if (Math.abs(X2 - X1) < 330) continue;
+      const st = { P, ph: [tg, th], X: [X1, X2] };
+      let clash = false;
+      for (let k = 0; k < 10 && !clash; k++) {
+        if (!alive(k, 16)) continue;
+        for (let s = 0; s < 2 && !clash; s++) {
+          if ((k === g && s === 0) || (k === h && s === 1)) continue;   // its own block hits it
+          if (k === g && X1 < st.X[s]) continue;                        // it never gets that far
+          if (k === h && X2 < st.X[s]) continue;
+          const t0 = tX(k, st.X[s] - SBW / 2 - 45), t1 = tX(k, st.X[s] + SBW / 2 + 60);
+          for (let t = t0; t <= t1; t += 1 / 120) if (stampZ(st, t, s) < 365) { clash = true; break; }
+        }
+      }
+      if (!clash) { best = st; break; }
+    }
+    if (!best) fail('stamp');
+    else {
+      S.stamp = best;
+      S.elim[g] = { type: 'stamp', t0: best.ph[0] }; S.elim[h] = { type: 'stamp', t0: best.ph[1] };
+      S.slams = [];
+      for (let s = 0; s < 2; s++) for (let t = best.ph[s] - 8 * best.P; t < 21; t += best.P) if (t > 13.5) S.slams.push(t);
+      S.slams.sort((p, q) => p - q);
+    }
+  }
+  // ---- 5. the gate: the loser runs into the closed door and sits down in front of it
+  S.elim[LOS] = { type: 'gate', t0: tX(LOS, xG - GDOOR - 44) };
+  if (!full || !S.ok) return S;
+
+  // ---------------------------------------------------------------- what the figures do around it
+  for (let k = 0; k < 10; k++) {
+    const f = F[k], tr = f.tr;
+    tr.lean.to(0.4, 1.2, 9, E.io); tr.pz.to(0.4, 1.2, -9, E.io); tr.head.to(0.4, 1.2, -4, E.io);   // ready, set...
+    tr.bounce.to(0.3, 0.9, 0.6 + 0.4 * ((k * 0.37) % 1)).to(T.go - 0.3, T.go, 0);
+    tr.pz.to(T.go - 0.05, T.go + 0.4, 0, E.io); tr.head.to(T.go, T.go + 0.5, 0, E.io);
+    const e = S.elim[k];
+    if (e && e.type !== 'gate') {
+      // flailing: arms fly out, head up
+      tr.aOutL.to(e.t0, e.t0 + 0.18, 64, E.out); tr.aOutR.to(e.t0, e.t0 + 0.2, 70, E.out);
+      tr.aElL.to(e.t0, e.t0 + 0.2, 36, E.out); tr.aElR.to(e.t0, e.t0 + 0.2, 30, E.out);
+      tr.head.to(e.t0, e.t0 + 0.25, -24, E.out);
+    }
+  }
+  const W_ = F[WIN];
+  // the winner: last sprint, a dive under the door, then turns round and throws its arms up
+  W_.tr.lean.to(T.gate0 + 0.5, T.gate0 + 1.2, 6, E.io);
+  W_.tr.pz.to(T.duck - 0.5, T.duck - 0.1, -40, E.io).to(T.duck + 0.2, T.duck + 0.6, 0, E.io);
+  W_.tr.lean.to(T.duck - 0.5, T.duck - 0.1, 42, E.io).to(T.duck + 0.2, T.duck + 0.6, 4, E.io);
+  W_.tr.head.to(T.duck - 0.4, T.duck - 0.12, 16, E.io).to(T.duck + 0.2, T.duck + 0.5, 0, E.io);
+  const tStop = W_.moves[0].t1;
+  W_.turn(Math.max(T.win - 0.05, tStop + 0.04), T.win + 0.55, -90, { first: 'L' });
+  W_.tr.pant.to(tStop - 0.2, tStop + 0.3, 3.2).to(T.end - 1.5, T.end, 1.6);
+  W_.tr.head.to(T.win + 0.3, T.win + 0.7, -14, E.io);
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? 1 : -1, d0 = side === 'R' ? 0 : 0.06;
+    W_.goal(side, (t, J) => add(J.sh[side], add(mul(J.Rt, sg * (34 + 4 * Math.sin(t * 9 + sg))), [0, 0, 100 + 6 * Math.sin(t * 10 + sg)])),
+      (t, J) => add(J.sh[side], add(mul(J.Rt, sg * 70), [0, 0, 30]))).to(T.win + 0.3 + d0, T.win + 0.75 + d0, 1, E.io);
+  }
+  W_.tr.bounce.to(T.win + 0.6, T.win + 0.9, 1.5).to(T.end - 1.2, T.end, 0.6);
+
+  // the loser's resting pose after the bump (a second, invisible figure sitting in front of the door)
+  const sitX = xG - GDOOR - 44 - 112;
+  const Gh = new Fig(`${seed}:sit`, { x: sitX, d: LANE(lanes[LOS]), yaw: 0, seed: 7.7 });
+  const gtr = Gh.tr, ZS = 16;
+  gtr.pz.v0 = ZS - H0; gtr.lean.v0 = -14; gtr.slump.v0 = 8; gtr.head.v0 = 10; gtr.breath.v0 = 2.2; gtr.pant.v0 = 2.5;
+  gtr.headRoll.v0 = 0;
+  const tL = S.elim[LOS].t0 + 0.5;
+  gtr.headRoll.to(tL, tL + 0.4, 14, E.io).to(tL + 0.4, tL + 0.9, -10, E.io).to(tL + 0.9, tL + 1.5, 6, E.io).to(tL + 1.5, tL + 2.4, 0, E.io);
+  gtr.head.to(tL + 1.2, tL + 2.0, 22, E.io); gtr.slump.to(tL + 1.2, tL + 2.2, 15, E.io);
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? -1 : 1;
+    Gh.footGoal(side, () => ({ ank: [sitX + 128 + (side === 'L' ? 10 : -4), LANE(lanes[LOS]) + sg * 10, 7], pitch: 0, yaw: 0, kdir: [0.25, 0, 1], lift: 0 })).v0 = 1;
+    Gh.goal(side, () => [sitX - 46, LANE(lanes[LOS]) + sg * 16, 6], (t, J) => add(J.sh[side], [-30, sg * 30, -20])).v0 = 1;
+  }
+  S.ghost = Gh;
+
+  // ---------------------------------------------------------------- knock-out motion (simulated once, then looked up)
+  for (const k in S.elim) S.elim[k].sim = simulate(S, +k);
+  return S;
+}
+
+function timeAtX(f, x) {
+  let a = 0, b = 40;
+  for (let i = 0; i < 44; i++) { const c = (a + b) / 2; if (f.rootAt(c)[0] < x) a = c; else b = c; }
+  return (a + b) / 2;
+}
+// stamper s: underside height. ph = times its block hits the track (every P seconds)
+function stampZ(st, t, s = 0) {
+  let u = ((t - st.ph[s]) % st.P + st.P) % st.P;        // time since the last hit
+  if (u > st.P - 0.14) { const p = inv(st.P - 0.14, st.P, u); return SUP * (1 - E.in2(p)); }   // falling
+  if (u < 0.22) return 0;                                                      // resting on the track
+  return SUP * E.io(inv(0.22, 0.8, u));                                        // lifting
+}
+function gateZ(t) {   // the door's lower edge
+  if (t < T.gate0) return 430;
+  if (t < T.slam0) return lerp(430, 300, E.sine(inv(T.gate0, T.slam0, t))) + 3 * Math.sin(t * 31) * (t < T.slam0 - 0.1);
+  return 300 * (1 - E.in2(inv(T.slam0, T.slam, t)));
+}
+
+// ---------------------------------------------------------------- rigid transforms of a pose
+// a: pitch in the screen plane (+ = head toward +x), b: roll toward the camera (+ = head toward -d)
+function rotAB(v, a, b) {
+  let [x, d, z] = v;
+  const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b);
+  [x, z] = [x * ca + z * sa, -x * sa + z * ca];
+  [d, z] = [d * cb - z * sb, d * sb + z * cb];
+  return [x, d, z];
+}
+const JKEYS = ['P', 'C', 'N', 'NT', 'Hc'], JSIDE = ['hip', 'knee', 'ank', 'toe', 'heel', 'sh', 'el', 'hand'];
+function xform(J, C, a, b) {
+  const f = p => add(C, rotAB(sub(p, J.P), a, b));
+  const o = { ...J };
+  for (const k of JKEYS) o[k] = f(J[k]);
+  for (const k of JSIDE) o[k] = { L: f(J[k].L), R: f(J[k].R) };
+  return o;
+}
+function minZrel(J, a, b) {
+  let m = Infinity;
+  const pts = [J.Hc, J.N, J.C, J.knee.L, J.knee.R, J.ank.L, J.ank.R, J.toe.L, J.toe.R, J.heel.L, J.heel.R, J.hand.L, J.hand.R, J.el.L, J.el.R];
+  for (const p of pts) m = Math.min(m, rotAB(sub(p, J.P), a, b)[2] - (p === J.Hc ? DIM.headR : DIM.limbW * 0.5));
+  return m;
+}
+
+// is there track under (x, d) at time t?
+function surfaceAt(S, x, d, t) {
+  if (d < PD0 || d > PD1) return false;
+  if (x > S.XI0 && x < S.XI1) return d > BR0 && d < BR1;
+  if (x > S.Xp0 && x < S.Xp0 + S.nP * PL && d > RAIL0 && d < RAIL1) {
+    const l = clamp(Math.floor((d - RAIL0) / 22), 0, 9), i = Math.floor((x - S.Xp0) / PL);
+    return t < S.tiles[l][i].t;
+  }
+  return x > -700;
+}
+
+// One knocked-out runner: simple physics for the pelvis (gravity, no sinking into the track) and a spin.
+// The limbs keep scrambling (the run cycle, slowed down). Returns samples every 1/120 s.
+function simulate(S, k) {
+  const f = S.figs[k], e = S.elim[k], dt = 1 / 120, t0 = e.t0;
+  const R = mulberry32(S.seed * 31 + k * 17);
+  const v0 = f.moves[0].v, ld = LANE(S.lanes[k]);
+  const tp = t => t0 + (t - t0) * 0.5;
+  const J0 = f.pose(t0);
+  let p = J0.P.slice(), vel = [v0, 0, 0], a = 0, b = 0, wa = 0, wb = 0, side = 'hole';
+  if (e.type === 'plate') { vel = [v0 * 0.42, 0, -60]; wa = 1.6 + R() * 0.8; }
+  if (e.type === 'ball') {
+    const bv = (S.ballAt(t0 + 0.01)[1] - S.ballAt(t0)[1]) / 0.01;
+    vel = [v0 * 0.35 + bv * 0.0, -(560 + 220 * R()), 560 + 120 * R()]; wa = (R() < 0.5 ? -1 : 1) * (7 + 3 * R()); wb = 2.4; side = 'front';
+  }
+  const iceDir = ld < (BR0 + BR1) / 2 ? -1 : 1;
+  if (e.type === 'ice') side = iceDir < 0 ? 'front' : 'back';
+  const stDir = ld < (PD0 + PD1) / 2 ? -1 : 1;
+  if (e.type === 'stamp') { vel = [-360 - 90 * R(), stDir * (330 + 60 * R()), 620 + 80 * R()]; wa = -(7 + 2 * R()); wb = -stDir * 1.2; side = stDir < 0 ? 'front' : 'back'; }
+  e.side = side;
+  if (e.type === 'gate') {
+    // a bump back off the door, then down onto the seat
+    const out = [], Gh = S.ghost, tl = t0 + 0.5;
+    for (let t = t0; t <= T.end + 0.01; t += dt) {
+      const u = inv(t0, tl, t), J1 = Gh.pose(Math.max(t, tl)).P;
+      const c = lerp3(J0.P, J1, E.out2(u));
+      c[2] += 90 * 4 * u * (1 - u) * (1 - u) - 0;
+      out.push({ t, p: c, a: -0.55 * Math.sin(PI * u) * (1 - u * 0.4), b: 0 });
+    }
+    e.land = tl;
+    return out;
+  }
+  const out = [];
+  let off = false;
+  for (let t = t0; t <= T.end + 0.01; t += dt) {
+    const tau = t - t0;
+    if (e.type === 'ice') {
+      // wobble, the feet shoot forward, flat on the back, sliding sideways toward the edge
+      if (!off) {
+        a = -0.2 * Math.sin(tau * 21) * (1 - sstep(0.22, 0.34, tau)) - 1.32 * E.in2(inv(0.26, 0.62, tau));
+        vel[0] = v0 * Math.max(0.32, 1 - 0.75 * tau);
+        vel[1] = tau < 0.18 ? 0 : iceDir * (150 + 520 * (tau - 0.18));
+        wa = -2.5;
+      }
+    }
+    const J = f.pose(tp(t));
+    const sup = surfaceAt(S, p[0], p[1], t);
+    vel[2] -= G * dt;
+    p = [p[0] + vel[0] * dt, p[1] + vel[1] * dt, p[2] + vel[2] * dt];
+    if (e.type !== 'ice' || off) { a += wa * dt; b += wb * dt; }
+    if (sup) {
+      const mz = minZrel(J, a, b), top = e.type === 'ice' ? 0 : 0;
+      if (p[2] + mz < top) {
+        p[2] = top - mz;
+        if (vel[2] < 0) vel[2] = -vel[2] * 0.22;
+        if (e.type !== 'ice') { vel[0] *= 0.94; wa *= 0.9; }
+      }
+    } else if (e.type === 'ice' && !off) off = true;
+    out.push({ t, p, a, b });
+    if (p[2] < -2600) break;
+  }
+  return out;
+}
+function simAt(sim, t) {
+  const i = clamp((t - sim[0].t) * 120, 0, sim.length - 1.001), i0 = Math.floor(i), u = i - i0, A = sim[i0], B = sim[Math.min(i0 + 1, sim.length - 1)];
+  return { p: lerp3(A.p, B.p, u), a: lerp(A.a, B.a, u), b: lerp(A.b, B.b, u) };
+}
+
+// ---------------------------------------------------------------- seed search (?search=400)
+if (URLQ.has('search')) {
+  const n = +URLQ.get('search'), good = [];
+  const why = {}; for (let s = 1; s <= n; s++) { const S = build(s, false); if (S.ok) good.push(s); else why[S.why] = (why[S.why] || 0) + 1; } console.log(JSON.stringify(why));
+  window.SEARCH = good;
+}
+
+const S = build(SEED, true);
+if (!S.ok) console.error('seed ' + SEED + ' does not work: ' + S.why);
+const FIGS = S.figs;
+const ALLFIGS = [...FIGS, S.ghost];
+const tOut = k => { const e = S.elim[k]; return e.type === 'plate' ? e.t0 + 0.55 : e.type === 'ball' ? e.t0 + 0.45 : e.type === 'ice' ? e.t0 + 0.95 : e.type === 'stamp' ? e.t0 + 0.6 : T.slam + 0.4; };
+for (const k in S.elim) S.elim[k].out = tOut(+k);
+T.order = S.order.slice(); T.win = T.win;
+T.beeps = T.red.slice();
+T.plateBreaks = S.plateBreaks.filter(t => t > 3 && t < 9);
+T.plateFalls = S.order.slice(0, 2).map(k => S.elim[k].t0);
+T.ballSwings = S.ballSwings; T.ballHits = S.order.slice(2, 4).map(k => S.elim[k].t0);
+T.iceSlips = S.order.slice(4, 6).map(k => S.elim[k].t0);
+T.iceFalls = S.order.slice(4, 6).map(k => { const sm = S.elim[k].sim; const r = sm.find(q => q.p[2] < 60 && !surfaceAt(S, q.p[0], q.p[1], q.t)); return r ? r.t : S.elim[k].t0 + 0.8; });
+T.slams = S.slams; T.stampHits = S.order.slice(6, 8).map(k => S.elim[k].t0);
+T.bump = S.elim[S.LOS].t0;
+T.pops = Object.values(S.elim).map(e => e.out).sort((p, q) => p - q);
+
+// ---------------------------------------------------------------- pose of runner k at t (knocked-out runners follow their simulation)
+function poseOf(k, t) {
+  const f = FIGS[k], e = S.elim[k];
+  if (!e || t < e.t0) return { J: f.pose(t), mode: 'run' };
+  const sm = simAt(e.sim, t);
+  if (e.type === 'gate') {
+    if (t >= e.land) return { J: S.ghost.pose(t), mode: 'sit' };
+    const u = E.io(inv(e.t0 + 0.04, e.land, t));
+    const Ja = f.pose(e.t0 + (t - e.t0) * 0.3), Jb = S.ghost.pose(t);
+    const Jm = { ...Ja };
+    const rel = (J, p) => sub(p, J.P);
+    const m = (pa, pb) => add(Ja.P, lerp3(rel(Ja, pa), rel(Jb, pb), u));
+    for (const kk of JKEYS) Jm[kk] = m(Ja[kk], Jb[kk]);
+    for (const kk of JSIDE) Jm[kk] = { L: m(Ja[kk].L, Jb[kk].L), R: m(Ja[kk].R, Jb[kk].R) };
+    Jm.P = Ja.P;
+    return { J: xform(Jm, sm.p, sm.a, sm.b), mode: 'bump' };
+  }
+  return { J: xform(f.pose(e.t0 + (t - e.t0) * 0.5), sm.p, sm.a, sm.b), mode: 'out', side: e.side };
+}
+
+// ---------------------------------------------------------------- camera (follows the runners still in the race, smoothed)
+const CAM = (() => {
+  const xs = [], zs = [], n = Math.ceil(T.end * 60) + 1;
+  for (let i = 0; i < n; i++) {
+    const t = i / 60;
+    const al = FIGS.map((f, k) => k).filter(k => !S.elim[k] || t < S.elim[k].t0 + 0.35);
+    let x = al.reduce((s, k) => s + FIGS[k].rootAt(t)[0], 0) / Math.max(1, al.length);
+    // lean toward whoever is about to be knocked out
+    for (const k in S.elim) { const e = S.elim[k]; if (e.type === 'gate') continue; const w = 0.45 * Math.exp(-(((t - e.t0) / 0.8) ** 2)); x = lerp(x, FIGS[k].rootAt(Math.min(t, e.t0))[0], w); }
+    if (t > T.slam) x = lerp(x, (S.XG + FIGS[S.WIN].rootAt(t)[0]) / 2 - 40, sstep(T.slam, T.win, t));
+    xs.push(x + 70 * sstep(T.go, T.go + 2, t)); zs.push(lerp(0.57, 0.8, sstep(0, 1, (10 - al.length) / 8)));
+  }
+  const sm = (a, k) => { const o = a.slice(); for (let p = 0; p < 3; p++) { for (let i = 1; i < o.length; i++) o[i] = lerp(o[i - 1], o[i], k); for (let i = o.length - 2; i >= 0; i--) o[i] = lerp(o[i + 1], o[i], k); } return o; };
+  const X = sm(xs, 0.05), Z = sm(zs, 0.025);
+  const at = (a, t) => { const i = clamp(t * 60, 0, a.length - 1.001), i0 = Math.floor(i); return lerp(a[i0], a[i0 + 1], i - i0); };
+  return t => ({ x: at(X, t), zoom: at(Z, t) });
+})();
+
+// ---------------------------------------------------------------- drawing helpers
+function withCol(k, fn) {
+  const c = COLS[k], n = FIG_NEAR.slice(), f = FIG_FAR.slice();
+  const far = mixc(c, [30, 30, 34], 0.38);
+  for (let i = 0; i < 3; i++) { FIG_NEAR[i] = c[i]; FIG_FAR[i] = far[i]; }
+  try { fn(); } finally { for (let i = 0; i < 3; i++) { FIG_NEAR[i] = n[i]; FIG_FAR[i] = f[i]; } }
+}
+const SLAB = { top: 'rgb(30,32,38)', front: 'rgb(16,17,21)', side: 'rgb(22,23,28)', edge: 'rgba(255,255,255,0.05)' };
+const STEEL = { top: 'rgb(44,46,52)', front: 'rgb(26,27,32)', side: 'rgb(34,35,41)', edge: 'rgba(255,255,255,0.08)' };
+function glowLine(c, a, b, col, w, al) {
+  const p = P(a), q = P(b);
+  c.strokeStyle = rgb(col, al); c.lineWidth = w; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(p[0], p[1]); c.lineTo(q[0], q[1]); c.stroke();
+}
+function viewX() { const k = P([cam.x, 700, 0])[2]; return [cam.x - W / 2 / k - 60, cam.x + W / 2 / k + 60]; }
+// top faces of the track pieces in view (for the reflections and the light)
+function topRects(t) {
+  const [v0, v1] = viewX(), r = [];
+  const seg = (x0, x1, d0, d1) => { x0 = Math.max(x0, v0); x1 = Math.min(x1, v1); if (x1 > x0) r.push([x0, x1, d0, d1]); };
+  const xpe = S.Xp0 + S.nP * PL;
+  seg(-700, S.Xp0, PD0, PD1); seg(xpe, S.XI0, PD0, PD1); seg(S.XI1, S.XG + 3000, PD0, PD1);
+  seg(S.Xp0, xpe, PD0, RAIL0); seg(S.Xp0, xpe, RAIL1, PD1);
+  for (let l = 0; l < 10; l++) for (let i = 0; i < S.nP; i++) if (t < S.tiles[l][i].t) seg(S.Xp0 + i * PL + 2, S.Xp0 + (i + 1) * PL - 2, RAIL0 + l * 22 + 1, RAIL0 + (l + 1) * 22 - 1);
+  seg(S.XI0, S.XI1, BR0, BR1);
+  return r;
+}
+function clipTops(c, rects) { c.beginPath(); for (const [x0, x1, d0, d1] of rects) { const pts = [[x0, d0, 0], [x1, d0, 0], [x1, d1, 0], [x0, d1, 0]].map(P); c.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < 4; i++) c.lineTo(pts[i][0], pts[i][1]); c.closePath(); } c.clip(); }
+
+function drawTrack(c, t) {
+  const [v0, v1] = viewX(), xpe = S.Xp0 + S.nP * PL;
+  const slab = (x0, x1, d0, d1, z0, z1, col) => { if (x1 < v0 || x0 > v1) return; box(c, { x0: Math.max(x0, v0 - 400), x1: Math.min(x1, v1 + 400), d0, d1, z0, z1 }, col); };
+  // plates: far lanes first; a breaking plate shakes, then drops and tumbles
+  const plates = [];
+  for (let l = 9; l >= 0; l--) for (let i = 0; i < S.nP; i++) {
+    const p = S.tiles[l][i], x0 = S.Xp0 + i * PL + 2, x1 = x0 + PL - 4;
+    if (x1 < v0 || x0 > v1) continue;
+    let dz = 0, sh = 0;
+    if (t >= p.t) { const u = t - p.t; dz = -0.5 * (G * 0.8) * u * u - 30 * u; if (dz < -1400) continue; }
+    else if (t > p.t - 0.28) sh = Math.sin(t * 90 + i) * 2.2;
+    plates.push({ l, x0: x0 + sh, x1: x1 + sh, d0: RAIL0 + l * 22 + 1, d1: RAIL0 + (l + 1) * 22 - 1, z0: -TH + dz, z1: dz, crack: t > p.t - 0.28 && t < p.t + 0.1 });
+  }
+  // the lane plates' undersides sit inside the slab ends; draw plates, then the rails in front of them
+  slab(-700, S.Xp0, PD0, PD1, -TH, 0, SLAB);
+  slab(S.XI1, S.XG + 3000, PD0, PD1, -TH, 0, SLAB);
+  slab(xpe, S.XI0, PD0, PD1, -TH, 0, SLAB);
+  slab(S.Xp0, xpe, RAIL1, PD1, -TH, 0, SLAB);
+  for (const q of plates) { box(c, q, SLAB); if (q.crack) { const a = P([q.x0 + 30, (q.d0 + q.d1) / 2, q.z1]), b = P([q.x1 - 40, (q.d0 + q.d1) / 2, q.z1]); c.strokeStyle = 'rgba(0,0,0,0.8)'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo((a[0] + b[0]) / 2, a[1] - 2); c.lineTo(b[0], b[1] + 1); c.stroke(); } }
+  slab(S.Xp0, xpe, PD0, RAIL0, -TH, 0, SLAB);
+  // the ice bridge: thin, pale and glossy
+  if (S.XI1 > v0 && S.XI0 < v1) {
+    box(c, { x0: Math.max(S.XI0, v0 - 300), x1: Math.min(S.XI1, v1 + 300), d0: BR0, d1: BR1, z0: -BTH, z1: 0 }, { top: 'rgb(58,66,76)', front: 'rgb(84,94,106)', side: 'rgb(60,68,78)', edge: 'rgba(220,235,255,0.2)' });
+    c.save(); clipTops(c, [[Math.max(S.XI0, v0), Math.min(S.XI1, v1), BR0, BR1]]);
+    for (let x = Math.floor(v0 / 90) * 90; x < v1; x += 90) { if (x < S.XI0 || x > S.XI1) continue; const a = P([x, BR0, 0]), b = P([x + 160, BR1, 0]); c.strokeStyle = 'rgba(220,235,255,0.07)'; c.lineWidth = 3; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke(); }
+    c.restore();
+  }
+  // panel seams (they show the speed)
+  for (const [x0, x1, d0, d1] of topRects(t)) {
+    if (d1 - d0 < 100) continue;
+    for (let x = Math.ceil(x0 / 280) * 280; x < x1; x += 280) glowLine(c, [x, d0, 0], [x, d1, 0], [0, 0, 0], 2, 0.5);
+  }
+  // start line
+  if (v0 < XSTART + 20) {
+    c.save(); clipTops(c, topRects(t));
+    for (let l = 0; l < 10; l++) glowLine(c, [XSTART - l * 30, LANE(l) - 9, 0.5], [XSTART - l * 30, LANE(l) + 9, 0.5], [210, 212, 218], 5 * P([0, LANE(l), 0])[2], 0.6);
+    for (let l = 0; l <= 10; l++) glowLine(c, [XSTART - 300, RAIL0 + l * 22, 0.5], [XSTART + 120, RAIL0 + l * 22, 0.5], [210, 212, 218], 1, 0.12);
+    c.restore();
+  }
+}
+// the glowing edges of the track
+function trackEdges(c, t) {
+  const [v0, v1] = viewX(), xpe = S.Xp0 + S.nP * PL;
+  const runs = [[-700, S.XI0, PD0, PD1], [S.XI1, S.XG + 3000, PD0, PD1], [S.XI0, S.XI1, BR0, BR1]];
+  for (const [x0, x1, d0, d1] of runs) {
+    const a = Math.max(x0, v0), b = Math.min(x1, v1);
+    if (b <= a) continue;
+    const ice = d0 === BR0;
+    const col = ice ? [200, 225, 255] : [190, 196, 210];
+    glowLine(c, [a, d0, 0], [b, d0, 0], col, 2.2, ice ? 0.5 : 0.42);
+    glowLine(c, [a, d1, 0], [b, d1, 0], col, 1.6, 0.25);
+    glowLine(c, [a, d0, ice ? -BTH : -TH], [b, d0, ice ? -BTH : -TH], col, 1.2, 0.12);
+    for (const xe of [x0, x1]) if (xe > v0 && xe < v1 && xe > -600) glowLine(c, [xe, d0, 0], [xe, d0, ice ? -BTH : -TH], col, 1.6, 0.3);
+  }
+}
+
+function drawLights(c, t, glow) {
+  const x = -70, d = 285;
+  const on = [0, 1, 2].map(i => t >= T.red[i] && t < T.go), green = t >= T.go && t < T.go + 3.5;
+  if (!glow) {
+    const base = P([x, d, -TH]), top = P([x, d, 610]);
+    c.strokeStyle = '#1b1c20'; c.lineWidth = 9 * base[2]; c.beginPath(); c.moveTo(base[0], base[1]); c.lineTo(top[0], top[1]); c.stroke();
+    box(c, { x0: x - 44, x1: x + 44, d0: d - 14, d1: d + 14, z0: 410, z1: 640 }, STEEL);
+  }
+  for (let i = 0; i < 3; i++) {
+    const p = P([x, d - 15, 600 - i * 74]), r = 25 * p[2];
+    const col = green ? [90, 255, 130] : on[i] ? [255, 50, 40] : null;
+    if (!glow) {
+      c.beginPath(); c.arc(p[0], p[1], r + 3, 0, TAU); c.fillStyle = '#060607'; c.fill();
+      c.beginPath(); c.arc(p[0], p[1], r, 0, TAU); c.fillStyle = col ? rgb(mixc(col, [255, 255, 255], 0.25)) : '#1d1e22'; c.fill();
+    } else if (col) {
+      const g = c.createRadialGradient(p[0], p[1], 0, p[0], p[1], r * 5);
+      g.addColorStop(0, rgb(col, 0.55)); g.addColorStop(0.3, rgb(col, 0.16)); g.addColorStop(1, rgb(col, 0));
+      c.fillStyle = g; c.fillRect(p[0] - r * 5, p[1] - r * 5, r * 10, r * 10);
+    }
+  }
+}
+
+function drawBallRig(c, t) {
+  if (!S.ball) return [];
+  const XB = S.ball.XB, [v0, v1] = viewX();
+  if (XB < v0 - 400 || XB > v1 + 400) return [];
+  const PZ = BALL.zLow + BALL.len;
+  const items = [];
+  // tower behind the track and the beam the chain hangs from
+  items.push({ d: 330, draw: () => {
+    box(c, { x0: XB + 120, x1: XB + 160, d0: 310, d1: 340, z0: -900, z1: PZ + 40 }, STEEL);
+    box(c, { x0: XB - 16, x1: XB + 16, d0: -420, d1: 700, z0: PZ + 4, z1: PZ + 30 }, STEEL);
+    box(c, { x0: XB, x1: XB + 160, d0: 312, d1: 338, z0: PZ + 4, z1: PZ + 30 }, STEEL);
+  } });
+  const b = S.ballAt(t);
+  items.push({ d: b[1], draw: () => {
+    const piv = P([XB, BALL.c, PZ]), q = P(b), r = BALL.R * 1.3 * q[2];
+    // chain: links along the line
+    const n = 16;
+    for (let i = 0; i < n; i++) {
+      const u = (i + 0.5) / n, x = lerp(piv[0], q[0], u), y = lerp(piv[1], q[1], u), k = lerp(piv[2], q[2], u);
+      c.save(); c.translate(x, y); c.rotate(Math.atan2(q[1] - piv[1], q[0] - piv[0]) + (i % 2) * 0.0);
+      c.beginPath(); c.ellipse(0, 0, 13 * k, (i % 2 ? 2.5 : 5.5) * k, 0, 0, TAU);
+      c.strokeStyle = '#08080a'; c.lineWidth = 5 * k; c.stroke(); c.strokeStyle = '#4a4c54'; c.lineWidth = 2.6 * k; c.stroke(); c.restore();
+    }
+    const g = c.createRadialGradient(q[0] - r * 0.35, q[1] - r * 0.4, r * 0.1, q[0], q[1], r);
+    g.addColorStop(0, '#5d6068'); g.addColorStop(0.55, '#2a2b31'); g.addColorStop(1, '#101114');
+    c.beginPath(); c.arc(q[0], q[1], r + 3, 0, TAU); c.fillStyle = INK; c.fill();
+    c.beginPath(); c.arc(q[0], q[1], r, 0, TAU); c.fillStyle = g; c.fill();
+    c.beginPath(); c.arc(q[0] - r * 0.3, q[1] - r * 0.38, r * 0.18, 0, TAU); c.fillStyle = 'rgba(255,255,255,0.16)'; c.fill();
+  } });
+  return items;
+}
+function drawStampers(c, t) {
+  if (!S.stamp) return [];
+  const [v0, v1] = viewX(), items = [];
+  for (let s = 0; s < 2; s++) {
+    const X = S.stamp.X[s];
+    if (X < v0 - 300 || X > v1 + 300) continue;
+    const z = stampZ(S.stamp, t, s);
+    items.push({ d: PD0 - 1, draw: () => {
+      const top = 300;
+      box(c, { x0: X - 18, x1: X + 18, d0: 110, d1: 130, z0: z + top, z1: 2200 }, STEEL);     // piston rod
+      box(c, { x0: X - SBW / 2, x1: X + SBW / 2, d0: PD0 - 4, d1: PD1 + 4, z0: z, z1: z + top }, { top: 'rgb(48,50,57)', front: 'rgb(30,31,37)', side: 'rgb(38,40,46)', edge: 'rgba(255,255,255,0.1)' });
+      // hazard stripes on the front face
+      c.save(); poly(c, [[X - SBW / 2, PD0 - 4, z], [X + SBW / 2, PD0 - 4, z], [X + SBW / 2, PD0 - 4, z + top], [X - SBW / 2, PD0 - 4, z + top]]); c.clip();
+      for (let i = -4; i < 8; i++) { poly(c, [[X - SBW / 2 + i * 40, PD0 - 4, z], [X - SBW / 2 + i * 40 + 20, PD0 - 4, z], [X - SBW / 2 + i * 40 + 60, PD0 - 4, z + 40], [X - SBW / 2 + i * 40 + 40, PD0 - 4, z + 40]]); c.fillStyle = 'rgba(200,200,205,0.13)'; c.fill(); }
+      c.restore();
+      glowLine(c, [X - SBW / 2, PD0 - 4, z + 1], [X + SBW / 2, PD0 - 4, z + 1], [220, 224, 232], 2, 0.35);
+    } });
+  }
+  return items;
+}
+function drawGate(c, t) {
+  const XG = S.XG, [v0, v1] = viewX(), items = [];
+  if (XG < v0 - 300 || XG > v1 + 300) return items;
+  const z = gateZ(t), HZ = 440;
+  items.push({ d: PD1 + 30, draw: () => box(c, { x0: XG - 60, x1: XG + 60, d0: PD1 + 14, d1: PD1 + 54, z0: -TH, z1: HZ + 120 }, STEEL) });
+  items.push({ d: PD0 - 2, draw: () => {
+    c.save();
+    // the door slides out of the housing; only the part below the housing shows
+    const g = { x0: XG - GDOOR, x1: XG + GDOOR, d0: PD0, d1: PD1, z0: z, z1: Math.min(HZ, z + 460) };
+    if (g.z1 > g.z0) {
+      box(c, g, { top: 'rgb(46,47,53)', front: 'rgb(28,29,34)', side: 'rgb(36,37,43)', edge: 'rgba(255,255,255,0.08)' });
+      // vertical bars on the face toward the runners, and a lit lower edge
+      for (let dd = PD0 + 20; dd < PD1; dd += 34) glowLine(c, [XG - GDOOR, dd, z + 8], [XG - GDOOR, dd, g.z1], [0, 0, 0], 4 * P([XG, dd, 0])[2], 0.6);
+      glowLine(c, [XG - GDOOR, PD0, z + 4], [XG - GDOOR, PD1, z + 4], [235, 225, 205], 3, 0.6);
+      glowLine(c, [XG - GDOOR, PD0, z + 4], [XG + GDOOR, PD0, z + 4], [235, 225, 205], 3, 0.6);
+    }
+    box(c, { x0: XG - 70, x1: XG + 70, d0: PD0 - 12, d1: PD1 + 54, z0: HZ, z1: HZ + 120 }, STEEL);
+    c.restore();
+  } });
+  return items;
+}
+// drifting dust in the abyss (parallax: two depths)
+const DUST = (() => { const r = mulberry32(77), a = []; for (let i = 0; i < 70; i++) a.push([r() * 6000 - 1000, 400 + r() * 1800, -200 - r() * 1400, 0.5 + r()]); return a; })();
+function drawDust(c, t) {
+  for (const [x0, d, z, s] of DUST) {
+    const span = 2600 + d;
+    let x = x0 + t * 12 * s;
+    x = cam.x - span / 2 + (((x - cam.x + span / 2) % span) + span) % span;
+    const p = P([x, d, z]);
+    c.fillStyle = `rgba(170,175,190,${0.05 + 0.06 * s})`; c.beginPath(); c.arc(p[0], p[1], 1.6 * s * p[2] + 0.4, 0, TAU); c.fill();
+  }
+}
+
+// ---------------------------------------------------------------- HUD: ten dots, a grey x for every runner that is out
+function drawHUD(t) {
+  const y = 118, sp = 58, r = 15;
+  for (let k = 0; k < 10; k++) {
+    const x = W / 2 + (k - 4.5) * sp, e = S.elim[k];
+    const u = e ? inv(e.out, e.out + 0.32, t) : 0;
+    const dotS = 1 - E.in2(inv(0, 0.4, u)) , xS = u > 0.25 ? E.over(inv(0.25, 1, u), 5) : 0;
+    ctx.save();
+    if (dotS > 0) {
+      const pop = e ? 1 + 0.35 * Math.sin(PI * inv(0, 0.4, u)) : 1;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r * 2.6);
+      g.addColorStop(0, rgb(COLS[k], 0.35 * dotS)); g.addColorStop(1, rgb(COLS[k], 0));
+      ctx.fillStyle = g; ctx.fillRect(x - r * 3, y - r * 3, r * 6, r * 6);
+      ctx.beginPath(); ctx.arc(x, y, (r + 3) * dotS * pop, 0, TAU); ctx.fillStyle = INK; ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, r * dotS * pop, 0, TAU); ctx.fillStyle = rgb(COLS[k]); ctx.fill();
+    }
+    if (xS > 0) {
+      const a = 11 * xS;
+      ctx.lineCap = 'round';
+      for (const [w, col] of [[8, INK], [4.5, 'rgb(120,122,128)']]) {
+        ctx.strokeStyle = col; ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(x - a, y - a); ctx.lineTo(x + a, y + a); ctx.moveTo(x + a, y - a); ctx.lineTo(x - a, y + a); ctx.stroke();
+      }
+    }
+    // the winner's crown
+    if (k === S.WIN && t > T.win) {
+      const c = E.over(inv(T.win, T.win + 0.45, t), 4), cy = y - r - 6 - 4 * c, w = 15 * c, h = 13 * c;
+      ctx.beginPath();
+      ctx.moveTo(x - w, cy); ctx.lineTo(x - w, cy - h * 0.55); ctx.lineTo(x - w * 0.5, cy - h * 0.15); ctx.lineTo(x, cy - h);
+      ctx.lineTo(x + w * 0.5, cy - h * 0.15); ctx.lineTo(x + w, cy - h * 0.55); ctx.lineTo(x + w, cy); ctx.closePath();
+      ctx.lineJoin = 'round'; ctx.lineWidth = 6; ctx.strokeStyle = INK; ctx.stroke(); ctx.fillStyle = rgb(ACC); ctx.fill();
+      const g = ctx.createRadialGradient(x, cy - h / 2, 0, x, cy - h / 2, 40);
+      g.addColorStop(0, rgb(ACC, 0.3 * c)); g.addColorStop(1, rgb(ACC, 0));
+      ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = g; ctx.fillRect(x - 40, cy - 50, 80, 80);
+    }
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------- the frame
+function draw(t) {
+  const cm = CAM(t);
+  cam.x = cm.x; cam.zoom = cm.zoom; cam.h = 1500; cam.D0 = 900;
+  cam.hy = 836 - cam.h * cam.zoom * cam.D0 / (cam.D0 + 120);
+  // a little shake when something heavy lands
+  const shakes = [...(S.slams || []), T.slam, ...T.plateFalls];
+  let sh = 0; for (const s of shakes) if (t > s && t < s + 0.3) sh += 5 * (1 - (t - s) / 0.3) * Math.sin((t - s) * 70);
+  cam.hy += sh;
+
+  // the abyss
+  let g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, rgb([10, 11, 14])); g.addColorStop(0.55, rgb([7, 8, 10])); g.addColorStop(1, rgb([2, 2, 3]));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const lp = P([cam.x, 120, 0]);
+  g = ctx.createRadialGradient(lp[0], lp[1] - 150, 20, lp[0], lp[1] - 150, 640);
+  g.addColorStop(0, 'rgba(150,160,185,0.09)'); g.addColorStop(1, 'rgba(150,160,185,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  drawDust(ctx, t);
+
+  const poses = FIGS.map((f, k) => poseOf(k, t));
+  const gone = k => poses[k].J.P[1] < -560 || poses[k].J.P[2] < -2400;   // flew past the camera or deep into the abyss
+  const under = k => poses[k].mode === 'out' && poses[k].side !== 'front';
+  const fig = (c, k, J) => withCol(k, () => drawFigure(c, k === S.LOS && poses[k].mode === 'sit' ? S.ghost : FIGS[k], J));
+
+  // far set pieces
+  const far = [...drawBallRig(ctx, t), ...drawGate(ctx, t)].filter(i => i.d > PD1);
+  far.forEach(i => i.draw());
+  drawLights(ctx, t, false);
+  // runners that dropped through a hole or off the back edge: drawn before the track (the track hides what is below it)
+  FIGS.forEach((f, k) => { if (under(k) && !gone(k)) fig(ctx, k, poses[k].J); });
+  drawTrack(ctx, t);
+  // glossy track: reflections and a soft light pool, only on the track's top faces
+  const tops = topRects(t), floorY = P([cam.x, PD1, 0])[1];
+  ctx.save(); clipTops(ctx, tops);
+  g = ctx.createRadialGradient(lp[0], lp[1], 0, lp[0], lp[1], 520);
+  g.addColorStop(0, 'rgba(170,178,200,0.10)'); g.addColorStop(1, 'rgba(170,178,200,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  reflection(c => FIGS.forEach((f, k) => { if (poses[k].mode !== 'out' && surfaceAt(S, poses[k].J.P[0], poses[k].J.P[1], t)) fig(c, k, poses[k].J); }), floorY, 0.3);
+  FIGS.forEach((f, k) => { const J = poses[k].J; if (J.P[2] < 260 && surfaceAt(S, J.P[0], J.P[1], t)) contactShadow(ctx, J, 0.6 * clamp(1 - (J.P[2] - 170) / 90), 1); });
+  ctx.restore();
+  trackEdges(ctx, t);
+
+  // everything on (or above) the track, far first
+  const items = [...drawBallRig(ctx, t), ...drawGate(ctx, t)].filter(i => i.d <= PD1);
+  items.push(...drawStampers(ctx, t));
+  FIGS.forEach((f, k) => {
+    const J = poses[k].J;
+    if (gone(k)) return;
+    if (under(k)) {
+      // the part still above the track level shows over it
+      const y = P([J.P[0], clamp(J.P[1], PD0, PD1), 0])[1];
+      items.push({ d: J.P[1], draw: () => { ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, y); ctx.clip(); fig(ctx, k, J); ctx.restore(); } });
+    } else items.push({ d: J.P[1], draw: () => fig(ctx, k, J) });
+  });
+  items.sort((a, b) => b.d - a.d).forEach(i => i.draw());
+
+  // glows: the runners light up a little, and the start lights
+  softLayer(22, 'screen', c => {
+    c.globalAlpha = 0.85;
+    FIGS.forEach((f, k) => { const J = poses[k].J; if (!gone(k)) withCol(k, () => drawFigure(c, poses[k].mode === 'sit' ? S.ghost : f, J)); });
+  });
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; drawLights(ctx, t, true); ctx.restore();
+
+  vignette(0.72);
+  drawHUD(t);
+  captionAt(t, 'PICK A COLOR.', T.text0, T.text1, 40, 10, 196);
+  captionAt(t, 'DID YOURS', T.out0, T.end + 1, 40, 10, 196);
+  captionAt(t, 'MAKE IT OUT?', T.out0 + 0.12, T.end + 1, 40, 10, 248);
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = [...FIGS.map((f, k) => [f, 0, S.elim[k] ? S.elim[k].t0 : T.end]), [S.ghost, 0, T.end]];
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.fade0, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  // footsteps only while a runner is still in the race (and on its feet)
+  const steps = [];
+  FIGS.forEach((f, k) => { for (const c of f.cues) if (!S.elim[k] || c.t < S.elim[k].t0) steps.push({ ...c, k }); });
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
