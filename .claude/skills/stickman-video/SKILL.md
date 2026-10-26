@@ -53,6 +53,31 @@ posting text (below) to the commit message or the reply.
 - Caption: `captionAt(t, 'TEXT.', t0, t1, 42, 11)`: bold monospace caps, top centre, fades. Max ~2 short lines per film.
 - Length 12–20 s, 720×1280, 30 fps. Fade in at the start, fade to black at the end.
 
+## Proportions and depth (very important)
+
+The adult figure is ~340 px tall (skeleton units; 1 m ≈ 195 px). Build every prop to real-world scale:
+
+| object | real | size in px |
+|---|---|---|
+| door | 2.0 × 0.9 m | 395 high, 150–175 wide |
+| table top | 0.75 m | 145 high |
+| chair / sofa seat | 0.45 m | 85–90 high (= knee height) |
+| sofa back | 0.85 m | 165 |
+| bed top | 0.5 m | 95 |
+| window sill / top | 0.9 / 2.1 m | 175 / 410 |
+| kitchen counter | 0.9 m | 175 |
+| car | 4.5 × 1.45 m | 880 long, 280 high |
+| street lamp | 4–5 m | 800–950 |
+| bus shelter / ceiling | 2.5 m | 490 |
+| child 4 / 8 / 12 years | — | `s: 0.55 / 0.7 / 0.85` |
+
+- Props at a different depth `d` must be drawn with `P()` at that depth, so perspective scales them like the figures.
+- Depth order: everything that stands on the floor (figures AND furniture, doors, cars) goes into ONE list sorted by
+  depth, far first. A figure that is further back (bigger `d`) must never be drawn over one that is in front.
+  Give walking figures clearly different `d` values (≥ 25) when they pass each other, and keep `d` constant unless the
+  story needs them to move toward / away from the camera.
+- In the stills round, check proportions (doors, furniture vs. figure height) and who is in front before anything else.
+
 ## Animation rules (realism)
 
 - Every walk goes through `fig.walk(...)` (or `walkMix`), never by moving x by hand: the planner locks the feet and
