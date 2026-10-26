@@ -14,7 +14,8 @@ const TL = require('../sound-timeline');
 const { TARGET_LUFS, CEILING_DBTP } = TL;
 const FILM = process.env.FILM || 'index';                      // index = Ask Twice
 const TAG = FILM === 'index' ? 'video' : FILM;
-const { FILES, timeline } = FILM === 'index' ? TL : TL.films[FILM];
+// a film's sound timeline lives in sound-timeline.js (the first six films) or in sounds/<film>.js (new films)
+const { FILES, timeline } = FILM === 'index' ? TL : (TL.films[FILM] || require(path.join(__dirname, '..', 'sounds', FILM + '.js')));
 
 const ROOT = path.resolve(__dirname, '..');
 const args = process.argv.slice(2);

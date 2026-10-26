@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TEMPLATE</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   TEMPLATE for a new film. `npm run new -- <name>` copies this to <name>.html
+   and sounds/<name>.js. Replace the story, set and figures; keep the
+   "checks, render, cues" block at the bottom as it is (the scripts need it).
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds)
+const T = {
+  fadeIn: 0.5,
+  walk0: 0.8,                 // A starts walking
+  text0: 4.0, text1: 7.5,     // caption on / off
+  end: 8.5,
+  stills: [1.5, 3.5, 5.0, 7.0],   // what `npm run stills` renders (keep it to about 4)
+};
+
+// ---------------------------------------------------------------- set (x = left..right 0..720, d = depth, z = height)
+const WALL = 150;                         // back wall (depth)
+const LAMP = [360, 80, 520];              // pendant lamp
+const WARMC = [255, 206, 108], COLD = [226, 232, 246];
+
+// ---------------------------------------------------------------- figures
+// yaw 0 = facing right, 180 = left, -90 = toward the camera. s = scale (children ~0.6).
+const A = new Fig('A', { x: 90, d: 40, yaw: 0, seed: 1.3 });
+T.walkEnd = A.walk(T.walk0, [360, 40], MOOD.walk, 'R');     // returns the time the walk ends
+A.turn(T.walkEnd + 0.1, T.walkEnd + 0.7, -90);              // turn to the camera (small shuffle steps)
+A.tr.head.to(T.text0, T.text0 + 0.8, 18);                   // lower the head while the caption is on
+A.tr.slump.to(T.text0, T.text0 + 0.8, 10);
+const FIGS = [A];
+
+// ---------------------------------------------------------------- drawing
+function draw(t) {
+  const warm = sstep(T.text0, T.text0 + 1.5, t);             // the accent colour comes in with the payoff
+  const lamp = mixc(COLD, WARMC, warm);
+  cam.x = 360; cam.zoom = 1.12; cam.hy = 640; cam.h = 270;
+  const poses = FIGS.map(f => f.pose(t));
+
+  const floorY = P([0, WALL, 0])[1];
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb([9, 10, 13])); g.addColorStop(1, rgb([27, 29, 35]));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb([36, 38, 44])); g.addColorStop(1, rgb([12, 13, 16]));
+  ctx.fillStyle = g; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, floorY - 2, W, 4);
+  // light on the wall and a pool on the floor
+  const lp = P(LAMP), fp = P([LAMP[0], 60, 0]);
+  g = ctx.createRadialGradient(lp[0], floorY - 80, 10, lp[0], floorY - 80, 560);
+  g.addColorStop(0, rgb(lamp, 0.22)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  ctx.save(); ctx.translate(fp[0], fp[1]); ctx.scale(1, 0.2);
+  g = ctx.createRadialGradient(0, 0, 0, 0, 0, 430);
+  g.addColorStop(0, rgb(lamp, 0.30)); g.addColorStop(0.5, rgb(lamp, 0.09)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 430, 0, TAU); ctx.fill(); ctx.restore();
+
+  // glossy floor, contact shadows, then everything standing on the floor sorted by depth (far first)
+  reflection(c => FIGS.forEach((f, i) => drawFigure(c, f, poses[i])), floorY, 0.28);
+  poses.forEach((J, i) => contactShadow(ctx, J, 0.55, FIGS[i].s));
+  const items = FIGS.map((f, i) => ({ d: poses[i].P[1], draw: () => drawFigure(ctx, f, poses[i]) }));
+  items.sort((a, b) => b.d - a.d).forEach(it => it.draw());
+
+  // the lamp itself
+  ctx.save();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], 0); ctx.lineTo(lp[0], lp[1] - 46); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lp[0] - 12, lp[1] - 48); ctx.lineTo(lp[0] + 12, lp[1] - 48); ctx.lineTo(lp[0] + 52, lp[1]); ctx.lineTo(lp[0] - 52, lp[1]); ctx.closePath();
+  ctx.fillStyle = '#121214'; ctx.fill(); ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 52, 7, 0, 0, TAU); ctx.fillStyle = rgb(lamp); ctx.fill();
+  ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  g = ctx.createRadialGradient(lp[0], lp[1] + 6, 2, lp[0], lp[1] + 6, 190);
+  g.addColorStop(0, rgb(lamp, 0.7)); g.addColorStop(0.2, rgb(lamp, 0.24)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.fillRect(lp[0] - 220, lp[1] - 200, 440, 420); ctx.restore();
+
+  vignette(0.75);
+  captionAt(t, 'YOUR TEXT HERE.', T.text0, T.text1, 42, 11);
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(f => [f, 0, T.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.text1, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>

@@ -10,6 +10,8 @@
     "render": "node scripts/render.js",
     "mix": "node scripts/mix.js",
     "build": "node scripts/check.js && node scripts/render.js && node scripts/mix.js",
+    "new": "node scripts/new-film.js",
+    "film:sfx": "python3 scripts/make_film_sfx.py",
     "iewy:check": "FILM=it-ends-with-you node scripts/check.js && FILM=it-ends-with-you node scripts/popcheck.js",
     "iewy:stills": "FILM=it-ends-with-you node scripts/stills.js",
     "iewy:render": "FILM=it-ends-with-you node scripts/render.js",

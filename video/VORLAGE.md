@@ -1,18 +1,20 @@
 # Strichfiguren-Video: Vorlage für neue Videos
 
 Diese Datei fasst zusammen, wie "Ask Twice" gebaut ist, damit du neue Videos im selben Stil
-machen kannst. Der ganze Code liegt im Ordner `video/` (Branch `claude/vertical-animation-sound-xbq7vf`).
+machen kannst. Der ganze Code liegt im Ordner `video/` (Branch `claude/video-skill`, alle sechs Filme auf einer Engine).
 
 ---
 
-## 1. Prompt zum Kopieren (für einen neuen Chat mit Claude)
+## 1. Prompt zum Kopieren (kurz, dank Skill)
 
-> Nutze das Projekt in `video/` aus dem Repo emyfaked-droid/Brose-Website als Vorlage
-> (Engine in `engine.js`, Renderer `scripts/render.js`, Ton `sound-timeline.js` + `scripts/mix.js`).
-> Behalte Stil, Figuren und Geh-Animation exakt bei (siehe `video/VORLAGE.md`).
-> Neue Geschichte: **[hier deine Story mit Zeiten, Texten und Sounds]**.
-> Format 720x1280, 30 fps, ca. **[Länge]** Sekunden. Erst Standbilder und einen Test-Clip zeigen,
-> dann das fertige MP4 mit Ton rendern.
+Im Repo liegt der Skill `.claude/skills/stickman-video/` (Ablauf, Stilregeln, Engine-Spickzettel). Claude Code lädt ihn
+von selbst, darum reicht ein kurzer Prompt:
+
+> Neues Strichfiguren-Video **[name]**: **[Story mit Zeiten, Texten und Sounds]**. Ca. **[Länge]** Sekunden.
+
+Neue Filme starten mit `npm run new -- <name>` aus der Vorlage (`films/_template.html`, `sounds/_template.js`,
+`sfx_films/_template.py`) und laufen mit `FILM=<name> npm run check | stills | render | mix`.
+Tipp: nach jedem Video `/clear`, damit der alte Verlauf keine Tokens mehr kostet.
 
 ---
 
