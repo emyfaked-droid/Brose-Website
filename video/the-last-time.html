@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Last Time</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   THE LAST TIME: one hallway, five years. A father lifts his child, has
+   it on his shoulders, carries it in asleep; then it walks past him with
+   headphones; then the hallway is empty and he lifts his arms a little,
+   for no one. The warm lamp is the only colour and it fades every year.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds)
+const T = {
+  fadeIn: 0.5,
+  cuts: [3.5, 6.5, 9.5, 12.0],     // soft cross fades (0.4 s) between the years
+  text0: 12.5, text1: 15.5,        // ONE DAY YOU PUT THEM DOWN...
+  text2: 15.0, text3: 18.5,        // ...AND NEVER PICK THEM UP AGAIN.
+  end0: 18.5, end: 20.0,
+  stills: [1.8, 4.6, 8.7, 14.9],
+};
+const YEARS = ['2016', '2018', '2021', '2024', '2026'];
+const LAMPF = [1.0, 0.82, 0.66, 0.5, 0.36];        // how warm and bright the lamp still is
+const sceneAt = t => T.cuts.filter(c => t >= c).length;
+
+// ---------------------------------------------------------------- set
+const WALL = 300;
+const LAMP = [360, 120, 540];
+const KDOOR = { x0: 40, x1: 128, z1: 292 };        // the child's room (left)
+const FDOOR = { x0: 572, x1: 660, z1: 300 };       // the front door (right)
+const SOFA = { x0: 400, x1: 664, d0: 150, d1: 238, seat: 70 };
+const WARMC = [255, 206, 108], WARML = [255, 222, 176], COLD = [176, 182, 194];
+
+// ---------------------------------------------------------------- helpers: a child posed on its own, then placed on the father
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+const rotv = (v, ax, a) => { const c = Math.cos(a), s = Math.sin(a), cr = cross(ax, v), dp = dot(ax, v) * (1 - c); return [v[0] * c + cr[0] * s + ax[0] * dp, v[1] * c + cr[1] * s + ax[1] * dp, v[2] * c + cr[2] * s + ax[2] * dp]; };
+const ZX = [0, 0, 1], DY = [0, 1, 0];
+// turn the pose about its pelvis (rotations in order), then put the pelvis at `target`
+function place(J, rots, target) {
+  const piv = J.P.slice();
+  const tp = p => { let v = sub(p, piv); for (const [ax, a] of rots) v = rotv(v, ax, a); return add(target, v); };
+  const td = v => { for (const [ax, a] of rots) v = rotv(v, ax, a); return v; };
+  const out = { ...J };
+  for (const k of ['P', 'C', 'N', 'NT', 'Hc']) out[k] = tp(J[k]);
+  for (const k of ['hip', 'knee', 'ank', 'toe', 'heel', 'sh', 'el', 'hand']) out[k] = { L: tp(J[k].L), R: tp(J[k].R) };
+  for (const k of ['F', 'R', 'Ft', 'Rt']) out[k] = td(J[k]);
+  const nf = {}; for (const s of ['L', 'R']) nf[s] = { ...J.feet[s], ank: out.ank[s], heel: out.heel[s], toe: out.toe[s] }; out.feet = nf;
+  return out;
+}
+const pole = (F, side, dz = -60) => (t, J) => add(add(J.sh[side], add(mul(J.Ft, -16), mul(J.Rt, (side === 'R' ? 1 : -1) * 44))), [0, 0, dz]);
+const yawRad = F => t => F.tr.yaw.at(t) * D2R;
+
+// ---------------------------------------------------------------- 2016: he lifts the little one, swings it once, carries it to its room
+const D1 = new Fig('D1', { x: 250, d: 120, yaw: 180, seed: 2.1 });
+const K1 = new Fig('K1', { x: 0, d: 0, yaw: 0, seed: 6.2, s: 0.4 });
+const K1_FLOOR = [168, 120];
+function kid1(t) {
+  const J = K1.pose(t), dj = D1.pose(t, true);
+  const floor = [K1_FLOOR[0], K1_FLOOR[1], J.P[2]];
+  const out = add(add(dj.N, mul(dj.Ft, 40)), [0, 0, -40]);
+  const hip = add(add(add(dj.C, mul(dj.Ft, 22)), mul(dj.Rt, -6)), [0, 0, -22]);
+  const u1 = E.io(inv(1.0, 1.5, t)), u3 = E.io(inv(2.15, 2.5, t)), sw = inv(1.5, 2.15, t);
+  let p = lerp3(lerp3(floor, out, u1), hip, u3);
+  const swing = Math.sin(PI * sw);
+  p = add(add(p, mul(dj.Ft, 18 * Math.sin(TAU * sw))), [0, 0, 30 * swing]);
+  const yaw = (D1.tr.yaw.at(t) + 180) * D2R;
+  return place(J, [[ZX, yaw], [rotv(DY, ZX, yaw), -0.25 * Math.sin(TAU * sw)]], p);
+}
+(function y2016() {
+  const D = D1, tr = D.tr, K = K1, kt = K.tr;
+  // legs dangle once it is up, arms reach for him
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? 1 : -1;
+    K.footGoal(side, () => ({ ank: [14, sg * 8, H0 - 112], pitch: -20, yaw: 0, kdir: [1, 0, 0.3] })).to(1.0, 1.35, 1, E.io);
+    K.goal(side, (t, J) => add(add(J.N, mul(J.Ft, 16)), add(mul(J.Rt, sg * 12), [0, 0, 24])), pole(K, side, 0)).to(0.6, 1.0, 1, E.io).to(2.15, 2.45, 0, E.io);
+    K.goal(side, (t, J) => add(add(J.N, mul(J.Ft, 24)), add(mul(J.Rt, sg * 15), [0, 0, -4])), pole(K, side)).to(2.2, 2.5, 1, E.io);
+  }
+  kt.head.v0 = -10; kt.laugh.to(1.45, 1.6, 1).to(2.2, 2.6, 0.2);
+  // he bends down, lifts, swings, settles it on his arm
+  tr.pz.to(0.45, 0.95, -64, E.io).to(1.0, 1.5, 0, E.io);
+  tr.lean.to(0.45, 0.95, 44, E.io).to(1.0, 1.5, 4, E.io).to(1.5, 1.8, -4, E.io).to(2.1, 2.5, 3, E.io);
+  tr.head.to(0.45, 0.95, 26, E.io).to(1.0, 1.5, 4, E.io);
+  tr.laugh.to(1.5, 1.7, 0.6).to(2.3, 2.7, 0);
+  const kw = () => kid1;                                 // late bound (kid1 needs D1)
+  const under = (side) => (t, J) => { const k = kw()(t); return add(k.sh[side === 'L' ? 'R' : 'L'], [0, 0, -10]); };
+  D.goal('L', under('L'), pole(D, 'L')).to(0.55, 0.95, 1, E.io).to(2.15, 2.45, 0, E.io);
+  D.goal('R', under('R'), pole(D, 'R')).to(0.6, 1.0, 1, E.io).to(2.15, 2.45, 0, E.io);
+  D.goal('R', (t, J) => add(kw()(t).P, [0, 0, -12]), pole(D, 'R')).to(2.2, 2.5, 1, E.io);
+  D.goal('L', (t, J) => { const k = kw()(t); return add(k.C, mul(k.Ft, -9)); }, pole(D, 'L')).to(2.25, 2.55, 1, E.io);
+  // and goes to the child's room
+  D.walk(2.6, [(KDOOR.x0 + KDOOR.x1) / 2, WALL + 50], { ...MOOD.walk, L: 96, cad: 1.8 }, 'R');
+})();
+
+// ---------------------------------------------------------------- 2018: on his shoulders, both laughing, he spins once
+const D2 = new Fig('D2', { x: 360, d: 80, yaw: -90, seed: 3.4 });
+const K2 = new Fig('K2', { x: 0, d: 0, yaw: 0, seed: 7.7, s: 0.5 });
+function kid2(t) {
+  const J = K2.pose(t), dj = D2.pose(t, true);
+  const p = add(add(dj.N, mul(dj.Ft, -6)), [0, 0, 40]);
+  return place(J, [[ZX, D2.tr.yaw.at(t) * D2R]], p);
+}
+(function y2018() {
+  const D = D2, K = K2;
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? 1 : -1;
+    K.footGoal(side, () => ({ ank: [26, sg * 17, H0 - 104], pitch: -30, yaw: 0, kdir: [1, 0, 0.1] })).v0 = 1;
+    // hands on his head, then up in the air while he spins
+    const g1 = K.goal(side, (t, J) => add(add(J.N, mul(J.Ft, 14)), add(mul(J.Rt, sg * 10), [0, 0, 18])), pole(K, side, 0)); g1.v0 = 1;
+    g1.to(4.3, 4.5, 0, E.io).to(5.8, 6.0, 1, E.io);
+    K.goal(side, (t, J) => add(add(J.sh[side], mul(J.Rt, sg * 20)), [0, 0, 44 + 6 * Math.sin(t * 8 + sg)]), pole(K, side, 20)).to(4.3, 4.55, 1, E.out2).to(5.8, 6.0, 0, E.io);
+    D.goal(side, (t, J) => add(kid2(t).ank[side], [0, 0, 22]), pole(D, side)).v0 = 1;
+  }
+  K.tr.head.v0 = -14; K.tr.laugh.v0 = 0.8; D.tr.laugh.v0 = 0.7; D.tr.head.v0 = -6;
+  D.turn(4.25, 5.75, 270, { steps: 6, lift: 6, ease: E.io });
+  K.tr.laugh.to(4.3, 4.5, 1.2);
+})();
+
+// ---------------------------------------------------------------- 2021: asleep on the sofa, carried in; heavier now
+const D3 = new Fig('D3', { x: 466, d: 84, yaw: 20, seed: 4.9 });
+const K3 = new Fig('K3', { x: 0, d: 0, yaw: 0, seed: 8.8, s: 0.65 });
+const K3_SOFA = [528, 200, SOFA.seat + 18];
+let LIFT3 = 8.0;
+function kid3(t) {
+  const J = K3.pose(t), dj = D3.pose(t, true);
+  const arms = add(add(dj.C, mul(dj.Ft, 32)), [0, 0, -26]);
+  const u = E.io(inv(LIFT3, LIFT3 + 0.65, t));
+  const p = lerp3(K3_SOFA, arms, u);
+  const yaw = u > 0 ? (D3.tr.yaw.at(t) - 90) * D2R : 0;
+  return place(J, [[DY, -PI / 2 + 0.14 * u], [ZX, yaw]], p);
+}
+(function y2021() {
+  const D = D3, tr = D.tr, K = K3, kt = K.tr;
+  kt.head.v0 = 10; kt.headRoll.v0 = 22; kt.breath.v0 = 0.6; kt.idle.v0 = 0.3;
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? 1 : -1;
+    K.footGoal(side, () => ({ ank: [18, sg * 9, 30], pitch: 30, yaw: 0, kdir: [1, 0, 0] })).v0 = 1;
+  }
+  let s = D.walk(6.2, [520, 118], { ...MOOD.walk, L: 90, cad: 2.2 }, 'R');
+  D.turn(s + 0.02, s + 0.4, 90, { steps: 2, lift: 4 });
+  LIFT3 = s + 0.75;
+  const L = LIFT3;
+  tr.pz.to(s + 0.35, L, -70, E.io).to(L + 0.1, L + 0.85, 0, E.in2);
+  tr.lean.to(s + 0.35, L, 50, E.io).to(L + 0.1, L + 0.85, -6, E.io);
+  tr.head.to(s + 0.35, L, 26, E.io).to(L + 0.4, L + 0.9, 18, E.io);
+  // it is heavy now: he sways as he comes up and turns
+  tr.roll.to(L + 0.4, L + 0.7, 5, E.io).to(L + 0.7, L + 1.0, -4, E.io).to(L + 1.0, L + 1.3, 3, E.io).to(L + 1.3, L + 1.6, 0, E.io);
+  tr.pant.to(L + 0.6, L + 1.0, 1.2);
+  const kw = () => kid3;
+  D.goal('L', (t, J) => add(kw()(t).C, [0, 0, -12]), pole(D, 'L')).to(s + 0.4, L, 1, E.io);
+  D.goal('R', (t, J) => { const k = kw()(t); return add(lerp3(k.knee.L, k.hip.L, 0.5), [0, 0, -12]); }, pole(D, 'R')).to(s + 0.45, L + 0.05, 1, E.io);
+  D.turn(L + 0.95, L + 1.4, 180, { steps: 3, lift: 4, mood: 'heavy' });
+  D.walk(L + 1.42, [KDOOR.x1 + 40, 140], MOOD.heavy, 'R');
+})();
+
+// ---------------------------------------------------------------- 2024: nearly as tall as him, headphones on, past him and out
+const D4 = new Fig('D4', { x: 352, d: 50, yaw: 200, seed: 5.6 });
+const K4 = new Fig('K4', { x: 150, d: 62, yaw: 30, seed: 9.3, s: 0.95 });
+let OUT4 = 11.6;
+(function y2024() {
+  const TEEN = { ...MOOD.walk, name: 'teen', L: 128, cad: 2.15 };
+  OUT4 = K4.walk(9.25, [(FDOOR.x0 + FDOOR.x1) / 2, WALL + 60], TEEN, 'R');
+  K4.tr.head.v0 = 10;                                  // eyes down, music on
+  const D = D4, tr = D.tr;
+  // he watches it come, half opens his arms ... and lets them sink
+  tr.hyaw.to(9.6, 10.2, -10, E.io).to(10.4, 11.2, 60, E.io);
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? 1 : -1;
+    D.goal(side, (t, J) => add(add(add(J.N, mul(J.Ft, 34)), mul(J.Rt, sg * 46)), [0, 0, -38]), pole(D, side, -20))
+      .to(9.95 + (side === 'L' ? 0.05 : 0), 10.45, 0.85, E.io).to(10.8, 11.9, 0, E.sine);
+  }
+  tr.lean.to(9.95, 10.45, 7, E.io).to(10.8, 11.9, 2, E.io);
+  tr.shDrop.to(10.8, 11.9, 5, E.io); tr.head.to(11.2, 11.9, 12, E.io);
+})();
+
+// ---------------------------------------------------------------- 2026: alone under the lamp
+const D5 = new Fig('D5', { x: 380, d: 100, yaw: 200, seed: 6.6 });
+(function y2026() {
+  const D = D5, tr = D.tr;
+  tr.head.v0 = 26; tr.slump.v0 = 6; tr.shDrop.v0 = 4; tr.breath.v0 = 0.8;
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? 1 : -1;
+    const lift = t => 0.6 * E.sine(inv(13.4, 15.6, t)) * (1 - E.sine(inv(15.9, 17.8, t)));
+    D.goal(side, (t, J) => add(add(add(J.P, mul(J.Ft, 34 + 10 * lift(t))), mul(J.Rt, sg * 18)), [0, 0, 22 + 60 * lift(t)]), pole(D, side, -40))
+      .to(12.6 + (side === 'R' ? 0.1 : 0), 13.3, 1, E.io).to(17.6, 18.4, 0, E.io);
+  }
+  tr.head.to(13.4, 15.6, 34, E.io).to(15.9, 17.6, 28, E.io);
+  tr.slump.to(15.9, 17.8, 12, E.io);
+})();
+
+const SCENES = [
+  { dad: D1, kid: kid1, kidFig: K1, t0: 0, t1: 3.7 },
+  { dad: D2, kid: kid2, kidFig: K2, t0: 3.3, t1: 6.7 },
+  { dad: D3, kid: kid3, kidFig: K3, t0: 6.3, t1: 9.7 },
+  { dad: D4, kid: null, kidFig: K4, t0: 9.3, t1: 12.2 },
+  { dad: D5, kid: null, kidFig: null, t0: 11.8, t1: 99 },
+];
+const FIGS = [D1, D2, D3, D4, D5, K4];
+
+// ---------------------------------------------------------------- drawing
+function glowAt(x, y, r, col, a) {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+const wallRect = (c, x0, x1, z0, z1) => poly(c, [[x0, WALL, z0], [x1, WALL, z0], [x1, WALL, z1], [x0, WALL, z1]]);
+function door(c, D, open, warmIn) {
+  wallRect(c, D.x0 - 7, D.x1 + 7, 0, D.z1 + 7); c.fillStyle = '#2b2a28'; c.fill();
+  wallRect(c, D.x0, D.x1, 0, D.z1); c.fillStyle = rgb(mixc([6, 6, 7], [40, 30, 18], warmIn)); c.fill();
+  const px = lerp(D.x0, D.x1 - 6, open);
+  wallRect(c, px, D.x1, 0, D.z1); c.fillStyle = rgb([62, 58, 54].map(v => v * (1 - 0.35 * open))); c.fill();
+  const kn = P([px + 12, WALL, 140]); c.beginPath(); c.arc(kn[0], kn[1], 3.5, 0, TAU); c.fillStyle = '#9a9690'; c.fill();
+}
+function drawSofa(c) {
+  const col = k => ({ front: rgb([62, 60, 58].map(v => v * k)), top: rgb([84, 82, 78].map(v => v * k)), side: rgb([50, 48, 46].map(v => v * k)), edge: 'rgba(0,0,0,0.35)' });
+  const { x0, x1, d0, d1, seat } = SOFA;
+  box(c, { x0, x1, d0: d1 - 22, d1, z0: 6, z1: seat + 70 }, col(0.85));
+  box(c, { x0, x1, d0, d1: d1 - 22, z0: 6, z1: seat }, col(1.05));
+  for (const ax of [x0, x1 - 22]) box(c, { x0: ax, x1: ax + 22, d0, d1: d1 - 22, z0: 6, z1: seat + 28 }, col(0.95));
+}
+function headphones(c, J, k0) {
+  const h = P(J.Hc), r = DIM.headR * 0.95 * h[2];
+  c.save(); c.lineCap = 'round';
+  c.strokeStyle = INK; c.lineWidth = 7 * h[2]; c.beginPath(); c.arc(h[0], h[1], r + 4 * h[2], PI * 1.05, PI * 1.95); c.stroke();
+  c.strokeStyle = '#7c7e84'; c.lineWidth = 3.5 * h[2]; c.stroke();
+  for (const sg of [-1, 1]) { c.beginPath(); c.ellipse(h[0] + sg * 2 * h[2], h[1] + 2 * h[2], 7 * h[2], 11 * h[2], 0, 0, TAU); c.fillStyle = INK; c.fill(); c.beginPath(); c.ellipse(h[0] + sg * 2 * h[2], h[1] + 2 * h[2], 5 * h[2], 9 * h[2], 0, 0, TAU); c.fillStyle = '#4a4c52'; c.fill(); }
+  c.restore();
+}
+function drawYear(i, t) {
+  const sc = SCENES[i], a = sstep(sc.t0 + (i ? 0 : 0.3), sc.t0 + 0.5 + (i ? 0 : 0.3), t) * (1 - sstep(sc.t1 - 0.4, sc.t1, t));
+  if (a <= 0) return;
+  ctx.save(); ctx.font = '700 28px "JetBrains Mono", "DejaVu Sans Mono", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = `rgba(232,230,224,${0.75 * a})`; ctx.fillText(YEARS[i], W / 2, 1182); ctx.restore();
+}
+function drawScene(i, t) {
+  const lf = LAMPF[i], lamp = mixc(COLD, WARMC, lf), sc = SCENES[i];
+  cam.x = 360; cam.zoom = 1.18 + (i === 4 ? 0.12 * sstep(12, 18.5, t) : 0); cam.hy = 640; cam.h = 270;
+  const floorY = P([0, WALL, 0])[1];
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb([12, 11, 10])); g.addColorStop(1, rgb(mixc([30, 30, 32], [44, 37, 30], lf)));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb(mixc([40, 40, 42], [56, 46, 36], lf))); g.addColorStop(1, rgb([12, 12, 13]));
+  ctx.fillStyle = g; ctx.fillRect(0, floorY, W, H - floorY);
+  // floor boards
+  ctx.save(); ctx.globalAlpha = 0.18; ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+  for (let d = WALL; d > -300; d -= 34) { const y = P([0, d, 0])[1]; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.restore();
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, floorY - 2, W, 4);
+  const lp = P(LAMP), fp = P([LAMP[0], 70, 0]);
+  g = ctx.createRadialGradient(lp[0], floorY - 80, 10, lp[0], floorY - 80, 560);
+  g.addColorStop(0, rgb(lamp, 0.12 + 0.14 * lf)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  ctx.save(); ctx.translate(fp[0], fp[1]); ctx.scale(1, 0.22);
+  g = ctx.createRadialGradient(0, 0, 0, 0, 0, 420); g.addColorStop(0, rgb(lamp, 0.12 + 0.2 * lf)); g.addColorStop(0.5, rgb(lamp, 0.06 + 0.04 * lf)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 420, 0, TAU); ctx.fill(); ctx.restore();
+  // doors: the child's room opens for the carrying, the front door for the leaving
+  const kOpen = i === 0 ? sstep(2.75, 3.05, t) : i === 2 ? sstep(9.05, 9.35, t) : 0;
+  const fOpen = i === 3 ? sstep(OUT4 - 0.75, OUT4 - 0.55, t) * (1 - sstep(OUT4 + 0.1, OUT4 + 0.22, t)) : 0;
+  door(ctx, KDOOR, kOpen, 0.6 * lf); door(ctx, FDOOR, fOpen, 0);
+  // a small picture frame between the doors
+  wallRect(ctx, 200, 262, 190, 246); ctx.fillStyle = '#2b2a28'; ctx.fill(); wallRect(ctx, 206, 256, 196, 240); ctx.fillStyle = '#141312'; ctx.fill();
+
+  const dad = sc.dad, dj = dad.pose(t);
+  const items = c => {
+    const list = [{ d: dj.P[1], draw: () => {
+      // through a doorway only the part inside the opening shows
+      if (dj.P[1] > WALL - 16) { c.save(); wallRect(c, KDOOR.x0, KDOOR.x1, 0, KDOOR.z1); c.clip(); drawFigure(c, dad, dj); if (sc.kid) drawFigure(c, sc.kidFig, sc.kid(t)); c.restore(); return; }
+      drawFigure(c, dad, dj);
+    } }];
+    if (sc.kid && dj.P[1] <= WALL - 16) { const kj = sc.kid(t); list.push({ d: dj.P[1] - 0.8, draw: () => drawFigure(c, sc.kidFig, kj) }); }
+    if (i === 2) list.push({ d: SOFA.d1, draw: () => drawSofa(c) });
+    if (i === 3) {
+      const kj = K4.pose(t);
+      list.push({ d: kj.P[1], draw: () => {
+        if (kj.P[1] > WALL - 16) { c.save(); wallRect(c, FDOOR.x0, FDOOR.x1, 0, FDOOR.z1); c.clip(); drawFigure(c, K4, kj); headphones(c, kj); c.restore(); return; }
+        drawFigure(c, K4, kj); if (c === ctx) headphones(c, kj);
+      } });
+    }
+    list.sort((a, b) => b.d - a.d).forEach(it => it.draw());
+  };
+  reflection(items, floorY, 0.26);
+  if (dj.P[1] <= WALL - 16) contactShadow(ctx, dj, 0.55);
+  if (i === 3) { const kj = K4.pose(t); if (kj.P[1] <= WALL - 16) contactShadow(ctx, kj, 0.5, 0.95); }
+  if (i === 0 && kid1(t).P[2] < 120) contactShadow(ctx, kid1(t), 0.5, 0.4);
+  items(ctx);
+
+  // the lamp: warm, a little dimmer every year
+  ctx.save();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], 0); ctx.lineTo(lp[0], lp[1] - 46); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lp[0] - 12, lp[1] - 48); ctx.lineTo(lp[0] + 12, lp[1] - 48); ctx.lineTo(lp[0] + 52, lp[1]); ctx.lineTo(lp[0] - 52, lp[1]); ctx.closePath();
+  ctx.fillStyle = '#121214'; ctx.fill(); ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 52, 7, 0, 0, TAU); ctx.fillStyle = rgb(mixc([120, 118, 112], WARMC, lf)); ctx.fill();
+  ctx.restore();
+  glowAt(lp[0], lp[1] + 6, 200, mixc(COLD, WARML, lf), 0.18 + 0.4 * lf);
+  vignette(0.8 - 0.1 * lf);
+}
+
+// the years blend into each other: draw the older one, keep it, draw the newer one, lay the older one over it
+const BUF = document.createElement('canvas'); BUF.width = W; BUF.height = H;
+const bctx = BUF.getContext('2d');
+function draw(t) {
+  const i = sceneAt(t);
+  const c = T.cuts.find(c => Math.abs(t - c) < 0.2);
+  if (c !== undefined) {
+    const a = T.cuts.indexOf(c), k = E.io(inv(c - 0.2, c + 0.2, t));
+    drawScene(a, t);
+    bctx.setTransform(1, 0, 0, 1, 0, 0); bctx.globalAlpha = 1; bctx.clearRect(0, 0, W, H); bctx.drawImage(cv, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    drawScene(a + 1, t);
+    ctx.save(); ctx.globalAlpha = 1 - k; ctx.drawImage(BUF, 0, 0); ctx.restore();
+  } else drawScene(i, t);
+  for (let y = 0; y < 5; y++) drawYear(y, t);
+  captionAt(t, 'ONE DAY YOU PUT THEM DOWN…', T.text0, T.text1, 31, 5, 190);
+  captionAt(t, '…AND NEVER PICK THEM UP AGAIN.', T.text2, T.text3 + 1, 29, 4, 240);
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = [[D1, 0, 3.7], [D2, 3.3, 6.7], [D3, 6.3, 9.7], [D4, 9.3, 12.2], [K4, 9.3, OUT4], [D5, 11.8, T.end], [K1, 0, 3.7], [K2, 3.3, 6.7], [K3, 6.3, 9.7]];
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.end0, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  const steps = [];
+  for (const [f, a, b] of CHECK_FIGS) for (const c of f.cues) if (c.t >= a + 0.15 && c.t < b - 0.15) steps.push({ ...c, teen: f === K4 });
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T, lift3: LIFT3, out4: OUT4 }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
