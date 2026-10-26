@@ -110,6 +110,10 @@ const DIM = {
 const FL = DIM.heel + DIM.toe;           // heel-to-toe length
 const LEG = DIM.thigh + DIM.shin;
 const H0 = LEG + DIM.ankleH - 3;          // relaxed standing pelvis height
+// optional ground height for films with obstacles, ramps or balls: TERRAIN = (x, d) => z (world units).
+// null = the flat floor at z = 0 (every film before it)
+let TERRAIN = null;
+const groundZ = (x, d) => TERRAIN ? TERRAIN(x, d) : 0;
 const LMAX = LEG * 0.995;
 
 // Gait moods. L = step length (px), cad = steps per second.
@@ -150,10 +154,14 @@ const pitchOf = (pl, t) => { let f = pl.pitch[0].fn; for (const p of pl.pitch) i
 // foot on the floor: positive pitch = toe up, rolls on the heel;
 // negative pitch = heel up, rolls on the toe
 function groundFoot(pos, th, yaw) {
-  const f = fwd(yaw), c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+  const f = fwd(yaw);
+  // on sloped ground (TERRAIN) the foot follows the slope
+  const zh = groundZ(pos[0], pos[1]);
+  if (TERRAIN) th += Math.atan2(groundZ(pos[0] + f[0] * FL, pos[1] + f[1] * FL) - zh, FL) / D2R;
+  const c = Math.cos(th * D2R), s = Math.sin(th * D2R);
   let heel, toe;
-  if (th >= 0) { heel = [pos[0], pos[1], 0]; toe = [pos[0] + f[0] * FL * c, pos[1] + f[1] * FL * c, FL * s]; }
-  else { toe = [pos[0] + f[0] * FL, pos[1] + f[1] * FL, 0]; heel = [toe[0] - f[0] * FL * c, toe[1] - f[1] * FL * c, -FL * s]; }
+  if (th >= 0) { heel = [pos[0], pos[1], zh]; toe = [pos[0] + f[0] * FL * c, pos[1] + f[1] * FL * c, zh + FL * s]; }
+  else { const zt = groundZ(pos[0] + f[0] * FL, pos[1] + f[1] * FL); toe = [pos[0] + f[0] * FL, pos[1] + f[1] * FL, zt]; heel = [toe[0] - f[0] * FL * c, toe[1] - f[1] * FL * c, zt - FL * s]; }
   return { heel, toe, ank: ankleFromHeel(heel, th, yaw), pitch: th, yaw };
 }
 function ankleFromHeel(heel, th, yaw) {
@@ -204,8 +212,21 @@ class Fig {
     return p;
   }
   walkAt(t) {
-    for (const w of this.moves) if (t >= w.t0 && t <= w.t1) return w;
+    for (const w of this.moves) if (!w.jump && t >= w.t0 && t <= w.t1) return w;
     return null;
+  }
+  jumpAt(t) {
+    for (const w of this.moves) if (w.jump && t >= w.t0 && t <= w.t1) return w;
+    return null;
+  }
+  // height of the pelvis base: the ground under the root, or the arc of a jump
+  baseZ(t, root) {
+    const j = this.jumpAt(t);
+    if (!j) return groundZ(root[0] * this.s, root[1] * this.s) / this.s;
+    if (t < j.tk) return j.zA - j.crouch * E.io(inv(j.t0, j.tk, t));
+    if (t < j.tl) { const u = (t - j.tk) / (j.tl - j.tk); return lerp(j.zA, j.zB, u) + 4 * j.h * u * (1 - u) - j.crouch * (1 - E.out2(Math.min(1, u / 0.3))); }
+    const v = inv(j.tl, j.t1, t);
+    return j.zB - j.crouch * 0.85 * Math.sin(PI * Math.pow(v, 0.6));
   }
   accAt(t) { const w = this.walkAt(t); return w ? w.acc(t) * (w.back ? -1 : 1) : 0; }
   toSkel(p) { return [p[0] / this.s, p[1] / this.s, p[2] / this.s]; }          // world -> skeleton units (for goal targets)
@@ -214,7 +235,7 @@ class Fig {
   footGoal(side, fn) { const g = { w: new Track(0), fn }; this.footGoals[side].push(g); return g.w; }
   gaitW(t) { // 0..1, how much the figure is "in a walk" right now
     let g = 0;
-    for (const w of this.moves) g = Math.max(g, sstep(w.t0 - 0.05, w.t0 + w.Ta * 0.8, t) * (1 - sstep(w.t1 - w.Td * 0.8, w.t1 + 0.1, t)));
+    for (const w of this.moves) if (!w.jump) g = Math.max(g, sstep(w.t0 - 0.05, w.t0 + w.Ta * 0.8, t) * (1 - sstep(w.t1 - w.Td * 0.8, w.t1 + 0.1, t)));
     return g;
   }
 
@@ -418,6 +439,103 @@ class Fig {
     }
   }
 
+  // A jump from wherever the root is at t0 to `to` (world x, d): crouch, push off, a flight arc with the legs
+  // tucked, land and absorb. Works between different ground heights (TERRAIN). Returns the time it is over.
+  // o: h (apex above the straight line, 46), crouch (dip, 34), tc (crouch time, 0.16), fly (flight time, 0.44),
+  //    absorb (landing, 0.26), tuck (how far the feet pull up, 46)
+  jump(t0, to, o = {}) {
+    const h = o.h ?? 46, crouch = o.crouch ?? 34, tc = o.tc ?? 0.16, fly = o.fly ?? 0.44, ab = o.absorb ?? 0.26, tuck = o.tuck ?? 46;
+    to = [to[0] / this.s, to[1] / this.s];
+    const from = this.rootAt(t0);
+    const dx = to[0] - from[0], dd = to[1] - from[1], D = Math.hypot(dx, dd);
+    const y0 = this.tr.yaw.at(t0);
+    const yaw = D > 1 ? y0 + (((Math.atan2(dd, dx) / D2R - y0 + 540) % 360) - 180) : y0;
+    const dir = D > 1 ? [dx / D, dd / D] : [1, 0];
+    const tk = t0 + tc, tl = tk + fly, t1 = tl + ab;
+    const sAt = t => D * clamp((t - tk) / fly, 0, 1);
+    const jp = { jump: true, t0, t1, tk, tl, from, to, dir, D, sAt, acc: () => 0, h, crouch, tuck,
+                 zA: groundZ(from[0] * this.s, from[1] * this.s) / this.s, zB: groundZ(to[0] * this.s, to[1] * this.s) / this.s };
+    this.moves.push(jp);
+    if (Math.abs(yaw - y0) > 0.5) this.tr.yaw.to(t0 - 0.05, tk, yaw, E.io);
+    const F = fwd(yaw), R = rgt(yaw);
+    for (const side of ['L', 'R']) {
+      const sg = side === 'R' ? 1 : -1, list = this.plants[side], prev = list[list.length - 1];
+      prev.t1 = tk + (side === 'L' ? 0.02 : 0);
+      const np = mkPlant(tl - (side === 'L' ? 0 : 0.02), [to[0] - F[0] * DIM.heel + R[0] * sg * DIM.footW, to[1] - F[1] * DIM.heel + R[1] * sg * DIM.footW], yaw);
+      np.pitch = [{ from: -Infinity, fn: t => 6 * (1 - sstep(np.t0, np.t0 + 0.14, t)) }];
+      np.swing = { jump: jp };
+      list.push(np);
+    }
+    this.cues.push({ t: tk, type: 'takeoff', fig: this.id, side: 'R', mood: 'jump' });
+    this.cues.push({ t: tl, type: 'land', fig: this.id, side: 'L', mood: 'jump' });
+    // body: lean into the crouch, arms back, then up and out in the air, lean again to absorb
+    const tr = this.tr, l0 = tr.lean.at(t0);
+    tr.lean.to(t0, tk, l0 + 20, E.io).to(tk, tk + 0.14, l0 + 2, E.out2).to(tl - 0.06, tl + ab * 0.45, l0 + 16, E.io).to(tl + ab * 0.45, t1 + 0.12, l0, E.io);
+    for (const S of ['L', 'R']) {
+      const sw = tr['aSw' + S].at(t0), out = tr['aOut' + S].at(t0);
+      tr['aSw' + S].to(t0, tk, -38, E.io).to(tk, tk + 0.16, 70, E.out2).to(tl - 0.05, t1, sw, E.io);
+      tr['aOut' + S].to(tk, tk + 0.16, 26, E.out2).to(tl - 0.05, t1, out, E.io);
+    }
+    return t1;
+  }
+  jumpSwing(a, b, t) {
+    const j = b.swing.jump;
+    const A = groundFoot(a.pos, pitchOf(a, a.t1), a.yaw), B = groundFoot(b.pos, pitchOf(b, b.t0), b.yaw);
+    const u = inv(a.t1, b.t0, t), sn = Math.sin(PI * u);
+    const ank = lerp3(A.ank, B.ank, u);
+    ank[2] += 4 * j.h * u * (1 - u) + j.tuck * Math.pow(sn, 0.8);
+    const th = -26 * sn, yaw = angLerp(a.yaw, b.yaw, u);
+    const heel = heelFromAnkle(ank, th, yaw), f = fwd(yaw), c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+    const toe = [heel[0] + f[0] * FL * c, heel[1] + f[1] * FL * c, heel[2] + FL * s];
+    return { heel, toe, ank, pitch: th, yaw, planted: false, u };
+  }
+  // Cartoon fall: from t0 the body leaves the ground (its pose freezes at t0), spins and flies, arms windmill and
+  // legs pedal. o: v (throw velocity [vx, vd, vz]), g (gravity, 1400), spin (rad/s), axis (spin axis, default the
+  // depth axis = turning in the picture plane), path(dt) -> [dx, dd, dz] and ang(dt) -> angle to script it instead,
+  // flail (0..1)
+  tumble(t0, o = {}) {
+    this.tum = { t0, v: o.v || [0, 0, 0], g: o.g ?? 1400, spin: o.spin ?? 6, axis: norm(o.axis || [0, 1, 0]), path: o.path || null, ang: o.ang || null, flail: o.flail ?? 1 };
+    this.cues.push({ t: t0, type: 'tumble', fig: this.id, side: 'R', mood: 'tumble' });
+    return this.tum;
+  }
+  tumblePose(t, skipGoals) {
+    const tu = this.tum, dt = t - tu.t0;
+    const J = this.pose(tu.t0, skipGoals);
+    const up = [0, 0, 1], Ft = J.Ft, Rt = J.Rt, k = tu.flail * sstep(0, 0.14, dt), ph0 = this.seed * 2.1;
+    for (const side of ['L', 'R']) {
+      const sg = side === 'R' ? 1 : -1, ph = ph0 + (side === 'R' ? 0 : PI);
+      // arms windmill
+      const a = 13 * dt + ph, a2 = a + 0.9;
+      const d1 = norm(add(add(mul(Ft, Math.cos(a)), mul(up, Math.sin(a) * 0.9 + 0.5)), mul(Rt, sg * 0.45)));
+      const d2 = norm(add(add(mul(Ft, Math.cos(a2)), mul(up, Math.sin(a2) * 0.9 + 0.6)), mul(Rt, sg * 0.3)));
+      const el = madd(J.sh[side], d1, DIM.upper), hand = madd(el, d2, DIM.fore);
+      J.el[side] = lerp3(J.el[side], el, k); J.hand[side] = lerp3(J.hand[side], hand, k);
+      // legs pedal
+      const b = 11 * dt + ph + 1.3, b2 = b - 1.2;
+      const kd = norm(add(add(mul(Ft, 0.6 * Math.sin(b) + 0.3), [0, 0, -1]), mul(Rt, sg * 0.15)));
+      const kn = madd(J.hip[side], kd, DIM.thigh);
+      const sd2 = norm(add(mul(Ft, 0.55 * Math.sin(b2) - 0.35), [0, 0, -1]));
+      const an = madd(kn, sd2, DIM.shin);
+      J.knee[side] = lerp3(J.knee[side], kn, k);
+      const nA = lerp3(J.ank[side], an, k), off = sub(nA, J.ank[side]);
+      J.ank[side] = nA; J.toe[side] = add(J.toe[side], off); J.heel[side] = add(J.heel[side], off);
+    }
+    // rigid motion: spin about the chest, then the throw (or a scripted path)
+    const ang = tu.ang ? tu.ang(dt) : tu.spin * dt * dt / (dt + 0.12);
+    const off = tu.path ? tu.path(dt) : [tu.v[0] * dt, tu.v[1] * dt, tu.v[2] * dt - 0.5 * tu.g * dt * dt];
+    const piv = J.C.slice(), ax = tu.axis, c = Math.cos(ang), s = Math.sin(ang);
+    const rot = v => { const cr = [ax[1] * v[2] - ax[2] * v[1], ax[2] * v[0] - ax[0] * v[2], ax[0] * v[1] - ax[1] * v[0]], dp = dot(ax, v) * (1 - c); return [v[0] * c + cr[0] * s + ax[0] * dp, v[1] * c + cr[1] * s + ax[1] * dp, v[2] * c + cr[2] * s + ax[2] * dp]; };
+    const tp = p => add(add(piv, rot(sub(p, piv))), off);
+    for (const key of ['P', 'C', 'N', 'NT', 'Hc']) J[key] = tp(J[key]);
+    for (const key of ['hip', 'knee', 'ank', 'toe', 'heel', 'sh', 'el', 'hand']) J[key] = { L: tp(J[key].L), R: tp(J[key].R) };
+    for (const key of ['F', 'R', 'Ft', 'Rt']) J[key] = rot(J[key]);
+    const nf = {};
+    for (const sd of ['L', 'R']) nf[sd] = { ...J.feet[sd], ank: J.ank[sd], heel: J.heel[sd], toe: J.toe[sd], planted: false, u: 0 };
+    J.feet = nf;
+    J.tumble = { dt, ang, off };
+    return J;
+  }
+
   footAt(side, t) {
     const P = this.plants[side];
     for (let i = 0; i < P.length; i++) {
@@ -427,6 +545,7 @@ class Fig {
     }
   }
   swingFoot(a, b, t) {
+    if (b.swing.jump) return this.jumpSwing(a, b, t);
     if (b.swing.run) return this.runSwing(a, b, t);
     const A = groundFoot(a.pos, pitchOf(a, a.t1), a.yaw), B = groundFoot(b.pos, pitchOf(b, b.t0), b.yaw);
     const u = inv(a.t1, b.t0, t), e = E.sine(u);
@@ -437,7 +556,7 @@ class Fig {
     let heel = heelFromAnkle(ank, th, yaw);
     const f = fwd(yaw), c = Math.cos(th * D2R), s = Math.sin(th * D2R);
     let toe = [heel[0] + f[0] * FL * c, heel[1] + f[1] * FL * c, heel[2] + FL * s];
-    const lo = Math.min(heel[2], toe[2]);
+    const lo = Math.min(heel[2], toe[2]) - groundZ(heel[0], heel[1]);
     if (lo < 0) { heel[2] -= lo; toe[2] -= lo; ank[2] -= lo; }
     return { heel, toe, ank, pitch: th, yaw, planted: false, u };
   }
@@ -461,7 +580,7 @@ class Fig {
     let heel = heelFromAnkle(ank, th, yaw);
     const f = fwd(yaw), c = Math.cos(th * D2R), s = Math.sin(th * D2R);
     let toe = [heel[0] + f[0] * FL * c, heel[1] + f[1] * FL * c, heel[2] + FL * s];
-    const lo = Math.min(heel[2], toe[2]);
+    const lo = Math.min(heel[2], toe[2]) - groundZ(heel[0], heel[1]);
     if (lo < 0) { heel[2] -= lo; toe[2] -= lo; ank[2] -= lo; }
     return { heel, toe, ank, pitch: th, yaw, planted: false, u };
   }
@@ -475,6 +594,7 @@ class Fig {
   // fig.warp = t => t' freezes or retimes the figure's own motion (breathing keeps the real time)
   // skipGoals: leave the arm goals out (two figures that read each other's pose, e.g. a hug, would recurse)
   pose(t, skipGoals = false) {
+    if (this.tum && t > this.tum.t0) return this.tumblePose(t, skipGoals);
     const tReal = t;
     if (this.warp) t = this.warp(t);
     const tr = this.tr, sd = this.seed, J = {};
@@ -492,7 +612,7 @@ class Fig {
       ank[2] += (tg.lift || 0) * Math.sin(PI * w);
       const heel = heelFromAnkle(ank, th, yw), f = fwd(yw), cc = Math.cos(th * D2R), sn = Math.sin(th * D2R);
       const toe = [heel[0] + f[0] * FL * cc, heel[1] + f[1] * FL * cc, heel[2] + FL * sn];
-      const lo = Math.min(heel[2], toe[2]);
+      const lo = Math.min(heel[2], toe[2]) - groundZ(heel[0], heel[1]);
       if (lo < 0) { heel[2] -= lo; toe[2] -= lo; ank[2] -= lo; }
       // knee direction: blends from what the foot had (an earlier goal's kyaw / kdir) to this goal's, never jumps
       const kyFrom = ft.kyaw === undefined ? undefined : ft.kyaw;
@@ -533,7 +653,7 @@ class Fig {
     const pant = tr.pant.at(t);
     if (pant) br += pant * Math.sin(TAU * tReal / 0.68 + sd);          // out of breath: quick, deep breaths
 
-    let Pv = [root[0] + F[0] * pf + R[0] * pl + tr.ox.at(t), root[1] + F[1] * pf + R[1] * pl + tr.od.at(t), H0 + pz + br * 0.6];
+    let Pv = [root[0] + F[0] * pf + R[0] * pl + tr.ox.at(t), root[1] + F[1] * pf + R[1] * pl + tr.od.at(t), H0 + pz + br * 0.6 + this.baseZ(t, root)];
     // hip rotation in the walk: the swinging leg's hip comes forward
     const fl = { L: gw > 0 ? this.legFwd('L', t) : 0, R: gw > 0 ? this.legFwd('R', t) : 0 };
     // a sideways roll (lying on the side) turns the hip and shoulder lines with the body
@@ -779,8 +899,10 @@ function drawFigure(c, fig, J, extra = {}) {
 }
 function drawFigureParts(c, fig, J, extra) {
   const parts = [];
+  // optional per-figure colour (fig.col); far limbs a darker shade of it
+  const NEAR = fig.col || FIG_NEAR, FAR = fig.colFar || (fig.col ? mixc(fig.col, [34, 34, 38], 0.38) : FIG_FAR);
   const torsoD = (J.P[1] + J.N[1]) / 2;
-  const shadeFor = d => rgb(mixc(FIG_NEAR, FIG_FAR, sstep(1, 11, d - torsoD) * 0.95));
+  const shadeFor = d => rgb(mixc(NEAR, FAR, sstep(1, 11, d - torsoD) * 0.95));
   // the leg nearer the camera is drawn together with the torso as ONE shape, so the hip has no seam
   const legD = side => (J.hip[side][1] + J.knee[side][1] + J.ank[side][1]) / 3;
   // seen from the front (both legs about equally far away) both legs join the torso
@@ -797,17 +919,17 @@ function drawFigureParts(c, fig, J, extra) {
     const acol = shadeFor(ad + (J.sh[side][1] - J.N[1]) * 1.2);
     parts.push({ d: ad, draw: () => {
       strokeLimb(c, armPts, acol, P(J.N)[2]);
-      if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
+      if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
     } });
   }
-  parts.push({ d: torsoD, draw: () => strokeBody(c, [J.P, J.C, J.N, J.NT], bodyLegs.map(legPts), rgb(FIG_NEAR)) });
+  parts.push({ d: torsoD, draw: () => strokeBody(c, [J.P, J.C, J.N, J.NT], bodyLegs.map(legPts), rgb(NEAR)) });
   parts.push({ d: Math.min(torsoD - 0.2, J.Hc[1]), draw: () => {
     const [X, Y, k] = P(J.Hc), r = DIM.headR * FSCALE * k;
     c.beginPath(); c.arc(X, Y, r + OL() * k, 0, TAU); c.fillStyle = INK; c.fill();
-    c.beginPath(); c.arc(X, Y, r, 0, TAU); c.fillStyle = rgb(FIG_NEAR); c.fill();
+    c.beginPath(); c.arc(X, Y, r, 0, TAU); c.fillStyle = rgb(NEAR); c.fill();
   } });
   if (extra.mask) parts.push({ d: extra.mask.depth, draw: () => drawMask(c, extra.mask) });
-  if (extra.handOver) for (const side of extra.handOver) parts.push({ d: extra.mask.depth - 0.1, draw: () => dotJoint(c, J.hand[side], rgb(FIG_NEAR), DIM.limbW * 0.55) });
+  if (extra.handOver) for (const side of extra.handOver) parts.push({ d: extra.mask.depth - 0.1, draw: () => dotJoint(c, J.hand[side], rgb(NEAR), DIM.limbW * 0.55) });
   // props held by the figure, sorted in with its limbs: [{ d, draw }]
   if (extra.props) for (const p of extra.props) parts.push(p);
   parts.sort((a, b) => b.d - a.d);
@@ -818,14 +940,14 @@ function drawFigureParts(c, fig, J, extra) {
 function contactShadow(c, J, strength = 0.55, sc = 1) {
   for (const side of ['L', 'R']) {
     const h = J.heel[side], tt = J.toe[side];
-    const m = lerp3(h, tt, 0.5); const lift = Math.min(h[2], tt[2]);
-    const [X, Y, k] = P([m[0], m[1], 0]);
+    const m = lerp3(h, tt, 0.5), gz = groundZ(m[0], m[1]); const lift = Math.min(h[2], tt[2]) - gz;
+    const [X, Y, k] = P([m[0], m[1], gz]);
     const g = c.createRadialGradient(X, Y, 0, X, Y, 26 * k * sc);
     g.addColorStop(0, `rgba(0,0,0,${strength * clamp(1 - lift / 30)})`); g.addColorStop(1, 'rgba(0,0,0,0)');
     c.fillStyle = g; c.save(); c.translate(X, Y); c.scale(1, 0.28); c.translate(-X, -Y);
     c.beginPath(); c.arc(X, Y, 26 * k * sc, 0, TAU); c.fill(); c.restore();
   }
-  const [X, Y, k] = P([J.P[0], J.P[1], 0]);
+  const [X, Y, k] = P([J.P[0], J.P[1], groundZ(J.P[0], J.P[1])]);
   const g = c.createRadialGradient(X, Y, 0, X, Y, 60 * k * sc);
   g.addColorStop(0, `rgba(0,0,0,${strength * 0.55})`); g.addColorStop(1, 'rgba(0,0,0,0)');
   c.fillStyle = g; c.save(); c.translate(X, Y); c.scale(1, 0.22); c.translate(-X, -Y);
@@ -979,7 +1101,7 @@ function footCheckFor(figs, step = 1 / 120) {
           last[side] = { p: piv, key, pl: ft.plant };
         } else {
           last[side] = null;
-          below = Math.min(below, J.toe[side][2], J.heel[side][2]);
+          below = Math.min(below, J.toe[side][2] - groundZ(J.toe[side][0], J.toe[side][1]), J.heel[side][2] - groundZ(J.heel[side][0], J.heel[side][1]));
         }
       }
     }

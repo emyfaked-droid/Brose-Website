@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pick A Color Wipeout</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   PICK A COLOR. (wipeout 1): ten coloured figures run an obstacle course
+   over dark water: big balls, a sweeper, punching bags, a slippery ramp to
+   the buzzer. A fixed seed decides who falls where and who wins.
+   Times: the film clock (t) and the scene clock (s) are the same except for
+   the slow-motion replay at 8.5 s, which pauses the live action for 1.2 s.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story
+const T = {
+  fadeIn: 0.4,
+  replay0: 8.5, replay1: 9.7, replaySpeed: 0.3,
+  text0: 25.5, end0: 27.0, end: 28.0,
+  stills: [1.6, 5.0, 9.1, 13.1],
+};
+const PAUSE = T.replay1 - T.replay0;
+const sceneOf = t => t <= T.replay0 ? t : t < T.replay1 ? NaN : t - PAUSE;     // NaN = inside the replay
+const filmOf = s => s <= T.replay0 ? s : s + PAUSE;
+const S = { go: 2.0, sweep: 9.9, sack: 15.6, ramp: 21.3, end: T.end - PAUSE };
+
+// ---------------------------------------------------------------- the course (side view along x; water below)
+const WATER = -260;
+const START = { x0: -420, x1: 640, top: 70, rampX: 300 };           // start platform, a ramp down to its edge
+const BALLS = [820, 1180, 1540, 1900], BR = 150, BZ = -150;          // giant balls: centre x, radius, centre z
+const LANDING = { x0: 2080, x1: 2430 };
+const SW = { x: 2600, d: 260, R: 330, arm: 300, lowZ: 40, highZ: 228, w: 2 * PI / 4.0, th0: 0 };   // sweeper (its post stands behind the runners' lane)
+const WALK = { x0: 2770, x1: 3880, hw: 30 };                         // narrow walkway
+const SACKS = [3290, 3560].map((x, i) => ({ x, ph: [0.4, 2.3][i], w: PI / 0.8, A: 40 * D2R }));
+const SACK = { pz: 560, rope: 330, r: 46, len: 170 };
+const RAMP = { x0: 3880, x1: 4220, z1: 238, hw: 46 };
+const TOP = { x0: 4220, x1: 4470 };
+const BUZZ = [4386, -12, RAMP.z1 + 108];
+const COLORS = [
+  ['RED', [236, 66, 56]], ['ORANGE', [246, 142, 40]], ['YELLOW', [246, 218, 52]], ['GREEN', [80, 202, 92]],
+  ['TURQUOISE', [44, 208, 196]], ['BLUE', [62, 124, 244]], ['PURPLE', [156, 96, 226]], ['PINK', [242, 116, 184]],
+  ['WHITE', [242, 242, 238]], ['BROWN', [156, 104, 62]],
+];
+const WARMC = [255, 206, 108];
+
+function startZ(x) { return x < START.rampX ? START.top : START.top * (START.x1 - x) / (START.x1 - START.rampX); }
+TERRAIN = (x, d) => {
+  if (x >= START.x0 && x <= START.x1 && Math.abs(d) < 95) return startZ(x);
+  for (const cx of BALLS) if (Math.abs(x - cx) < BR) return BZ + Math.sqrt(BR * BR - (x - cx) * (x - cx));
+  if (x >= LANDING.x0 && x <= WALK.x1 && Math.abs(d) < 120) return 0;
+  if (x > RAMP.x0 && x <= RAMP.x1 && Math.abs(d) < RAMP.hw) return RAMP.z1 * (x - RAMP.x0) / (RAMP.x1 - RAMP.x0);
+  if (x > TOP.x0 && x <= TOP.x1 && Math.abs(d) < RAMP.hw) return RAMP.z1;
+  return WATER;
+};
+
+// ---------------------------------------------------------------- who does what (seeded)
+const SEED = 777;
+const rnd = mulberry32(SEED);
+const rr = (a, b) => a + (b - a) * rnd();
+const shuffle = a => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const ORDER = shuffle([...Array(10).keys()]);
+// (who falls at the bags, who slips on the ramp and who wins is drawn from the same seed once the order on the walkway is known)
+const ROLE = { belly: ORDER[0], bouncer: ORDER[1], dragged: ORDER[2], boing: ORDER[3], sweep1: ORDER[4], sweep2: ORDER[5] };
+// the queue on the balls: the victims sit in fixed slots, the others fill the rest in seeded order
+const SLOTS = Array(10).fill(null);
+SLOTS[1] = ROLE.belly; SLOTS[4] = ROLE.boing; SLOTS[6] = ROLE.bouncer; SLOTS[7] = ROLE.dragged;
+{ const rest = shuffle(ORDER.slice(4)); let k = 0; for (let i = 0; i < 10; i++) if (SLOTS[i] === null) SLOTS[i] = rest[k++]; }
+const LANE = [-22, 16, -8, 24, -16, 8, -24, 20, -12, 12];
+
+const RUN = { ...MOOD.run };
+const UPHILL = { ...MOOD.run, name: 'uphill', L: 92, cad: 3.0, lean: 20 };
+const JUMP = { tc: 0.1, fly: 0.36, absorb: 0.16, h: 55, crouch: 28, tuck: 42 };
+const JT = JUMP.tc + JUMP.fly + JUMP.absorb;
+
+const FIGS = COLORS.map(([name, col], f) => {
+  const i = SLOTS.indexOf(f);
+  const fig = new Fig(name, { x: 236 - 62 * i, d: LANE[i], yaw: 0, seed: 1.3 + f * 0.61 });
+  fig.col = col; fig.f = f; fig.slot = i; fig.lane = LANE[i];
+  fig.tr.bounce.v0 = 0.5; fig.tr.bounce.to(S.go - 0.3, S.go, 0);
+  return fig;
+});
+const bySlot = i => FIGS[SLOTS[i]];
+const OUT = {};                         // OUT[f] = { t: when it leaves the course, kind }
+const EVENTS = { boings: [], hits: [], squeaks: [], swoosh: [] };
+
+// the same speed profile as the engine's walk planner (to plan around moving obstacles)
+function walkPlan(D, m) {
+  const N = Math.max(2, Math.round(D / m.L)), shaped = !!m.run && N >= 4;
+  const L = shaped ? D / (N - 4 + 0.62 + 0.86 + 0.8 + 0.58) : D / N, v = L * m.cad;
+  const Ta = m.ta ?? 0.95 / m.cad, Td = m.td ?? 1.05 / m.cad, Tt = D / v + (Ta + Td) / 2;
+  const sAt = tau => {
+    if (tau <= 0) return 0; if (tau >= Tt) return D;
+    if (tau < Ta) return v * (tau / 2 - Ta / (2 * PI) * Math.sin(PI * tau / Ta));
+    if (tau <= Tt - Td) return v * (Ta / 2 + tau - Ta);
+    const r = Tt - tau; return D - v * (r / 2 - Td / (2 * PI) * Math.sin(PI * r / Td));
+  };
+  return { T: Tt, sAt };
+}
+const xNow = (fig, s) => fig.worldRoot(s)[0];
+
+// ---------------------------------------------------------------- 1. start and the big balls
+const BALL_TOP = j => BALLS[j] - 6;
+const SPOTS = [START.x1 - 30, ...BALLS.map((_, j) => BALL_TOP(j)), LANDING.x0 + 70];   // stations 0..5
+const leaveAt = Array(6).fill(-1);       // when the last figure pushed off station k
+const busyTill = Array(6).fill(-1);      // a station held by someone who is not leaving (the dragged one)
+const sweepQueue = [];
+function contactWithBall(fig, s0, s1, j) {
+  // first moment a part of the figure touches ball j (pose before any tumble)
+  for (let s = s0; s < s1; s += 1 / 120) {
+    const J = fig.pose(s);
+    for (const p of [J.ank.L, J.ank.R, J.knee.L, J.knee.R, J.P, J.C]) {
+      const dx = p[0] - BALLS[j], dz = p[2] - BZ;
+      if (dx * dx + dz * dz < (BR + 10) * (BR + 10)) return s;
+    }
+  }
+  return s1;
+}
+const lazyC = (fig, s) => { let c = null; return () => c || (c = fig.pose(s).C); };
+
+for (let i = 0; i < 10; i++) {
+  const fig = bySlot(i), f = fig.f, d = fig.lane;
+  // sprint over the start ramp to the edge, arriving just in time for the first hop
+  const sched = S.go + 1.05 + 0.3 * i;
+  const D0 = SPOTS[0] - xNow(fig, 0), w0 = walkPlan(D0, RUN);
+  const s0 = Math.max(S.go + 0.05 + 0.03 * i, sched - 0.05 - w0.T);
+  let ready = fig.walk(s0, [SPOTS[0], d], RUN, i % 2 ? 'L' : 'R') + 0.04;
+  for (let k = 0; k < 5; k++) {
+    // land only after the one in front has pushed off the next station
+    let t0 = Math.max(ready, leaveAt[k + 1] - JUMP.tc - JUMP.fly + 0.04, busyTill[k + 1] - JUMP.tc - JUMP.fly + 0.05);
+    const to = [SPOTS[k + 1] + (k === 4 ? 30 + 12 * (i % 3) : 0), d];
+    const victim = (f === ROLE.belly && k === 1) || (f === ROLE.boing && k === 2) || (f === ROLE.bouncer && k === 3);
+    if (f === ROLE.dragged && k === 3) break;                     // it never gets to make this hop
+    if (f === ROLE.dragged && k === 2) {                          // it lands on ball 3 just after the bouncer pushed off
+      t0 = Math.max(t0, OUT[ROLE.bouncer].takeoff + 0.2 - JUMP.tc - JUMP.fly);
+    }
+    if (!victim) {
+      fig.jump(t0, to, JUMP);
+      leaveAt[k] = Math.max(leaveAt[k], t0 + JUMP.tc);
+      ready = t0 + JT + 0.06;
+      if (k >= 0 && k <= 3) EVENTS.boings.push({ s: t0 + JUMP.tc + JUMP.fly, vol: -27 });
+      continue;
+    }
+    // a hop that falls short: aim at the side of the next ball
+    const jb = k;                                                   // index of the ball it hits (stations 1..4 = balls 0..3)
+    const aim = [BALLS[jb] - BR * 0.72, d];
+    fig.jump(t0, aim, { ...JUMP, h: 34, fly: 0.34 });
+    leaveAt[k] = Math.max(leaveAt[k], t0 + JUMP.tc);
+    const hit = contactWithBall(fig, t0 + JUMP.tc + 0.05, t0 + JT, jb);
+    EVENTS.boings.push({ s: hit, vol: -13 });
+    if (f === ROLE.belly) {
+      // belly flop on the ball, then a slow slide down its side
+      const C0 = lazyC(fig, hit), thc = 40 * D2R, cx = BALLS[jb], Rc = BR + 16;
+      const thAt = dt => thc + (100 * D2R - thc) * E.in2(clamp((dt - 0.3) / 1.9));
+      const chest = th => [cx - Rc * Math.sin(th), d, BZ + Rc * Math.cos(th)];
+      fig.tumble(hit, {
+        flail: 0.55,
+        path: dt => {
+          const c0 = C0();
+          if (dt < 0.12) return mul(sub(chest(thc), c0), E.out2(dt / 0.12));
+          if (dt < 2.2) return sub(chest(thAt(dt)), c0);
+          const e = dt - 2.2; return add(sub(chest(thAt(2.2)), c0), [-30 * e, 0, -0.5 * 1400 * e * e]);
+        },
+        ang: dt => dt < 0.12 ? (PI / 2 - thc) * E.out2(dt / 0.12) : dt < 2.2 ? PI / 2 - thAt(dt) : PI / 2 - thAt(2.2) - 2 * (dt - 2.2),
+      });
+      EVENTS.squeaks.push({ s: hit + 0.35, dur: 1.8 });
+      OUT[f] = { t: hit, kind: 'belly' };
+    } else if (f === ROLE.boing) {
+      fig.tumble(hit, { v: [-160, -330, 470], spin: -7 });
+      OUT[f] = { t: hit, kind: 'boing' };
+    } else {
+      // bounces back toward the one behind it (who has just landed on the ball before) and takes it along
+      OUT[f] = { t: hit, kind: 'bouncer', takeoff: t0 + JUMP.tc, jb, d };
+    }
+    break;
+  }
+  if (!OUT[f] && f !== ROLE.dragged) sweepQueue.push(fig);
+  // the dragged one and the bouncer are finished below, once the dragged one is on its ball
+  if (f === ROLE.dragged) {
+    const B = fig, A = FIGS[ROLE.bouncer], o = OUT[ROLE.bouncer];
+    const CA = lazyC(A, o.hit = o.t);
+    // the bounce: aim the bouncer's chest at the dragged one's chest 0.42 s later
+    const Tb = 0.42, tCol = o.t + Tb, CB = B.pose(tCol).C;
+    let vB = null;
+    const v = () => vB || (vB = add(mul(sub(add(CB, [-14, 0, 0]), CA()), 1 / Tb), [0, 0, 0.5 * 1400 * Tb]));
+    A.tumble(o.t, {
+      spin: -8,
+      path: dt => {
+        const vv = v();
+        if (dt <= Tb) return [vv[0] * dt, vv[1] * dt, vv[2] * dt - 700 * dt * dt];
+        const p = [vv[0] * Tb, vv[1] * Tb, vv[2] * Tb - 700 * Tb * Tb], e = dt - Tb;
+        return add(p, [-260 * e, -90 * e, (vv[2] - 1400 * Tb) * 0.3 * e - 700 * e * e]);
+      },
+    });
+    B.tumble(tCol, { v: [-330, -110, 260], spin: -6.5 });
+    OUT[ROLE.dragged] = { t: tCol, kind: 'dragged' };
+    o.col = tCol;
+    busyTill[3] = tCol + 0.25;
+    EVENTS.hits.push({ s: tCol, vol: -16 });
+  }
+}
+const REPLAY = { s0: OUT[ROLE.dragged].t - 0.3, x: BALLS[2] + 110 };   // the bounce-back, slowed down
+
+// ---------------------------------------------------------------- 2. the sweeper
+// arms turn clockwise seen from above, so along the lane they sweep toward the runners
+const armTh = (s, arm) => SW.th0 - SW.w * s + (arm === 'high' ? PI : 0);
+const wrap = a => { a = (a + PI) % TAU; return a < 0 ? a + TAU - PI : a - PI; };
+function armHit(x, d, s) {
+  const r = Math.hypot(x - SW.x, d - SW.d);
+  if (r > SW.arm + 22) return null;
+  const ph = Math.atan2(d - SW.d, x - SW.x), wd = 40 / Math.max(r, 40);
+  for (const arm of ['low', 'high']) if (Math.abs(wrap(armTh(s, arm) - ph)) < wd) return arm;
+  return null;
+}
+function passAt(x, d, s0) {
+  const ph = Math.atan2(d - SW.d, x - SW.x);
+  let best = null;
+  for (const arm of ['low', 'high']) {
+    const base = SW.th0 + (arm === 'high' ? PI : 0);
+    // base - w s = ph + 2 pi n  ->  s = (base - ph - 2 pi n) / w
+    let n = Math.floor((base - ph - SW.w * s0) / TAU);
+    for (let k = 0; k < 3; k++, n--) { const s = (base - ph - TAU * n) / SW.w; if (s >= s0 && (!best || s < best.s)) best = { s, arm }; }
+  }
+  return best;
+}
+// along the lane the arm only reaches between XIN and XOUT; a runner waits at XIN, runs to HX and meets exactly one arm there
+const XIN = SW.x - Math.sqrt(SW.arm * SW.arm - SW.d * SW.d) - 12, HX = 2600;
+const DASH = { ...MOOD.run, name: 'dash', ta: 0.3, td: 0.35 };
+SW.th0 = 0; { const p = passAt(XIN, 0, S.sweep + 0.4); SW.th0 = SW.w * (S.sweep + 0.4 - p.s); }
+const SW_EXIT = WALK.x0 + 60;
+const sackQueue = [];
+const WAVES = [];
+for (let w = 0; w * 3 < sweepQueue.length; w++) WAVES.push(passAt(XIN, 0, w ? WAVES[w - 1] + 1.6 : S.sweep + 0.39).s);
+sweepQueue.forEach((fig, j) => {
+  const w = Math.floor(j / 3), d = [-20, 2, 22][j % 3], eIn = WAVES[w];
+  let s = fig.moves[fig.moves.length - 1].t1 + 0.1;
+  // wait on the landing platform, the next pair at the front
+  const x0 = fig.worldRoot(s)[0], spot = XIN - 30 - 70 * w;
+  if (spot - x0 > 15 || Math.abs(fig.worldRoot(s)[1] - d) > 4) s = fig.walk(s, [Math.max(spot, x0 + 20), d], { ...MOOD.walk, L: 70 }, 'R') + 0.1;
+  for (let k = w - 1; k >= 0; k--) { const sp = XIN - 30 - 70 * k, t0 = WAVES[w - k - 1] + 0.3; if (t0 > s && sp > fig.worldRoot(s)[0] + 15) s = fig.walk(t0, [sp, d], { ...MOOD.walk, L: 70 }, 'R') + 0.05; }
+  const sA = fig.walk(Math.max(s, eIn - 0.1), [HX + (j % 3 - 1) * 12, d], DASH, 'R');
+  const xh = HX + (j % 3 - 1) * 12, p = passAt(xh, d, sA - 0.02);
+  EVENTS.swoosh.push({ s: p.s - 0.15 });
+  if (fig.f === ROLE.sweep1 || fig.f === ROLE.sweep2) {
+    // too slow: the arm takes it off the platform, toward the camera
+    if (p.arm === 'high') fig.tr.pz.to(p.s - 0.12, p.s + 0.1, -30, E.io);
+    fig.tumble(p.s, { v: p.arm === 'low' ? [-250, -560, 430] : [-200, -520, 260], spin: p.arm === 'low' ? 10 : -7 });
+    OUT[fig.f] = { t: p.s, kind: 'sweep' };
+    EVENTS.hits.push({ s: p.s, vol: -14 });
+    return;
+  }
+  if (p.arm === 'low') {
+    const tk0 = Math.max(sA + 0.03, p.s - JUMP.tc - JUMP.fly * 0.55);
+    s = fig.jump(tk0, [xh + 120, d], { ...JUMP, h: 72 }) + 0.03;
+  } else {
+    const tr = fig.tr, a0 = p.s - 0.34, b0 = p.s + 0.18;
+    tr.pz.to(a0, a0 + 0.2, -96, E.out2).to(b0, b0 + 0.28, 0, E.io);
+    tr.lean.to(a0, a0 + 0.2, 50, E.out2).to(b0, b0 + 0.28, tr.lean.v0, E.io);
+    tr.head.to(a0, a0 + 0.2, 22, E.out2).to(b0, b0 + 0.28, 0, E.io);
+    s = b0 + 0.05;
+  }
+  fig.sweepDone = fig.walk(s, [SW_EXIT + 40 * (j % 3), d * 0.3], DASH, 'R');
+  sackQueue.push(fig);
+});
+sackQueue.sort((a, b) => a.sweepDone - b.sweepDone);
+ROLE.sack1 = sackQueue[0].f; ROLE.sack2 = sackQueue[1].f;
+{ const last = sackQueue.slice(2).map(f => f.f); const k = rnd() < 0.5 ? 0 : 1; ROLE.winner = last[k]; ROLE.loser = last[1 - k]; }
+
+// ---------------------------------------------------------------- 3. the punching bags
+const sackD = (k, s) => SACK.rope * Math.sin(SACKS[k].A * Math.sin(SACKS[k].w * s + SACKS[k].ph));
+const sackV = (k, s) => sackD(k, s + 0.01) - sackD(k, s - 0.01);
+// a run along the walkway: the first moment it is inside a bag's swing while the bag is in the lane (or null)
+function bagHit(x0, x1, s0) {
+  const pl = walkPlan(x1 - x0, RUN);
+  for (let tau = 0; tau < pl.T; tau += 0.01) {
+    const x = x0 + pl.sAt(tau);
+    for (let k = 0; k < SACKS.length; k++) if (Math.abs(x - SACKS[k].x) < 62 && Math.abs(sackD(k, s0 + tau)) < 66) return { s: s0 + tau, k, dir: Math.sign(sackV(k, s0 + tau)) };
+  }
+  return null;
+}
+const FOOT = [RAMP.x0 - 40, RAMP.x0 - 110];      // where the last two wait at the foot of the ramp
+const rampQueue = [];
+sackQueue.forEach((fig, i) => {
+  const d = [-6, 6, -12, 12][i], x0 = WALK.x0 + 190 - 70 * i;
+  let s = fig.walk(fig.sweepDone + 0.05, [x0, d], { ...MOOD.walk, L: 70 }, 'R') + 0.1;
+  const victim = i < 2, want = [S.sack + 0.3, S.sack + 1.7, S.ramp - 2.9, S.ramp - 2.4][i];
+  const x1 = victim ? WALK.x1 - 60 : FOOT[i - 2];
+  let t0 = Math.max(s, want), hit = null;
+  for (let n = 0; n < 400; n++, t0 += 0.02) {
+    hit = bagHit(x0, x1, t0);
+    if (victim ? hit && hit.k === i && hit.dir < 0 : !hit) break;
+  }
+  fig.walk(t0, [x1, d], RUN, 'R');
+  if (victim) {
+    fig.tumble(hit.s, { v: [90, -620, 300], spin: 6.5 });
+    OUT[fig.f] = { t: hit.s, kind: 'sack' }; EVENTS.hits.push({ s: hit.s, vol: -10, bag: true });
+  } else { fig.sackDone = fig.moves[fig.moves.length - 1].t1; rampQueue.push(fig); }
+});
+
+// ---------------------------------------------------------------- 4. the ramp and the buzzer
+const W_FIG = FIGS[ROLE.winner], L_FIG = FIGS[ROLE.loser];
+let BUZZ_S = null, CHEER_S = null;
+(function ramp() {
+  const s0 = Math.max(S.ramp + 0.1, ...rampQueue.map(f => f.sackDone + 0.15));
+  for (const fig of rampQueue) if (fig !== W_FIG && fig !== L_FIG) { /* should not happen with this seed */ }
+  // the loser goes first and gets nearly to the top
+  const sL = L_FIG.walk(s0, [RAMP.x1 - 70, -18], UPHILL, 'R');
+  L_FIG.tr.lean.to(sL - 0.2, sL, 26, E.io);
+  const ts = sL + 0.02, slope = Math.atan2(RAMP.z1, RAMP.x1 - RAMP.x0), cs = Math.cos(slope), sn = Math.sin(slope);
+  L_FIG.tumble(ts, {
+    flail: 0.8,
+    path: dt => {
+      const e = Math.min(dt, 0.95), sd = 40 * e + 300 * e * e;
+      let p = [-sd * cs, -70 * e * e, -sd * sn];
+      if (dt > 0.95) { const q = dt - 0.95, vs = 40 + 600 * 0.95; p = add(p, [-vs * cs * q * 0.7, -260 * q, -vs * sn * q - 700 * q * q]); }
+      return p;
+    },
+    ang: dt => -0.35 * E.out2(Math.min(1, dt / 0.3)) - (dt > 0.6 ? 2.6 * (dt - 0.6) * (dt - 0.6) : 0),
+  });
+  EVENTS.squeaks.push({ s: ts, dur: 0.9, vol: -12 });
+  OUT[L_FIG.f] = { t: ts, kind: 'ramp' };
+  // the winner: up, across the top, slams the buzzer, arms up
+  const sT = W_FIG.walk(s0 + 0.18, [BUZZ[0] - 58, BUZZ[1]], UPHILL, 'L');
+  BUZZ_S = sT + 0.12;
+  W_FIG.goal('R', (s, J) => [BUZZ[0] - 4, BUZZ[1], BUZZ[2] + 10 + 26 * (1 - sstep(BUZZ_S - 0.16, BUZZ_S, s))], (s, J) => add(J.sh.R, [10, -30, -10]))
+    .to(BUZZ_S - 0.3, BUZZ_S - 0.12, 1, E.io).to(BUZZ_S + 0.16, BUZZ_S + 0.4, 0, E.io);
+  W_FIG.tr.lean.to(BUZZ_S - 0.3, BUZZ_S, 20, E.io).to(BUZZ_S + 0.2, BUZZ_S + 0.5, 3, E.io);
+  W_FIG.turn(BUZZ_S + 0.35, BUZZ_S + 0.85, -90, { steps: 2, lift: 6 });
+  CHEER_S = BUZZ_S + 0.5;
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? 1 : -1;
+    W_FIG.goal(side, (s, J) => add(add(J.sh[side], mul(J.Rt, sg * 30)), [0, 0, 92 + 5 * Math.sin(s * 9 + sg)]), (s, J) => add(J.sh[side], add(mul(J.Rt, sg * 50), [0, 0, 10])))
+      .to(CHEER_S, CHEER_S + 0.22, 1, E.out2);
+  }
+  W_FIG.tr.head.to(CHEER_S - 0.1, CHEER_S + 0.3, -12, E.out2);
+  W_FIG.tr.bounce.to(CHEER_S, CHEER_S + 0.2, 1.6);
+})();
+
+// ---------------------------------------------------------------- splashes: when each one hits the water
+const SPLASH = [];
+for (const fig of FIGS) {
+  const o = OUT[fig.f];
+  if (!o) continue;
+  for (let s = o.t; s < o.t + 4; s += 1 / 60) {
+    const J = fig.pose(s);
+    if (J.C[2] < WATER + 24) { o.splash = s; o.at = [J.C[0], J.C[1]]; SPLASH.push({ f: fig.f, s, x: J.C[0], d: J.C[1], seed: fig.f * 7.1 }); break; }
+  }
+  if (!o.splash) { o.splash = o.t + 1.5; o.at = [fig.worldRoot(o.t)[0], fig.lane - 200]; }
+}
+
+// ---------------------------------------------------------------- camera (scene clock)
+const CAMK = [[0, 60, 0.62], [S.go, 80, 0.62], [3.4, 560, 0.6], [5.0, 1000, 0.6], [6.6, 1330, 0.6], [8.2, 1600, 0.6], [9.4, 1980, 0.6],
+              [S.sweep + 0.2, 2560, 0.6], [S.sack - 0.8, 2700, 0.6], [S.sack + 0.6, 3240, 0.6], [S.ramp - 1.2, 3600, 0.6], [S.ramp + 0.8, 4000, 0.6], [23.2, 4240, 0.66], [S.end, 4330, 0.84]];
+const camAt = s => {
+  let i = 0; while (i < CAMK.length - 2 && s > CAMK[i + 1][0]) i++;
+  const a = CAMK[i], b = CAMK[i + 1], u = E.io(clamp((s - a[0]) / (b[0] - a[0])));
+  return { x: lerp(a[1], b[1], u), zoom: lerp(a[2], b[2], u) };
+};
+const camZ = s => lerp(110, RAMP.z1 + 90, sstep(S.ramp + 0.6, S.ramp + 2.6, s));
+// the camera rises over the sweeper and the bags (so what swings toward the lens reads), and comes down for the ramp
+const CAMH = new Track(620).to(S.sweep - 0.6, S.sweep + 0.6, 1150, E.io).to(S.sack - 0.8, S.sack + 0.4, 900, E.io).to(S.ramp - 1.6, S.ramp, 640, E.io);
+function setCam(s, replay) {
+  cam.D0 = 1600; cam.h = replay ? 620 : CAMH.at(s);
+  let c = camAt(s);
+  if (replay) c = { x: REPLAY.x - 40, zoom: 0.92 };
+  cam.x = c.x; cam.zoom = c.zoom;
+  const zf = replay ? 150 : camZ(s), k0 = cam.zoom * cam.D0 / cam.D0;
+  cam.hy = 690 - (cam.h - zf) * k0;
+}
+
+// ---------------------------------------------------------------- drawing helpers
+const GREY = [150, 152, 158], WHITE = [222, 224, 228];
+const shade = (c, k) => rgb(c.map(v => clamp(v * k, 0, 255)));
+function slab(c, x0, x1, d0, d1, zTop, th, col) {
+  // a platform along x with a top that follows zTop(x), a front face and two legs into the water
+  const n = Math.max(2, Math.ceil((x1 - x0) / 40)), xs = Array.from({ length: n + 1 }, (_, i) => lerp(x0, x1, i / n));
+  // legs
+  for (const lx of [x0 + 30, x1 - 30]) for (const ld of [d1 - 20, d0 + 20]) {
+    const a = P([lx, ld, zTop(lx) - th]), b = P([lx, ld, WATER]);
+    c.save(); c.lineCap = 'butt'; c.strokeStyle = INK; c.lineWidth = 14 * a[2]; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+    c.strokeStyle = shade(GREY, ld > 0 ? 0.45 : 0.6); c.lineWidth = 9 * a[2]; c.stroke(); c.restore();
+  }
+  poly(c, [...xs.map(x => [x, d0, zTop(x)]), ...xs.slice().reverse().map(x => [x, d1, zTop(x)])]);
+  c.fillStyle = shade(col, 1.0); c.fill(); c.strokeStyle = INK; c.lineWidth = 2.5; c.stroke();
+  poly(c, [...xs.map(x => [x, d0, zTop(x)]), ...xs.slice().reverse().map(x => [x, d0, zTop(x) - th])]);
+  c.fillStyle = shade(col, 0.62); c.fill(); c.stroke();
+  // side face at the near end when the camera sees it
+  for (const [x, sg] of [[x0, -1], [x1, 1]]) if ((x - cam.x) * sg < 0) {
+    poly(c, [[x, d0, zTop(x)], [x, d1, zTop(x)], [x, d1, zTop(x) - th], [x, d0, zTop(x) - th]]); c.fillStyle = shade(col, 0.5); c.fill(); c.stroke();
+  }
+}
+function drawBall(c, cx) {
+  const p = P([cx, 0, BZ]), r = BR * p[2], wy = P([cx, 0, WATER])[1];
+  c.save(); c.beginPath(); c.rect(p[0] - r - 10, p[1] - r - 10, 2 * r + 20, wy - (p[1] - r - 10)); c.clip();
+  c.beginPath(); c.arc(p[0], p[1], r + 3, 0, TAU); c.fillStyle = INK; c.fill();
+  const g = c.createRadialGradient(p[0] - r * 0.35, p[1] - r * 0.4, r * 0.05, p[0], p[1], r);
+  g.addColorStop(0, '#f4f5f7'); g.addColorStop(0.35, '#c9ccd2'); g.addColorStop(0.8, '#80848c'); g.addColorStop(1, '#4b4e55');
+  c.beginPath(); c.arc(p[0], p[1], r, 0, TAU); c.fillStyle = g; c.fill();
+  c.beginPath(); c.ellipse(p[0] - r * 0.38, p[1] - r * 0.46, r * 0.2, r * 0.11, -0.6, 0, TAU); c.fillStyle = 'rgba(255,255,255,0.75)'; c.fill();
+  c.restore();
+}
+function drawSweeper(c, s, items) {
+  // disc and centre post (floor layer), arms as depth-sorted pieces
+  const n = 48, top = [], { x, d, R } = SW;
+  for (let i = 0; i < n; i++) { const a = i / n * TAU; top.push([x + R * Math.cos(a), d + R * Math.sin(a), 0]); }
+  // front band
+  const front = []; for (let i = 0; i <= 24; i++) { const a = PI + i / 24 * PI; front.push([x + R * Math.cos(a), d + R * Math.sin(a), 0]); }
+  poly(c, [...front, ...front.slice().reverse().map(p => [p[0], p[1], -34])]); c.fillStyle = shade(GREY, 0.6); c.fill(); c.strokeStyle = INK; c.lineWidth = 2.5; c.stroke();
+  poly(c, top); c.fillStyle = shade(WHITE, 0.92); c.fill(); c.stroke();
+  // rings painted on the disc
+  for (const rr2 of [R * 0.66, R * 0.33]) { c.beginPath(); for (let i = 0; i <= n; i++) { const a = i / n * TAU, q = P([x + rr2 * Math.cos(a), d + rr2 * Math.sin(a), 0]); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); } c.strokeStyle = 'rgba(0,0,0,0.18)'; c.lineWidth = 2; c.stroke(); }
+  // legs under the disc
+  for (const a of [PI * 1.25, PI * 1.75]) { const q0 = P([x + R * 0.8 * Math.cos(a), d + R * 0.8 * Math.sin(a), -34]), q1 = P([x + R * 0.8 * Math.cos(a), d + R * 0.8 * Math.sin(a), WATER]); c.strokeStyle = shade(GREY, 0.5); c.lineWidth = 12 * q0[2]; c.beginPath(); c.moveTo(q0[0], q0[1]); c.lineTo(q1[0], q1[1]); c.stroke(); }
+  // the post
+  items.push({ d: SW.d, draw: () => {
+    const a = P([x, d, 0]), b = P([x, d, SW.highZ + 40]), w = 26 * a[2];
+    c.fillStyle = INK; c.fillRect(a[0] - w - 3, b[1] - 3, 2 * w + 6, a[1] - b[1] + 3);
+    c.fillStyle = shade(WHITE, 0.8); c.fillRect(a[0] - w, b[1], 2 * w, a[1] - b[1]);
+    c.fillStyle = shade(GREY, 0.7); c.fillRect(a[0] - w, b[1], w * 0.6, a[1] - b[1]);
+  } });
+  for (const arm of ['low', 'high']) {
+    const th = armTh(s, arm), z = arm === 'low' ? SW.lowZ : SW.highZ, N = 8;
+    for (let i = 0; i < N; i++) {
+      const r0 = 26 + (SW.arm - 26) * i / N, r1 = 26 + (SW.arm - 26) * (i + 1) / N;
+      const p0 = [x + r0 * Math.cos(th), d + r0 * Math.sin(th), z], p1 = [x + r1 * Math.cos(th), d + r1 * Math.sin(th), z];
+      items.push({ d: (p0[1] + p1[1]) / 2, draw: () => {
+        const a = P(p0), b = P(p1);
+        c.save(); c.lineCap = 'round';
+        c.strokeStyle = INK; c.lineWidth = 32 * a[2]; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+        c.strokeStyle = shade(i % 2 ? WHITE : [150, 154, 162], 1); c.lineWidth = 24 * a[2]; c.stroke();
+        c.restore();
+      } });
+    }
+  }
+}
+function drawSacks(c, s, items) {
+  // the gantry
+  const gx0 = SACKS[0].x - 120, gx1 = SACKS[SACKS.length - 1].x + 120;
+  items.push({ d: 60, draw: () => {
+    for (const gx of [gx0, gx1]) { const a = P([gx, 60, 0]), b = P([gx, 60, SACK.pz + 20]); c.fillStyle = INK; c.fillRect(a[0] - 9 * a[2], b[1], 18 * a[2], a[1] - b[1]); c.fillStyle = shade(GREY, 0.75); c.fillRect(a[0] - 6 * a[2], b[1], 12 * a[2], a[1] - b[1]); }
+    const a = P([gx0, 60, SACK.pz + 10]), b = P([gx1, 60, SACK.pz + 10]);
+    c.strokeStyle = INK; c.lineWidth = 20 * a[2]; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+    c.strokeStyle = shade(GREY, 0.85); c.lineWidth = 14 * a[2]; c.stroke();
+  } });
+  SACKS.forEach((sk, k) => {
+    const al = sk.A * Math.sin(sk.w * s + sk.ph), piv = [sk.x, 0, SACK.pz];
+    const topP = [sk.x, SACK.rope * Math.sin(al), SACK.pz - SACK.rope * Math.cos(al)];
+    const dir = [0, Math.sin(al), -Math.cos(al)], bot = add(topP, mul(dir, SACK.len));
+    items.push({ d: topP[1] + 2, draw: () => {
+      const a = P(piv), b = P(topP), e = P(bot), w = SACK.r * b[2];
+      c.strokeStyle = '#2a2b30'; c.lineWidth = 3; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+      const ang = Math.atan2(e[1] - b[1], e[0] - b[0]) - PI / 2, L = Math.hypot(e[0] - b[0], e[1] - b[1]);
+      c.save(); c.translate(b[0], b[1]); c.rotate(ang);
+      const rr3 = (x, y, wd, ht, r) => { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + wd, y, x + wd, y + ht, r); c.arcTo(x + wd, y + ht, x, y + ht, r); c.arcTo(x, y + ht, x, y, r); c.arcTo(x, y, x + wd, y, r); c.closePath(); };
+      rr3(-w - 3, -3, 2 * w + 6, L + 6, w * 0.7); c.fillStyle = INK; c.fill();
+      const g = c.createLinearGradient(-w, 0, w, 0); g.addColorStop(0, '#9a9da4'); g.addColorStop(0.4, '#e6e7ea'); g.addColorStop(1, '#7c7f86');
+      rr3(-w, 0, 2 * w, L, w * 0.65); c.fillStyle = g; c.fill();
+      c.fillStyle = 'rgba(0,0,0,0.22)'; c.fillRect(-w, L * 0.22, 2 * w, 6 * b[2]); c.fillRect(-w, L * 0.74, 2 * w, 6 * b[2]);
+      c.restore();
+    } });
+  });
+}
+function drawBuzzer(c, s, items) {
+  items.push({ d: BUZZ[1] + 1, draw: () => {
+    const base = P([BUZZ[0], BUZZ[1], RAMP.z1]), top = P([BUZZ[0], BUZZ[1], BUZZ[2]]), w = 16 * base[2];
+    c.fillStyle = INK; c.fillRect(base[0] - w - 3, top[1], 2 * w + 6, base[1] - top[1]);
+    c.fillStyle = shade(WHITE, 0.8); c.fillRect(base[0] - w, top[1], 2 * w, base[1] - top[1]);
+    const lit = BUZZ_S && s > BUZZ_S ? 1 : 0, press = BUZZ_S ? 5 * Math.exp(-Math.pow((s - BUZZ_S) / 0.06, 2)) : 0;
+    c.beginPath(); c.ellipse(top[0], top[1] - 8 * top[2] + press, 30 * top[2], 13 * top[2], 0, 0, TAU); c.fillStyle = INK; c.fill();
+    c.beginPath(); c.ellipse(top[0], top[1] - 9 * top[2] + press, 26 * top[2], 10 * top[2], 0, 0, TAU); c.fillStyle = rgb(mixc([200, 200, 204], WARMC, lit)); c.fill();
+    if (lit) glowAt(top[0], top[1] - 9, 120, WARMC, 0.5 * (0.6 + 0.4 * Math.sin(s * 14)));
+  } });
+}
+function drawLight(c, s) {
+  // the start light: three lamps, red one after the other, then all green
+  const a = P([200, 110, 0]), b = P([200, 110, 330]), w = 8 * a[2];
+  c.fillStyle = INK; c.fillRect(a[0] - w, b[1], 2 * w, a[1] - b[1]);
+  const bx = P([200, 110, 330]), bw = 46 * bx[2], bh = 130 * bx[2];
+  c.fillStyle = INK; c.fillRect(bx[0] - bw / 2 - 3, bx[1] - bh - 3, bw + 6, bh + 6); c.fillStyle = '#222428'; c.fillRect(bx[0] - bw / 2, bx[1] - bh, bw, bh);
+  for (let i = 0; i < 3; i++) {
+    const on = s > 0.5 + 0.5 * i, go = s > S.go, col = go ? [70, 230, 110] : on ? [240, 60, 50] : [60, 60, 64];
+    const y = bx[1] - bh + (0.2 + 0.3 * i) * bh;
+    c.beginPath(); c.arc(bx[0], y, 15 * bx[2], 0, TAU); c.fillStyle = rgb(col); c.fill();
+    if (on || go) glowAt(bx[0], y, 46 * bx[2], col, 0.55);
+  }
+}
+function glowAt(x, y, r, col, a) {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+
+// ---------------------------------------------------------------- water
+const WATERC = [34, 44, 58];
+function drawWater(s) {
+  const hy = P([cam.x, 1e6, WATER])[1];
+  let g = ctx.createLinearGradient(0, 0, 0, hy);
+  g.addColorStop(0, rgb([12, 13, 17])); g.addColorStop(1, rgb([30, 33, 40]));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, hy);
+  // a faint row of floodlights far away
+  for (let i = 0; i < 7; i++) { const x = ((i * 173 - cam.x * 0.08) % 900 + 900) % 900 - 90; glowAt(x, hy - 120, 90, [180, 186, 196], 0.08); }
+  g = ctx.createLinearGradient(0, hy, 0, H);
+  g.addColorStop(0, rgb([44, 54, 68])); g.addColorStop(0.25, rgb(WATERC)); g.addColorStop(1, rgb([12, 16, 22]));
+  ctx.fillStyle = g; ctx.fillRect(0, hy, W, H - hy);
+  // gentle waves: light lines that drift
+  ctx.save(); ctx.lineWidth = 1.5;
+  for (let i = 0; i < 16; i++) {
+    const d = 1500 - i * 130 + 30 * Math.sin(s * 0.7 + i), y0 = P([cam.x, d, WATER])[1];
+    if (y0 > H + 10) continue;
+    ctx.strokeStyle = `rgba(150,170,195,${0.05 + 0.07 * (i / 16)})`;
+    ctx.beginPath();
+    for (let x = -10; x <= W + 10; x += 12) { const wx = cam.x + (x - W / 2) / P([cam.x, d, WATER])[2]; const y = y0 + 3 * Math.sin(wx * 0.012 + s * 1.6 + i) * P([cam.x, d, WATER])[2]; x === -10 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function ripples(s) {
+  for (const sp of SPLASH) {
+    const dt = s - sp.s;
+    if (dt < 0 || dt > 3.2) continue;
+    for (let k = 0; k < 3; k++) {
+      const e = dt - k * 0.25; if (e <= 0) continue;
+      const r = 30 + 170 * Math.sqrt(e), a = 0.5 * (1 - e / 3);
+      ctx.beginPath();
+      for (let i = 0; i <= 40; i++) { const an = i / 40 * TAU, q = P([sp.x + r * Math.cos(an), sp.d + r * Math.sin(an), WATER]); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }
+      ctx.strokeStyle = `rgba(190,205,225,${Math.max(0, a)})`; ctx.lineWidth = 2.2; ctx.stroke();
+    }
+  }
+}
+function splashDrops(s) {
+  for (const sp of SPLASH) {
+    const dt = s - sp.s;
+    if (dt < 0 || dt > 1.4) continue;
+    const r = mulberry32(Math.floor(sp.seed * 1000));
+    // a white column first
+    const col = Math.max(0, 1 - dt / 0.5), cp = P([sp.x, sp.d, WATER]);
+    if (col > 0) {
+      const hgt = 260 * Math.sin(Math.min(1, dt / 0.25) * PI / 2) * cp[2];
+      const g = ctx.createLinearGradient(0, cp[1] - hgt, 0, cp[1]);
+      g.addColorStop(0, 'rgba(230,238,248,0)'); g.addColorStop(0.4, `rgba(230,238,248,${0.7 * col})`); g.addColorStop(1, `rgba(230,238,248,${0.85 * col})`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(cp[0], cp[1] - hgt / 2, 34 * cp[2] * (1 + dt), hgt / 2, 0, 0, TAU); ctx.fill();
+    }
+    for (let i = 0; i < 46; i++) {
+      const an = r() * TAU, sp0 = 120 + 260 * r(), vz = 380 + 520 * r();
+      const p = [sp.x + Math.cos(an) * sp0 * dt, sp.d + Math.sin(an) * sp0 * dt * 0.7, WATER + vz * dt - 0.5 * 1500 * dt * dt];
+      if (p[2] < WATER) continue;
+      const q = P(p);
+      ctx.beginPath(); ctx.arc(q[0], q[1], (2 + 4 * r()) * q[2], 0, TAU); ctx.fillStyle = `rgba(214,226,242,${0.9 * (1 - dt / 1.4)})`; ctx.fill();
+    }
+  }
+}
+// someone who fell in: comes up, bobs, drifts away (just head and arms above the water)
+function floater(fig, s) {
+  const o = OUT[fig.f], dt = s - o.splash - 0.55;
+  if (dt < 0 || dt > 9) return null;
+  const up = E.out2(Math.min(1, dt / 0.5)), x = o.at[0] + 22 * dt, d = o.at[1] - 26 * dt;
+  const z = WATER - 30 + 34 * up + 4 * Math.sin(dt * 3 + fig.f);
+  return { d, draw: () => {
+    const hc = P([x, d, z + 20]), k = hc[2], r = DIM.headR * k;
+    const wy = P([x, d, WATER])[1];
+    ctx.save(); ctx.beginPath(); ctx.rect(hc[0] - 80 * k, 0, 160 * k, wy); ctx.clip();
+    // arms paddling
+    for (const sg of [-1, 1]) {
+      const a = P([x + sg * 14, d, z - 10]), b = P([x + sg * 48, d, z + 6 + 10 * Math.sin(dt * 7 + sg)]);
+      ctx.lineCap = 'round'; ctx.strokeStyle = INK; ctx.lineWidth = (DIM.limbW + 2 * DIM.outline) * k; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      ctx.strokeStyle = rgb(fig.col); ctx.lineWidth = DIM.limbW * k; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(hc[0], hc[1], r + DIM.outline * k, 0, TAU); ctx.fillStyle = INK; ctx.fill();
+    ctx.beginPath(); ctx.arc(hc[0], hc[1], r, 0, TAU); ctx.fillStyle = rgb(fig.col); ctx.fill();
+    ctx.restore();
+    ctx.beginPath(); ctx.ellipse(hc[0], wy, 46 * k, 8 * k, 0, 0, TAU); ctx.strokeStyle = 'rgba(190,205,225,0.45)'; ctx.lineWidth = 2; ctx.stroke();
+  } };
+}
+
+// ---------------------------------------------------------------- HUD, confetti
+function hud(t, sLive) {
+  captionAt(t, 'PICK A COLOR.', 0.25, 99, 44, 10, 112);
+  const y = 186, gap = 62, x0 = W / 2 - gap * 4.5;
+  COLORS.forEach(([, col], f) => {
+    const x = x0 + f * gap, o = OUT[f], tx = o ? o.splash + 0.3 : 1e9;
+    const a = sstep(0.4 + f * 0.05, 0.7 + f * 0.05, t);
+    const pop = sLive > tx ? 1 + 0.45 * Math.exp(-(sLive - tx) / 0.09) : 1;
+    ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.scale(pop, pop);
+    if (sLive < tx) {
+      ctx.beginPath(); ctx.arc(0, 0, 15, 0, TAU); ctx.fillStyle = INK; ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, 12, 0, TAU); ctx.fillStyle = rgb(col); ctx.fill();
+    } else {
+      ctx.strokeStyle = rgb([120, 120, 124]); ctx.lineWidth = 5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-10, -10); ctx.lineTo(10, 10); ctx.moveTo(10, -10); ctx.lineTo(-10, 10); ctx.stroke();
+    }
+    ctx.restore();
+    if (f === ROLE.winner && sLive > BUZZ_S + 0.1) {
+      const k = E.over(inv(BUZZ_S + 0.1, BUZZ_S + 0.5, sLive));
+      ctx.save(); ctx.translate(x, y - 34 + 10 * (1 - k)); ctx.scale(k, k); ctx.globalAlpha = sstep(BUZZ_S + 0.1, BUZZ_S + 0.2, sLive);
+      ctx.beginPath(); ctx.moveTo(-15, 8); ctx.lineTo(-17, -10); ctx.lineTo(-7, -1); ctx.lineTo(0, -14); ctx.lineTo(7, -1); ctx.lineTo(17, -10); ctx.lineTo(15, 8); ctx.closePath();
+      ctx.fillStyle = rgb(WARMC); ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.restore();
+      glowAt(x, y - 34, 50, WARMC, 0.25 * k);
+    }
+  });
+}
+const CONF = (() => { const r = mulberry32(99), out = []; for (let i = 0; i < 150; i++) out.push({ x: r() * 760 - 20, y0: -40 - r() * 500, v: 160 + 160 * r(), ph: r() * TAU, w: 5 + 5 * r(), col: COLORS[i % 10][1], spin: 4 + 8 * r() }); return out; })();
+function confetti(s) {
+  if (!BUZZ_S || s < BUZZ_S + 0.1) return;
+  const dt = s - BUZZ_S - 0.1;
+  for (const p of CONF) {
+    const y = p.y0 + p.v * dt, x = p.x + 26 * Math.sin(dt * 2.3 + p.ph);
+    if (y < -20 || y > H + 20) continue;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(p.spin * dt + p.ph); ctx.scale(1, Math.abs(Math.sin(dt * p.spin + p.ph)) + 0.15);
+    ctx.fillStyle = rgb(p.col); ctx.fillRect(-p.w / 2, -p.w * 0.35, p.w, p.w * 0.7); ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------- the picture
+function drawScene(s, replay) {
+  setCam(s, replay);
+  drawWater(s);
+  ripples(s);
+  // things floating in the water (behind the course)
+  for (const fig of FIGS) if (OUT[fig.f]) { const fl = floater(fig, s); if (fl) fl.draw(); }
+  // the course: platforms first, balls, then everything that stands or moves, sorted by depth
+  slab(ctx, START.x0, START.x1, -95, 95, startZ, 34, [176, 178, 184]);
+  for (const cx of BALLS) drawBall(ctx, cx);
+  slab(ctx, LANDING.x0, LANDING.x1, -110, 110, () => 0, 30, [176, 178, 184]);
+  const items = [];
+  drawSweeper(ctx, s, items);
+  slab(ctx, WALK.x0, WALK.x1, -WALK.hw, WALK.hw, () => 0, 22, [196, 198, 204]);
+  slab(ctx, RAMP.x0, RAMP.x1, -RAMP.hw, RAMP.hw, x => RAMP.z1 * (x - RAMP.x0) / (RAMP.x1 - RAMP.x0), 26, [210, 212, 216]);
+  slab(ctx, TOP.x0, TOP.x1, -RAMP.hw - 20, RAMP.hw + 20, () => RAMP.z1, 30, [176, 178, 184]);
+  if (cam.x < 900) drawLight(ctx, s);
+  drawSacks(ctx, s, items);
+  drawBuzzer(ctx, s, items);
+  const standing = [];
+  for (const fig of FIGS) {
+    const o = OUT[fig.f];
+    if (o && s > o.splash) continue;
+    const J = fig.pose(s);
+    if (!J.tumble && Math.abs(J.P[0] - cam.x) < 900) standing.push(J);
+    items.push({ d: J.P[1], draw: () => drawFigure(ctx, fig, J) });
+  }
+  standing.forEach(J => contactShadow(ctx, J, 0.5));
+  items.sort((a, b) => b.d - a.d).forEach(it => it.draw());
+  splashDrops(s);
+  confetti(s);
+}
+
+function draw(t) {
+  const replay = t > T.replay0 && t < T.replay1;
+  const s = replay ? REPLAY.s0 + (t - T.replay0) * T.replaySpeed : sceneOf(t);
+  drawScene(s, replay);
+  vignette(replay ? 0.85 : 0.6);
+  const sLive = replay ? T.replay0 : s;
+  hud(t, sLive);
+  if (replay) {
+    // REPLAY: small, top left under the HUD, with a blinking dot; thin bars top and bottom
+    const a = sstep(T.replay0, T.replay0 + 0.12, t) * (1 - sstep(T.replay1 - 0.12, T.replay1, t));
+    ctx.save(); ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 232, W, 6); ctx.fillRect(0, H - 120, W, 6);
+    ctx.font = '800 26px "JetBrains Mono", "DejaVu Sans Mono", monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(244,242,236,0.95)'; ctx.fillText('REPLAY', 70, 270);
+    if (Math.floor(t * 3) % 2 === 0) { ctx.beginPath(); ctx.arc(48, 270, 9, 0, TAU); ctx.fillStyle = rgb([236, 66, 56]); ctx.fill(); }
+    ctx.font = '700 22px "JetBrains Mono", "DejaVu Sans Mono", monospace'; ctx.fillStyle = 'rgba(244,242,236,0.7)'; ctx.fillText('0.3x', 600, 270);
+    ctx.restore();
+  }
+  captionAt(t, 'DID YOURS MAKE IT?', T.text0, T.end + 1, 40, 9, 1090);
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(fig => [fig, 0, OUT[fig.f] ? OUT[fig.f].t - 0.06 : S.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.end0, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  // everything in film time (the replay pauses the scene clock for 1.2 s)
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) {
+    const o = OUT[f.f];
+    if (c.type === 'tumble' || (o && c.t > o.t)) continue;
+    steps.push({ ...c, t: filmOf(c.t), onBall: c.type === 'land' && BALLS.some(x => Math.abs(f.worldRoot(c.t)[0] - x) < BR) });
+  }
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  const fo = arr => arr.map(e => ({ ...e, t: filmOf(e.s) }));
+  const story = { ...T, go: S.go, beeps: [0.5, 1.0, 1.5], boings: fo(EVENTS.boings), hits: fo(EVENTS.hits), squeaks: fo(EVENTS.squeaks), swoosh: fo(EVENTS.swoosh),
+    splashes: SPLASH.map(sp => ({ t: filmOf(sp.s), name: COLORS[sp.f][0] })), pops: Object.values(OUT).map(o => filmOf(o.splash + 0.3)).sort((a, b) => a - b),
+    buzz: filmOf(BUZZ_S), cheer: filmOf(CHEER_S), replayHit: T.replay0 + (OUT[ROLE.dragged].t - REPLAY.s0) / T.replaySpeed,
+    winner: COLORS[ROLE.winner][0], out: Object.entries(OUT).map(([f, o]) => `${COLORS[f][0]} ${o.kind} ${filmOf(o.t).toFixed(2)}`) };
+  return { story, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
