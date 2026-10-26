@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Last Words</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   THE LAST WORDS: a fight in the kitchen, he storms out with the car
+   keys, the door slams. A car in the rain at night, headlights from the
+   right, white, black, a bang in the dark (the accident itself is never
+   shown). Blue lights on a wet street. Back in the kitchen she stares at
+   a message she typed and never sent. Blue light is the only colour.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds)
+const T = {
+  fadeIn: 0.5,
+  get0: 2.8, get1: 4.5,            // GET OUT. (she points at the door)
+  leave: 4.45,                     // he turns away and goes
+  slam: 5.86,                      // the door slams
+  car: 6.0,                        // cut: the car in the rain
+  lights: 8.45,                    // headlights from the right
+  black: 9.0, crash: 9.17,         // hard cut to black, the bang
+  after: 9.5,                      // blue lights on the street
+  home: 13.0,                      // back in the kitchen
+  phone0: 14.05, phone1: 14.6,     // into the close-up of her phone
+  text0: 14.5, text1: 17.5,        // SHE NEVER SENT IT.
+  text2: 17.5, text3: 19.6,        // NEVER LET ANGER / HAVE THE LAST WORD.
+  end0: 19.0, end: 20.0,
+  stills: [3.4, 8.8, 13.5, 18.2],
+};
+const SCENE = t => t < T.car ? 'kitchen' : t < T.black ? 'car' : t < T.after ? 'black' : t < T.home ? 'street' : 'home';
+const BLUE = [70, 130, 255], COLD = [196, 202, 214];
+
+// ---------------------------------------------------------------- the kitchen
+const WALL = 300;
+const LAMP = [300, 120, 530];
+const DOOR = { x0: 612, x1: 692, z1: 292 };
+const WIN = { x0: 236, x1: 396, z0: 156, z1: 330 };
+const COUNTER = { x0: 470, x1: 600, d0: 236, d1: 296, z: 140 };
+const KEYS = [576, 252, COUNTER.z + 3];
+const TABLE = { x0: 150, x1: 262, d0: 84, d1: 156, z: 142 };
+const SEAT = 84, PF = -80;
+
+const SHE = new Fig('SHE', { x: 262, d: 110, yaw: 0, seed: 2.2 });
+const HE = new Fig('HE', { x: 470, d: 110, yaw: 180, seed: 4.4 });
+const SHE2 = new Fig('SHE2', { x: 216, d: 120, yaw: 0, seed: 3.3 });
+const pole = (F, side, dz = -60) => (t, J) => add(add(J.sh[side], add(mul(J.Ft, -16), mul(J.Rt, (side === 'R' ? 1 : -1) * 44))), [0, 0, dz]);
+const FORCED = { ...MOOD.forced, name: 'storm', L: 140, cad: 2.4, ta: 0.4, td: 0.42 };
+let GRAB = null;                                   // when he picks up the keys
+
+(function fight() {
+  // him: chopping hands, throws them up twice, leans in; then turns and storms out
+  const F = HE, tr = F.tr;
+  const chop = side => (t, J) => { const sg = side === 'R' ? 1 : -1, ph = sg * 0.8; return add(add(add(J.N, mul(J.Ft, 42 + 14 * Math.sin(t * 7 + ph))), mul(J.Rt, sg * 18)), [0, 0, -34 + 22 * Math.abs(Math.sin(t * 5.5 + ph))]); };
+  const up = side => (t, J) => add(add(J.sh[side], mul(J.Rt, (side === 'R' ? 1 : -1) * 34)), [0, 0, 96]);
+  for (const side of ['R', 'L']) {
+    F.goal(side, chop(side), pole(F, side, -30)).to(0.4, 0.6, 1, E.io).to(2.2, 2.4, 0, E.io);
+    F.goal(side, up(side), pole(F, side, 20)).to(0.95, 1.12, 1, E.out2).to(1.45, 1.75, 0, E.io).to(2.35, 2.52, 1, E.out2).to(2.85, 3.2, 0, E.io);
+  }
+  tr.lean.to(0.4, 0.8, 12, E.io).to(0.95, 1.15, -4, E.out2).to(1.5, 1.9, 10, E.io).to(2.35, 2.55, -5, E.out2).to(3.0, 3.5, 4, E.io);
+  tr.head.to(0.95, 1.15, -14, E.out2).to(1.5, 1.8, 0, E.io).to(2.35, 2.55, -16, E.out2).to(3.0, 3.4, 6, E.io);
+  tr.shDrop.v0 = -3;
+  // he stares at her pointing, then goes
+  F.turn(T.leave, T.leave + 0.32, 60, { steps: 2, lift: 6, mood: 'forced' });
+  F.walk(T.leave + 0.33, [DOOR.x0 + 38, WALL + 60], FORCED, 'R');
+  // picks up the keys on the way past the counter
+  let best = 1e9;
+  for (let t = T.leave + 0.4; t < 6; t += 1 / 60) { const r = F.worldRoot(t), dd = Math.hypot(r[0] - KEYS[0], r[1] - KEYS[1]); if (dd < best) { best = dd; GRAB = t; } }
+  F.goal('R', () => KEYS, pole(F, 'R', -50)).to(GRAB - 0.2, GRAB, 1, E.io).to(GRAB + 0.04, GRAB + 0.3, 0, E.io);
+  // her: quick gestures, then points at the door, then folds her arms
+  const S = SHE, ts = S.tr;
+  const wave = side => (t, J) => { const sg = side === 'R' ? 1 : -1, ph = sg * 1.4 + 0.5; return add(add(add(J.N, mul(J.Ft, 40 + 16 * Math.sin(t * 6.3 + ph))), mul(J.Rt, sg * (14 + 12 * Math.sin(t * 4.1 + ph)))), [0, 0, -38 + 18 * Math.sin(t * 5.2 + ph)]); };
+  for (const side of ['R', 'L']) S.goal(side, wave(side), pole(S, side, -30)).to(0.3, 0.55, 1, E.io).to(2.5, 2.75, 0, E.io);
+  const doorDir = norm([DOOR.x0 + 40 - 262, (WALL - 110) * 1.6, 0]);
+  S.goal('R', (t, J) => add(add(J.sh.R, mul(doorDir, 70)), [0, 0, 72]), pole(S, 'R', 10)).to(T.get0 - 0.15, T.get0 + 0.05, 1, E.out2).to(T.get1 - 0.1, T.get1 + 0.25, 0, E.io);
+  ts.hyaw.to(T.get0 - 0.1, T.get0 + 0.15, 30, E.io).to(T.get1, T.get1 + 0.4, 0, E.io);
+  ts.lean.to(0.3, 0.6, 9, E.io).to(T.get0 - 0.1, T.get0 + 0.1, 14, E.out2).to(T.get1, T.get1 + 0.5, 3, E.io);
+  ts.shDrop.v0 = -3;
+  // follows him with her eyes, then folds her arms
+  ts.hyaw.to(4.9, 5.4, 34, E.io);
+  for (const side of ['R', 'L']) S.goal(side, (t, J) => add(add(J.C, mul(J.Ft, 18)), add(mul(J.Rt, (side === 'R' ? -1 : 1) * 14), [0, 0, side === 'R' ? 8 : 0])), pole(S, side, -40)).to(5.3 + (side === 'L' ? 0.08 : 0), 5.7, 1, E.io);
+  ts.head.to(5.8, 6.0, 8, E.io);
+})();
+
+// ---------------------------------------------------------------- the end: she sits alone with the phone
+(function alone() {
+  const F = SHE2, tr = F.tr;
+  tr.pf.v0 = PF; tr.pz.v0 = SEAT + 7 - H0; tr.lean.v0 = 20; tr.slump.v0 = 12; tr.head.v0 = 30; tr.shDrop.v0 = 4; tr.idle.v0 = 0.5; tr.breath.v0 = 0.7;
+  const grip = side => (t, J) => { const st = phoneOf(J); return add(add(st.c, mul(st.r, (side === 'R' ? 1 : -1) * 6)), mul(st.n, -2.5)); };
+  for (const side of ['R', 'L']) F.goal(side, grip(side), pole(F, side)).v0 = 1;
+})();
+function phoneOf(J) {
+  const th = 30 * D2R;
+  const c = add(add(J.N, mul(J.Ft, 36)), [0, 0, -58]);
+  const a = norm(add(mul(J.Ft, Math.cos(th)), [0, 0, Math.sin(th)])), n = norm(add(mul(J.Ft, -Math.sin(th)), [0, 0, Math.cos(th)]));
+  const r = norm([n[1] * a[2] - n[2] * a[1], n[2] * a[0] - n[0] * a[2], n[0] * a[1] - n[1] * a[0]]);
+  return { c, a, n, r };
+}
+
+// ---------------------------------------------------------------- the street afterwards: two helpers running
+const H1 = new Fig('H1', { x: -120, d: 20, yaw: 0, seed: 7.1 });
+const H2 = new Fig('H2', { x: 210, d: -30, yaw: 180, seed: 8.3 });
+(function helpers() {
+  const JOG = { ...MOOD.jog, name: 'hurry' };
+  let t = H1.walk(T.after - 0.6, [150, 60], JOG, 'R');
+  H1.turn(t + 0.05, t + 0.45, 180, { steps: 2, lift: 6 });
+  H1.walk(t + 0.5, [-60, 10], JOG, 'L');
+  let u = H2.walk(T.after - 0.2, [-110, -10], JOG, 'L');
+  H2.turn(u + 0.05, u + 0.45, 0, { steps: 2, lift: 6 });
+  H2.walk(u + 0.5, [120, -40], JOG, 'R');
+  for (const F of [H1, H2]) F.tr.lean.to(T.after - 0.6, T.after, 10, E.io);
+})();
+const FIGS = [SHE, HE, SHE2, H1, H2];
+
+// ---------------------------------------------------------------- shared bits
+function glowAt(x, y, r, col, a, op = 'lighter') {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = op;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+// blue lights: a double flash, about twice a second, each light on its own phase
+const flash = (t, ph) => { const u = ((t * 1.9 + ph) % 1 + 1) % 1; return 0.18 + 0.82 * Math.max(Math.exp(-Math.pow((u - 0.1) / 0.075, 2)), 0.85 * Math.exp(-Math.pow((u - 0.33) / 0.075, 2))); };
+const RAIN = (() => { const r = mulberry32(5), o = []; for (let i = 0; i < 170; i++) o.push({ x: r() * 900 - 90, y: r() * 1400, v: 1400 + 700 * r(), l: 18 + 26 * r(), a: 0.12 + 0.2 * r() }); return o; })();
+function rain(t, amt, wind = 0.18) {
+  ctx.save(); ctx.lineCap = 'round';
+  for (const p of RAIN) {
+    const y = (p.y + p.v * t) % 1400 - 60, x = ((p.x - wind * p.v * t) % 900 + 900) % 900 - 90;
+    ctx.strokeStyle = `rgba(200,208,222,${p.a * amt})`; ctx.lineWidth = 1.3;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + wind * p.l, y + p.l); ctx.stroke();
+  }
+  ctx.restore();
+}
+function lampAt(lp, col, a) {
+  ctx.save();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], 0); ctx.lineTo(lp[0], lp[1] - 46); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lp[0] - 12, lp[1] - 48); ctx.lineTo(lp[0] + 12, lp[1] - 48); ctx.lineTo(lp[0] + 52, lp[1]); ctx.lineTo(lp[0] - 52, lp[1]); ctx.closePath();
+  ctx.fillStyle = '#121214'; ctx.fill(); ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 52, 7, 0, 0, TAU); ctx.fillStyle = rgb(col); ctx.fill();
+  ctx.restore();
+  glowAt(lp[0], lp[1] + 6, 190, col, a);
+}
+const flat = (k, c = [64, 66, 72]) => ({ front: rgb(c.map(v => v * k)), top: rgb(c.map(v => v * k * 1.25)), side: rgb(c.map(v => v * k * 0.8)), edge: 'rgba(0,0,0,0.35)' });
+function wallRect(c, x0, x1, z0, z1, d = WALL) { poly(c, [[x0, d, z0], [x1, d, z0], [x1, d, z1], [x0, d, z1]]); }
+
+// ---------------------------------------------------------------- the kitchen (fight, and later alone)
+function drawKitchen(t, alone) {
+  const blueOut = alone ? 0.5 + 0.5 * flash(t * 0.9, 0.3) : 0;      // far away blue light through the window
+  cam.D0 = 900; cam.x = alone ? lerp(300, 250, sstep(T.home, T.phone0, t)) : 420; cam.zoom = alone ? lerp(1.15, 1.45, sstep(T.home, T.phone0 + 0.4, t)) : 1.12;
+  cam.hy = alone ? lerp(640, 600, sstep(T.home, T.phone0, t)) : 640; cam.h = 270;
+  const floorY = P([0, WALL, 0])[1];
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb([10, 11, 14])); g.addColorStop(1, rgb([30, 32, 38]));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb([38, 40, 46])); g.addColorStop(1, rgb([12, 13, 16]));
+  ctx.fillStyle = g; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, floorY - 2, W, 4);
+  const lp = P(LAMP), fp = P([LAMP[0] + 40, 80, 0]);
+  g = ctx.createRadialGradient(lp[0], floorY - 80, 10, lp[0], floorY - 80, 560);
+  g.addColorStop(0, rgb(COLD, 0.2)); g.addColorStop(1, rgb(COLD, 0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  ctx.save(); ctx.translate(fp[0], fp[1]); ctx.scale(1, 0.22);
+  g = ctx.createRadialGradient(0, 0, 0, 0, 0, 420); g.addColorStop(0, rgb(COLD, 0.28)); g.addColorStop(0.5, rgb(COLD, 0.08)); g.addColorStop(1, rgb(COLD, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 420, 0, TAU); ctx.fill(); ctx.restore();
+  // window (night outside; later a far blue flicker), door
+  wallRect(ctx, WIN.x0 - 6, WIN.x1 + 6, WIN.z0 - 6, WIN.z1 + 6); ctx.fillStyle = '#2a2c32'; ctx.fill();
+  wallRect(ctx, WIN.x0, WIN.x1, WIN.z0, WIN.z1); ctx.fillStyle = rgb(mixc([8, 9, 12], [14, 26, 52], blueOut * (alone ? 1 : 0))); ctx.fill();
+  if (alone) { const wc = P([(WIN.x0 + WIN.x1) / 2, WALL, (WIN.z0 + WIN.z1) / 2]); ctx.save(); wallRect(ctx, WIN.x0, WIN.x1, WIN.z0, WIN.z1); ctx.clip(); glowAt(wc[0] + 50, wc[1] + 40, 120, BLUE, 0.35 * blueOut); ctx.restore(); }
+  ctx.strokeStyle = '#2a2c32'; ctx.lineWidth = 4; ctx.beginPath(); const m0 = P([(WIN.x0 + WIN.x1) / 2, WALL, WIN.z0]), m1 = P([(WIN.x0 + WIN.x1) / 2, WALL, WIN.z1]); ctx.moveTo(m0[0], m0[1]); ctx.lineTo(m1[0], m1[1]); ctx.stroke();
+  // the door: the frame, the dark doorway while it is open, the panel
+  const open = alone ? 0 : sstep(5.3, 5.5, t) * (1 - sstep(T.slam - 0.08, T.slam, t));
+  wallRect(ctx, DOOR.x0 - 7, DOOR.x1 + 7, 0, DOOR.z1 + 7); ctx.fillStyle = '#2a2c32'; ctx.fill();
+  wallRect(ctx, DOOR.x0, DOOR.x1, 0, DOOR.z1); ctx.fillStyle = '#050506'; ctx.fill();
+  const px = lerp(DOOR.x0, DOOR.x1 - 6, open);
+  wallRect(ctx, px, DOOR.x1, 0, DOOR.z1); ctx.fillStyle = rgb([58, 60, 66].map(v => v * (1 - 0.35 * open))); ctx.fill();
+  const kn = P([px + 12, WALL, 140]); ctx.beginPath(); ctx.arc(kn[0], kn[1], 3.5, 0, TAU); ctx.fillStyle = '#9a9ca2'; ctx.fill();
+  // furniture and figures
+  const figs = alone ? [SHE2] : [SHE, HE], poses = figs.map(f => f.pose(t));
+  const items = c => {
+    const list = [
+      { d: COUNTER.d1, draw: () => { box(c, { x0: COUNTER.x0, x1: COUNTER.x1, d0: COUNTER.d0, d1: COUNTER.d1, z0: 0, z1: COUNTER.z }, flat(1)); if (!alone && (!GRAB || t < GRAB)) drawKeys(c, KEYS); } },
+      { d: TABLE.d1 + 2, draw: () => drawTable(c) },
+      { d: 150, draw: () => drawChair(c, 76) },
+    ];
+    figs.forEach((f, i) => {
+      const J = poses[i];
+      list.push({ d: J.P[1], draw: () => {
+        // through the doorway: only what is inside the door opening shows
+        if (f === HE && J.P[1] > WALL - 18) { c.save(); wallRect(c, DOOR.x0, DOOR.x1, 0, DOOR.z1); c.clip(); drawFigure(c, f, J); c.restore(); }
+        else if (f === HE && t > T.slam - 0.05) return;
+        else drawFigure(c, f, J, f === SHE2 ? { props: [{ d: phoneOf(J).c[1] - 1.5, draw: () => drawPhone(c, phoneOf(J), t) }] } : {});
+        if (f === HE && GRAB && t >= GRAB) drawKeys(c, add(J.hand.R, [0, -1, -6]));
+      } });
+    });
+    list.sort((a, b) => b.d - a.d).forEach(it => it.draw());
+  };
+  reflection(items, floorY, 0.25);
+  poses.forEach((J, i) => { if (!(figs[i] === HE && J.P[1] > WALL - 18)) contactShadow(ctx, J, 0.55); });
+  items(ctx);
+  if (alone) { const p = phoneOf(poses[0]), q = P(add(p.c, mul(p.n, 3))); glowAt(q[0], q[1] - 10, 120, COLD, 0.35); }
+  lampAt(lp, COLD, 0.42);
+  if (alone) glowAt(P([WIN.x1, WALL, WIN.z0])[0], P([WIN.x1, WALL, WIN.z0])[1], 260, BLUE, 0.06 * blueOut);
+  vignette(0.78);
+}
+function drawKeys(c, p) {
+  const q = P(p), k = q[2];
+  c.save(); c.lineWidth = 2.4 * k; c.strokeStyle = INK;
+  c.beginPath(); c.arc(q[0], q[1], 6 * k, 0, TAU); c.stroke(); c.strokeStyle = '#b8bac0'; c.lineWidth = 1.2 * k; c.stroke();
+  c.fillStyle = '#9ea0a6'; c.fillRect(q[0] + 4 * k, q[1] - 1.5 * k, 12 * k, 3 * k);
+  c.restore();
+}
+function drawTable(c) {
+  const { x0, x1, d0, d1, z } = TABLE;
+  for (const [lx, ld] of [[x0 + 6, d1 - 10], [x1 - 14, d1 - 10], [x0 + 6, d0 + 2], [x1 - 14, d0 + 2]]) box(c, { x0: lx, x1: lx + 8, d0: ld, d1: ld + 8, z0: 0, z1: z - 8 }, flat(ld > d0 + 10 ? 0.7 : 1));
+  box(c, { x0: x0 - 6, x1: x1 + 6, d0: d0 - 4, d1: d1 + 4, z0: z - 8, z1: z }, flat(1.15));
+}
+function drawChair(c, x0) {
+  const x1 = x0 + 62, d0 = 92, d1 = 148;
+  for (const [lx, ld] of [[x0 + 4, d1 - 8], [x1 - 10, d1 - 8], [x0 + 4, d0 + 2], [x1 - 10, d0 + 2]]) box(c, { x0: lx, x1: lx + 6, d0: ld, d1: ld + 6, z0: 0, z1: SEAT - 6 }, flat(0.8));
+  box(c, { x0, x1, d0, d1, z0: SEAT - 6, z1: SEAT }, flat(1.05));
+  box(c, { x0, x1: x0 + 7, d0, d1, z0: SEAT, z1: SEAT + 120 }, flat(0.95));
+}
+function drawPhone(c, st, t) {
+  const L = 13, Wd = 6.5;
+  const pt = (sa, sw, sn) => add(add(add(st.c, mul(st.a, sa * L)), mul(st.r, sw * Wd)), mul(st.n, sn * 1.3));
+  const face = sn => [pt(-1, -1, sn), pt(1, -1, sn), pt(1, 1, sn), pt(-1, 1, sn)];
+  const k = P(st.c)[2];
+  c.save(); c.lineJoin = 'round';
+  for (const sn of [-1, 1]) { poly(c, face(sn)); c.fillStyle = '#16171a'; c.fill(); c.lineWidth = 2.6 * k; c.strokeStyle = INK; c.stroke(); }
+  poly(c, face(1)); c.fillStyle = rgb([210, 218, 232]); c.fill();
+  c.restore();
+}
+
+// ---------------------------------------------------------------- the car in the rain
+const CAR_V = 980;
+const carX = t => CAR_V * (t - T.car);
+function drawCarScene(t) {
+  cam.D0 = 900; cam.zoom = 1.15; cam.h = 260; cam.hy = 700;
+  const cx = carX(t); cam.x = cx + 50;
+  // sky and a far skyline (parallax)
+  let g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, rgb([6, 7, 10])); g.addColorStop(0.55, rgb([16, 18, 24])); g.addColorStop(1, rgb([8, 9, 12]));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const roadY = P([cam.x, 400, 0])[1];
+  ctx.fillStyle = '#0d0e12';
+  for (let i = -2; i < 12; i++) { const bx = ((i * 140 - cam.x * 0.15) % 1680 + 1680) % 1680 - 200, hgt = 80 + ((i * 53) % 7) * 26; ctx.fillRect(bx, roadY - hgt - 40, 110, hgt + 40); }
+  // road
+  const y0 = P([cam.x, 260, 0])[1];
+  g = ctx.createLinearGradient(0, y0, 0, H); g.addColorStop(0, rgb([24, 26, 32])); g.addColorStop(1, rgb([10, 11, 14]));
+  ctx.fillStyle = g; ctx.fillRect(0, y0, W, H - y0);
+  // street lamps rushing past, each with a pool of light and a streak on the wet road
+  for (let k = Math.floor((cam.x - 700) / 420); k < (cam.x + 700) / 420; k++) {
+    const x = k * 420, a = P([x, 240, 0]), b = P([x, 240, 380]), r = P([x + 30, 240, 360]);
+    ctx.strokeStyle = '#25272c'; ctx.lineWidth = 6 * a[2]; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(r[0], r[1]); ctx.stroke();
+    glowAt(r[0], r[1] + 6, 120, COLD, 0.32);
+    const fl = P([x + 30, 60, 0]);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; const gg = ctx.createLinearGradient(0, fl[1] - 20, 0, fl[1] + 160); gg.addColorStop(0, rgb(COLD, 0.12)); gg.addColorStop(1, rgb(COLD, 0));
+    ctx.fillStyle = gg; ctx.fillRect(fl[0] - 14, fl[1] - 20, 28, 180); ctx.restore();
+  }
+  // lane dashes
+  ctx.fillStyle = 'rgba(180,184,192,0.35)';
+  for (let k = Math.floor((cam.x - 800) / 160); k < (cam.x + 800) / 160; k++) { const a = P([k * 160, -70, 0]), b = P([k * 160 + 80, -70, 0]); ctx.fillRect(a[0], a[1] - 2, b[0] - a[0], 4); }
+  drawCar(ctx, cx, t, true);
+  rain(t, 1.0, 0.45);
+  // headlights coming from the right: two points that grow, then everything goes white
+  const L = sstep(T.lights, T.black - 0.05, t);
+  if (L > 0) {
+    const hx = lerp(W + 120, W * 0.62, E.in2(L)), hy = P([cx, 0, 60])[1];
+    for (const dy of [-0.5, 0.5]) glowAt(hx, hy + dy * 40 * (1 + 3 * L), 60 + 520 * L * L, [240, 244, 255], 0.5 + 0.5 * L);
+    ctx.fillStyle = `rgba(245,247,255,${Math.pow(sstep(T.black - 0.32, T.black - 0.02, t), 1.4)})`; ctx.fillRect(0, 0, W, H);
+  }
+  vignette(0.8);
+}
+function drawCar(c, x, t, him) {
+  const base = [x, 0, 0];
+  const pts = [[-138, 22], [134, 22], [140, 54], [96, 66], [58, 112], [-52, 114], [-90, 68], [-140, 60]].map(([u, z]) => [x + u, 0, z]);
+  const win = [[52, 70], [42, 104], [-46, 106], [-78, 70]].map(([u, z]) => [x + u, -1, z]);
+  // headlight beam ahead, on the wet road
+  const hl = P([x + 140, -2, 46]);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const gg = ctx.createRadialGradient(hl[0] + 120, hl[1] + 20, 10, hl[0] + 120, hl[1] + 20, 260); gg.addColorStop(0, 'rgba(230,236,250,0.22)'); gg.addColorStop(1, 'rgba(230,236,250,0)');
+  ctx.fillStyle = gg; ctx.beginPath(); ctx.moveTo(hl[0], hl[1] - 6); ctx.lineTo(hl[0] + 380, hl[1] - 70); ctx.lineTo(hl[0] + 380, hl[1] + 90); ctx.closePath(); ctx.fill(); ctx.restore();
+  poly(c, pts); c.fillStyle = '#17181c'; c.fill(); c.lineJoin = 'round'; c.lineWidth = 6; c.strokeStyle = INK; c.stroke(); c.lineWidth = 2.6; c.strokeStyle = '#d6d8de'; c.stroke();
+  poly(c, win); c.fillStyle = '#0a0b0e'; c.fill();
+  if (him) {
+    // only his head shows through the side window
+    const h = P([x + 2, -2, 92]), r = 19 * h[2];
+    c.save(); poly(c, win); c.clip();
+    c.beginPath(); c.arc(h[0], h[1], r + 3, 0, TAU); c.fillStyle = INK; c.fill();
+    c.beginPath(); c.arc(h[0], h[1], r, 0, TAU); c.fillStyle = rgb([226, 228, 232]); c.fill();
+    c.restore();
+  }
+  poly(c, win); c.lineWidth = 2; c.strokeStyle = '#8a8d94'; c.stroke();
+  const pl = P([x - 12, -1, 70]), pr = P([x - 12, -1, 108]); c.beginPath(); c.moveTo(pl[0], pl[1]); c.lineTo(pr[0], pr[1]); c.stroke();
+  for (const u of [-84, 86]) {
+    const w = P([x + u, -2, 22]), r = 23 * w[2], spin = -carX(t) / 23;
+    c.beginPath(); c.arc(w[0], w[1], r + 3, 0, TAU); c.fillStyle = INK; c.fill();
+    c.beginPath(); c.arc(w[0], w[1], r, 0, TAU); c.fillStyle = '#2a2b30'; c.fill();
+    c.strokeStyle = '#8a8d94'; c.lineWidth = 2; for (let i = 0; i < 3; i++) { const a = spin + i * TAU / 3; c.beginPath(); c.moveTo(w[0], w[1]); c.lineTo(w[0] + Math.cos(a) * r * 0.8, w[1] + Math.sin(a) * r * 0.8); c.stroke(); }
+  }
+  const hp = P([x + 136, -2, 46]); glowAt(hp[0], hp[1], 40, [236, 240, 252], 0.6);
+}
+
+// ---------------------------------------------------------------- the street afterwards
+function drawStreet(t) {
+  cam.D0 = 900; cam.zoom = 1.0; cam.h = 280; cam.hy = 650; cam.x = 20 + 14 * (t - T.after);
+  let g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, rgb([5, 6, 9])); g.addColorStop(1, rgb([10, 11, 14]));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const y0 = P([cam.x, 520, 0])[1];
+  g = ctx.createLinearGradient(0, y0, 0, H); g.addColorStop(0, rgb([18, 20, 26])); g.addColorStop(1, rgb([8, 9, 12]));
+  ctx.fillStyle = g; ctx.fillRect(0, y0, W, H - y0);
+  const LIGHTS = [[-250, 120, 205, 0.0], [-196, 120, 205, 0.5], [262, 200, 268, 0.27], [330, 200, 268, 0.77]];
+  // his car: far back, out of focus, half lost in the flicker
+  ctx.save(); ctx.filter = 'blur(7px)'; ctx.globalAlpha = 0.75;
+  drawCarSilhouette(ctx, 40, 470, 0.9); ctx.restore();
+  // the ambulance (left) and the fire truck (right): plain silhouettes with light bars
+  drawTruck(ctx, -240, 120, 300, 200, 'amb');
+  drawTruck(ctx, 300, 200, 380, 230, 'fire');
+  // helpers
+  const figs = [H1, H2], poses = figs.map(f => f.pose(t));
+  poses.forEach(J => contactShadow(ctx, J, 0.45));
+  figs.map((f, i) => ({ f, J: poses[i] })).sort((a, b) => b.J.P[1] - a.J.P[1]).forEach(({ f, J }) => drawFigure(ctx, f, J));
+  // blue light: on the vehicles, washing over everything, mirrored as long streaks on the wet road
+  let total = 0;
+  for (const [x, d, z, ph] of LIGHTS) {
+    const f = flash(t, ph); total += f;
+    const p = P([x, d, z]);
+    glowAt(p[0], p[1], 46, [220, 232, 255], 0.9 * f);
+    glowAt(p[0], p[1], 260, BLUE, 0.55 * f);
+    const fl = P([x, d - 120, 0]);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const gg = ctx.createLinearGradient(0, P([x, d, 0])[1], 0, H); gg.addColorStop(0, rgb(BLUE, 0.4 * f)); gg.addColorStop(1, rgb(BLUE, 0));
+    ctx.fillStyle = gg; ctx.fillRect(p[0] - 22, P([x, d, 0])[1], 44, H); ctx.restore();
+  }
+  // a wash of blue across the whole street, strongest near the wreck so it stays hard to see
+  ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.fillStyle = rgb(BLUE, 0.07 * total); ctx.fillRect(0, 0, W, H); ctx.restore();
+  const wp = P([40, 470, 60]); glowAt(wp[0], wp[1], 200, BLUE, 0.25 + 0.3 * flash(t, 0.12));
+  rain(t, 0.7, 0.3);
+  vignette(0.82);
+}
+function drawCarSilhouette(c, x, d, s) {
+  const pts = [[-138, 22], [134, 22], [140, 54], [96, 66], [58, 112], [-52, 114], [-90, 68], [-140, 60]].map(([u, z]) => [x + u * s, d, z * s]);
+  poly(c, pts); c.fillStyle = '#1a1c22'; c.fill(); c.lineWidth = 3; c.strokeStyle = '#6a6e78'; c.stroke();
+}
+function drawTruck(c, x, d, len, hgt, kind) {
+  const h = hgt, l = len / 2;
+  const body = kind === 'amb'
+    ? [[-l, 26], [l, 26], [l, h * 0.62], [l - 50, h * 0.66], [l - 70, h], [-l, h]]
+    : [[-l, 26], [l, 26], [l, h * 0.7], [l - 60, h * 0.72], [l - 80, h * 0.98], [l - 150, h * 0.98], [l - 150, h * 0.8], [-l, h * 0.8]];
+  poly(c, body.map(([u, z]) => [x + u, d, z])); c.fillStyle = '#121318'; c.fill(); c.lineWidth = 5; c.strokeStyle = INK; c.stroke(); c.lineWidth = 2.2; c.strokeStyle = '#7c8088'; c.stroke();
+  if (kind === 'fire') { const a = P([x - l + 20, d, h * 0.86]), b = P([x + l - 170, d, h * 0.96]); c.strokeStyle = '#5c6068'; c.lineWidth = 4; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke(); }
+  for (const u of [-l + 60, l - 70]) { const w = P([x + u, d - 2, 26]), r = 26 * w[2]; c.beginPath(); c.arc(w[0], w[1], r + 3, 0, TAU); c.fillStyle = INK; c.fill(); c.beginPath(); c.arc(w[0], w[1], r, 0, TAU); c.fillStyle = '#25262b'; c.fill(); }
+  const bar = P([x + (kind === 'amb' ? l - 90 : l - 120), d, kind === 'amb' ? h + 5 : h * 0.98 + 5]);
+  c.fillStyle = '#2a2c34'; c.fillRect(bar[0] - 40, bar[1] - 8, 80, 10);
+}
+
+// ---------------------------------------------------------------- the phone, close
+function drawPhoneClose(t) {
+  const a = sstep(T.phone0, T.phone1, t);
+  if (a <= 0) return;
+  ctx.save(); ctx.globalAlpha = a;
+  // the kitchen behind goes dark and soft
+  ctx.fillStyle = 'rgba(4,5,7,0.82)'; ctx.fillRect(0, 0, W, H);
+  const blue = 0.5 + 0.5 * flash(t * 0.9, 0.3);
+  glowAt(560, 300, 380, BLUE, 0.08 * blue);
+  const s = 1 + 0.03 * sstep(T.phone0, T.end, t), cx = 360, cy = 760, pw = 400 * s, ph = 640 * s, r = 50 * s;
+  ctx.translate(cx, cy); ctx.rotate(-0.04);
+  const rr = (x, y, w, h, q) => { ctx.beginPath(); ctx.moveTo(x + q, y); ctx.arcTo(x + w, y, x + w, y + h, q); ctx.arcTo(x + w, y + h, x, y + h, q); ctx.arcTo(x, y + h, x, y, q); ctx.arcTo(x, y, x + w, y, q); ctx.closePath(); };
+  rr(-pw / 2 - 5, -ph / 2 - 5, pw + 10, ph + 10, r + 4); ctx.fillStyle = INK; ctx.fill();
+  rr(-pw / 2, -ph / 2, pw, ph, r); ctx.fillStyle = '#1c1d22'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#c8cad0'; ctx.stroke();
+  rr(-pw / 2 + 14, -ph / 2 + 14, pw - 28, ph - 28, r - 12); ctx.fillStyle = '#0d0e11'; ctx.fill();
+  // header: a grey avatar circle, no name
+  ctx.beginPath(); ctx.arc(-pw / 2 + 60, -ph / 2 + 64, 18, 0, TAU); ctx.fillStyle = '#3a3c42'; ctx.fill();
+  ctx.fillStyle = '#3a3c42'; ctx.fillRect(-pw / 2 + 90, -ph / 2 + 58, 120, 12);
+  ctx.fillStyle = '#26282d'; ctx.fillRect(-pw / 2 + 14, -ph / 2 + 104, pw - 28, 2);
+  // the typed message in the input field, never sent; the cursor blinks after it
+  const fy = ph / 2 - 150, fx = -pw / 2 + 28, fw = pw - 104;
+  rr(fx, fy, fw, 104, 22); ctx.fillStyle = '#1e2025'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#4a4c54'; ctx.stroke();
+  ctx.font = '700 23px "JetBrains Mono", "DejaVu Sans Mono", monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(236,236,240,0.95)';
+  ctx.fillText("I'm sorry.", fx + 18, fy + 32);
+  const l2 = 'Please come home.'; ctx.fillText(l2, fx + 18, fy + 70);
+  if (Math.floor(t * 1.7) % 2 === 0) { const cw = ctx.measureText(l2).width; ctx.fillStyle = 'rgba(236,236,240,0.95)'; ctx.fillRect(fx + 20 + cw, fy + 56, 3, 28); }
+  // the send button, untouched
+  ctx.beginPath(); ctx.arc(pw / 2 - 48, fy + 52, 26, 0, TAU); ctx.fillStyle = '#2c2e34'; ctx.fill();
+  ctx.fillStyle = '#7a7c84'; ctx.beginPath(); ctx.moveTo(pw / 2 - 58, fy + 40); ctx.lineTo(pw / 2 - 34, fy + 52); ctx.lineTo(pw / 2 - 58, fy + 64); ctx.lineTo(pw / 2 - 53, fy + 52); ctx.closePath(); ctx.fill();
+  // the far blue light catches the glass
+  ctx.save(); rr(-pw / 2, -ph / 2, pw, ph, r); ctx.clip();
+  const g = ctx.createLinearGradient(pw / 2, -ph / 2, 0, 0); g.addColorStop(0, rgb(BLUE, 0.22 * blue)); g.addColorStop(1, rgb(BLUE, 0));
+  ctx.fillStyle = g; ctx.fillRect(-pw / 2, -ph / 2, pw, ph); ctx.restore();
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- drawing
+function draw(t) {
+  const sc = SCENE(t);
+  if (sc === 'kitchen') {
+    // the room jolts a little when the door slams
+    const j = t > T.slam ? 5 * Math.exp(-(t - T.slam) / 0.08) * Math.sin((t - T.slam) * 90) : 0;
+    ctx.save(); ctx.translate(0, j); drawKitchen(t, false); ctx.restore();
+    captionAt(t, 'GET OUT.', T.get0, T.get1, 50, 14);
+  } else if (sc === 'car') drawCarScene(t);
+  else if (sc === 'black') { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }
+  else if (sc === 'street') drawStreet(t);
+  else {
+    drawKitchen(t, true);
+    drawPhoneClose(t);
+    captionAt(t, 'SHE NEVER SENT IT.', T.text0, T.text1, 40, 9, 190);
+    captionAt(t, 'NEVER LET ANGER', T.text2 + 0.05, T.text3, 36, 7, 170);
+    captionAt(t, 'HAVE THE LAST WORD.', T.text2 + 0.2, T.text3, 36, 7, 224);
+  }
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = [[SHE, 0, T.car], [HE, 0, T.car], [H1, T.after, T.home], [H2, T.after, T.home], [SHE2, T.home, T.end]];
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.end0, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  const steps = [];
+  for (const [f, a, b] of CHECK_FIGS) for (const c of f.cues) if (c.t >= a && c.t < b) steps.push({ ...c, street: f === H1 || f === H2 });
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T, grab: GRAB }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
