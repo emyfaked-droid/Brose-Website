@@ -313,10 +313,65 @@ function timelineRed(S, cues) {
   return C;
 }
 
+// =====================================================================
+// MOTIVATION (motivation.html). Four days at one bus stop, each with its own weather bed; the beds cross-fade at the
+// same cuts as the picture (cues.story.secs). Footsteps follow the day: dry street, puddle splashes in the rain,
+// crunching snow. The neon buzz is cut on the sign's own flicker frames, so the hum stutters with the light.
+// =====================================================================
+const FILES_MOT = {
+  'street_day.mp3':       { search: '"quiet street ambience birds"', use: 'DAY 1 bed, -30 dB (0-4.5 s)' },
+  'car_pass_far.mp3':     { search: '"distant car passing"', use: 'a car far away at 1.2 s while they look down the road, -28 dB' },
+  'neon_buzz.mp3':        { search: '"neon sign buzz"', use: 'the sign hums under everything, -34 dB, stutters with the flicker (needs a steady loop)' },
+  'bench_creak.mp3':      { search: '"wooden bench creak"', use: 'B sits down (3.5 s)' },
+  'rain.mp3':             { search: '"rain on bus shelter roof"', use: 'DAY 30 bed, cross-fades in and out (4.5-6.6 s)' },
+  'winter_wind.mp3':      { search: '"cold winter wind snow"', use: 'DAY 180 bed, cross-fades (6.6-8.8 s)' },
+  'night_crickets.mp3':   { search: '"night ambience crickets"', use: 'DAY 365 bed, -32 dB (8.8-19 s)' },
+  'footsteps_street.mp3': { search: '"footsteps on concrete street" (single steps with gaps)', use: 'dry steps on DAY 1 and DAY 365, cut out one by one' },
+  'footsteps_puddle.mp3': { search: '"footsteps puddle"', use: 'A jogging through the rain (DAY 30), cut out one by one' },
+  'footsteps_snow.mp3':   { search: '"footsteps snow"', use: 'A running through the snow (DAY 180), cut out one by one' },
+  'jog_breathing.mp3':    { search: '"heavy breathing after running"', use: 'A out of breath, 10.6-13.0 s' },
+  'neon_flicker_off.mp3': { search: '"neon light flicker turn off"', use: 'the sign flickers and dies at 14.4 s' },
+};
+
+function timelineMot(S, cues) {
+  const C = [], add = c => C.push(c), END = S.end, X = 0.2;                 // half of the picture's dissolve
+  const sec = n => S.secs.find(s => s.name === n);
+  const day = sec('day'), rain = sec('rain'), snow = sec('snow'), night = sec('night');
+  // weather beds, cross-faded on the cuts
+  add({ file: 'street_day.mp3', at: 0, dur: day.t1 + X, vol: -30, fadeIn: 0.5, fadeOut: 2 * X, loop: true });
+  add({ file: 'car_pass_far.mp3', at: S.look0, dur: Math.min(3.2, day.t1 - S.look0), vol: -28, fadeIn: 0.25, fadeOut: 0.8 });
+  add({ file: 'rain.mp3', at: rain.t0 - X, dur: rain.t1 - rain.t0 + 2 * X, vol: -25, fadeIn: 2 * X, fadeOut: 2 * X, loop: true });
+  add({ file: 'winter_wind.mp3', at: snow.t0 - X, dur: snow.t1 - snow.t0 + 2 * X, vol: -24, fadeIn: 2 * X, fadeOut: 2 * X, loop: true });
+  add({ file: 'night_crickets.mp3', at: night.t0 - X, dur: END - night.t0 + X, vol: -32, fadeIn: 2 * X, fadeOut: END - S.fadeOut, loop: true });
+  // the neon hum: steady until the flicker, then only while a flicker frame is lit
+  add({ file: 'neon_buzz.mp3', at: 0, dur: S.flick0, vol: -34, fadeIn: 0.5, fadeOut: 0.006, loop: true });
+  for (const [a, b, v] of S.flick) if (v > 0) add({ file: 'neon_buzz.mp3', at: a, offset: a, dur: b - a, vol: -34 + 20 * Math.log10(v), fadeIn: 0.004, fadeOut: 0.006, loop: true, note: 'flicker on' });
+  add({ file: 'neon_flicker_off.mp3', at: S.flick0, vol: -19, align: 'onset', fadeOut: 0.3 });
+  // B sits down; A out of breath after the jog
+  add({ file: 'bench_creak.mp3', at: S.sitHit - 0.05, vol: -15, align: 'onset', fadeOut: 0.3 });
+  add({ file: 'jog_breathing.mp3', at: 10.6, dur: 2.4, vol: -20, fadeIn: 0.35, fadeOut: 0.7 });
+  // footsteps on the heel-contact frames: dry, splashing or crunching by day; quieter and duller behind the shelter
+  const FILE = { day: 'footsteps_street.mp3', night: 'footsteps_street.mp3', rain: 'footsteps_puddle.mp3', snow: 'footsteps_snow.mp3' };
+  const VOL = { walk: -16, heavy: -15, jog: -14, run: -12, shuffle: -24 };
+  let n = 0;
+  for (const c of cues.steps) {
+    let vol = c.type === 'shuffle' ? VOL.shuffle : (VOL[c.mood] ?? -16), filter = null;
+    if (c.type === 'settle') vol -= 4;
+    if (c.where === 'back') { vol -= 7; filter = 'lowpass=f=2600'; }
+    if (!c.onScreen) { vol -= 6; filter = 'lowpass=f=2000'; }
+    if (c.t > S.fadeOut) vol -= 30 * (c.t - S.fadeOut) / (END - S.fadeOut);     // fades with the picture
+    const jitter = ((n * 7919) % 13) / 13 - 0.5;
+    add({ file: FILE[c.sec], slice: n++, at: c.t, vol: vol + jitter * 2, rate: (c.mood === 'heavy' ? 0.94 : 1) * (1 + jitter * 0.04), align: 'onset', fadeOut: 0.06, filter, note: `${c.fig} ${c.side} ${c.type} ${c.mood} frame ${c.frame}` });
+  }
+  return C;
+}
+
+
 module.exports = { FILES, timeline, TARGET_LUFS: -14, CEILING_DBTP: -1.5,
   films: {
     'it-ends-with-you': { FILES: FILES_IEWY, timeline: timelineIewy },
     'i-wish-i-was-your-phone': { FILES: FILES_PHONE, timeline: timelinePhone },
     'tired-for-you': { FILES: FILES_TIRED, timeline: timelineTired },
     'red-thread': { FILES: FILES_RED, timeline: timelineRed },
+    'motivation': { FILES: FILES_MOT, timeline: timelineMot },
   } };

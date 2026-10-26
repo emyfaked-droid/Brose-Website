@@ -41,7 +41,7 @@ Grundregel: **Geschwindigkeit = Schrittlänge × Schritte pro Sekunde**. Nur so 
 | `forced` | aufrecht, "zusammenreißen" | 112 | 2,1 | 12 | 21° | etwas leichter und aufrechter |
 | `heavy` | traurig, schwer | 70 | 1,45 | 5 | 6° | kurze, schleppende Schritte, gebeugt |
 | `bouncy` | ein paar kleine Schritte | 34 | 2,1 | 7 | 9° | kurz und locker |
-| `jog`, `run` | Joggen / Rennen (Extra) | 120 / 165 | 2,6 / 2,85 | 30 / 34 | 28° / 34° | mit Flugphase, Ellbogen ~90° |
+| `jog`, `run` | Joggen / Rennen | 120 / 165 | 2,6 / 2,85 | 30 / 34 (Ferse hinten bis 62 / 80) | 27° / 34° | mit Flugphase, Ellbogen ~75°, Ferse kickt hoch, Knie zieht nach vorn, kürzere Schritte beim Anlaufen und Abbremsen |
 
 Was jeder Schritt automatisch macht:
 - Ferse setzt zuerst auf, der Fuß rollt ab und drückt über die Zehen ab. Der stehende Fuß rutscht nie.
@@ -156,3 +156,16 @@ Tag someone you should check on today.
 - Engine: Wenn ein Fußziel ein anderes ablöst, wird die Kniebeuge-Richtung jetzt überblendet statt umgeschaltet
   (sonst klappt das Knie um). Die anderen Filme bleiben pixelgleich.
 - Ton: "alles 10 dB leiser für 1,5 s" geht als Lautstärke-Rampe im jeweiligen Atmo-Bett (`filter: volume=...:eval=frame`).
+
+---
+
+## 11. Sechster Film: Motivation
+
+- Datei `motivation.html`. Befehle: `npm run mot:check`, `mot:stills`, `mot:render`, `mot:mix`, `mot:build`.
+- Vier Tage an derselben Bushaltestelle, mit kurzen Überblendungen: Tag (grau), Regen (Pfützen spiegeln das Neon-Schild),
+  Schnee (sammelt sich auf Bank und Figur), Nacht (eine Straßenlaterne). Das gelbe Schild ist die einzige Farbe.
+- Neu in der Engine: `tr.hyaw` (Kopf drehen), `tr.pant` (schnelles Atmen nach dem Laufen), `fig.walkMix(...)` (erst ein
+  schwerer Schritt, dann normales Gehen) und ein neuer Laufzyklus für `jog`/`run` (Ferse kickt hinten hoch, Knie zieht nach
+  vorn, die ersten und letzten Schritte sind kürzer). Die anderen Filme bleiben pixelgleich.
+- Langes, weiches Abbremsen beim Joggen: eigene Stimmung mit größerem `td`, z. B. `{ ...MOOD.jog, td: 1.3 }`.
+- Alle Sounds sind selbst erzeugt (`scripts/make_sfx.py`); echte Aufnahmen mit gleichem Namen ersetzen sie.

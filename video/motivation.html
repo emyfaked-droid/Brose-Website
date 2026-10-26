@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motivation</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   MOTIVATION: a deterministic 2D stick-figure short.
+   A bus stop at the edge of town. The sign says MOTIVATION, the timetable
+   says NEXT BUS: SOON. A stops waiting and starts running; B waits a year.
+   The engine lives in engine.js.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story
+const T = {
+  fadeIn: 0.5,
+  watch0: 0.5, watch1: 1.18,              // B checks his wrist watch
+  look0: 1.2, look1: 1.82,                // both look down the road to the left; nothing comes
+  shrug: 2.0,                             // A shrugs, turns left and walks off
+  aTurn0: 2.26, aTurn1: 2.6,
+  sit0: 3.4, sitHit: 3.58, sit1: 4.2,     // B sits down on the bench
+  cut30: 4.5, jog30: 5.2,                 // DAY 30, rain: A jogs past in the background
+  cut180: 6.6, run180: 7.3, watch180: 7.7, // DAY 180, snow: A runs past, B looks at his watch once
+  cut365: 8.8,                            // DAY 365, night
+  stand0: 9.0, stand1: 9.98,              // B stands up stiffly
+  bTurn0: 10.02, bTurn1: 10.36,
+  tapUp: 10.2, taps: [10.56, 10.73], tapDown: 10.88,
+  aIn0: 9.2,                              // A's jog starts off screen on the left (enters at about 10.6)
+  aStop: 0,                               // filled in from the planned jog (about 12.0)
+  lookA: 11.92, lookSign: 12.8,
+  text1a: 11.8, text1b: 14.4,
+  flick0: 14.4, dark: 14.86,              // the sign flickers 3 times and goes dark
+  nod: 15.0, aTurnL0: 15.24, aTurnL1: 15.74,
+  hes0: 15.6, bWalk: 15.98, aWalk2: 16.15,
+  text2a: 15.6, text2b: 18.2,
+  fadeOut: 18.2, end: 19.0,
+  stills: [1.2, 2.4, 5.4, 7.5, 9.5, 11.2, 14.6, 16.2],
+};
+// the four days; pictures cross-dissolve over XF seconds at each cut
+const SECS = [
+  { name: 'day', t0: 0, t1: T.cut30, label: 'DAY 1' },
+  { name: 'rain', t0: T.cut30, t1: T.cut180, label: 'DAY 30' },
+  { name: 'snow', t0: T.cut180, t1: T.cut365, label: 'DAY 180' },
+  { name: 'night', t0: T.cut365, t1: T.end, label: 'DAY 365' },
+];
+const XF = 0.4;
+
+// ---------------------------------------------------------------- the set (world units, the figures' scale)
+const LANE = -18;                         // the sidewalk in front of the shelter
+const BG = 320;                           // the path behind the shelter (A jogs and runs there)
+const HORIZ = 700;
+const SHELTER = { x0: 440, x1: 680, d0: 20, d1: 95, z1: 405, roof: 16 };
+const BENCH = { x0: 460, x1: 650, d0: 45, d1: 72, z0: 82, z1: 90 };
+const POLE = { x: 402, d: 0, z1: 452 };
+const SIGN = { x0: 318, x1: 486, d0: -8, d1: 4, z0: 446, z1: 508 };
+const TABLE = { x0: 372, x1: 432, d0: -7, d1: -2, z0: 226, z1: 290 };
+const LAMP = { x: 190, d: 40, z1: 470 };
+const CURB = -72;
+const PF = -86, SIT_Z = BENCH.z1 + 5;     // B's pelvis on the bench: 86 behind his feet
+const AX = 345, BX = 480;                 // where A and B stand
+const BYAW = -145, BD = 0;                // B faces mostly toward the road (where the bus would come from); he stands a little further back
+const NEON = [255, 206, 102], NEON_L = [255, 214, 140], NEON_CORE = [255, 240, 196];
+const PAL = {
+  day:   { skyT: 104, skyH: 146, g0: 122, g1: 60, road: -10, amb: 232, refl: 0.2, neon: 0.2, haze: 150, hazeA: 0.22, far: 126, vig: 0.55, label: 150 },
+  rain:  { skyT: 44, skyH: 74, g0: 66, g1: 24, road: -6, amb: 178, refl: 0.4, neon: 0.5, haze: 80, hazeA: 0.38, far: 60, vig: 0.72, label: 132 },
+  snow:  { skyT: 150, skyH: 190, g0: 204, g1: 132, road: -14, amb: 238, refl: 0.08, neon: 0.18, haze: 192, hazeA: 0.42, far: 166, vig: 0.48, label: 178 },
+  night: { skyT: 5, skyH: 16, g0: 26, g1: 9, road: -3, amb: 60, refl: 0.3, neon: 0.85, haze: 14, hazeA: 0.3, far: 12, vig: 0.82, label: 120 },
+};
+const grey = (v, a = 1) => rgb([v, v, v], a);
+
+// the sign's light: on, a faint hum at night, then three flickers and dark
+const FLICK = [[14.40, 14.46, 0], [14.46, 14.57, 1], [14.57, 14.62, 0], [14.62, 14.71, 0.7], [14.71, 14.79, 0], [14.79, 14.84, 0.45]];
+function neonI(t) {
+  if (t < T.flick0) return 1 - (t > T.cut365 ? 0.04 * (0.5 + 0.5 * Math.sin(TAU * 7.3 * t)) * (0.5 + 0.5 * nz(t * 3, 9)) : 0);
+  for (const [a, b, v] of FLICK) if (t >= a && t < b) return v;
+  return 0.07 * Math.exp(-(t - T.dark) / 0.12);          // the tubes cool down
+}
+
+// ---------------------------------------------------------------- the figures
+// B is drawn as one figure per day (the days are separated by dissolves); A likewise
+const A1 = new Fig('A1', { x: AX, d: LANE, yaw: -100, seed: 1.7 });
+const B1 = new Fig('B1', { x: BX, d: BD, yaw: BYAW, seed: 3.1 });
+const A30 = new Fig('A30', { x: 1300, d: BG, yaw: 180, seed: 1.7 });
+const B30 = new Fig('B30', { x: BX, d: BD, yaw: BYAW, seed: 3.1 });
+const A180 = new Fig('A180', { x: 1500, d: BG, yaw: 180, seed: 1.7 });
+const B180 = new Fig('B180', { x: BX, d: BD, yaw: BYAW, seed: 3.1 });
+const A365 = new Fig('A365', { x: -420, d: LANE, yaw: 0, seed: 1.7 });
+const B365 = new Fig('B365', { x: BX, d: BD, yaw: BYAW, seed: 3.1 });
+const FIGS = { day: [A1, B1], rain: [A30, B30], snow: [A180, B180], night: [A365, B365] };
+
+const sgn = side => side === 'R' ? 1 : -1;
+// hunched on the bench: elbows on the knees, hands loosely together in front of them
+const clasp = side => (t, J) => add(add(lerp3(J.knee.L, J.knee.R, 0.5), mul(J.Ft, 17)), add(mul(J.Rt, sgn(side) * 3), [0, 0, -6]));
+const elbowOut = side => (t, J) => add(J.knee[side], add(add(mul(J.Rt, sgn(side) * 16), mul(J.Ft, -6)), [0, 0, -30]));
+// the watch on the left wrist, read in front of the chest
+const watchSpot = (t, J) => add(add(J.N, mul(J.Ft, 30)), add(mul(J.Rt, 2), [0, 0, -40]));
+const watchPole = (t, J) => add(J.sh.L, add(add(mul(J.Rt, -50), mul(J.Ft, -6)), [0, 0, -42]));
+
+function seated(F, o = {}) {
+  const tr = F.tr;
+  tr.pf.v0 = PF; tr.pz.v0 = SIT_Z - H0;
+  tr.lean.v0 = o.lean ?? 38; tr.slump.v0 = o.slump ?? 16; tr.head.v0 = o.head ?? 30; tr.shDrop.v0 = o.shDrop ?? 5;
+  tr.idle.v0 = o.idle ?? 0.5; tr.breath.v0 = o.breath ?? 1.1;
+  const g = {};
+  for (const side of ['L', 'R']) { g[side] = F.goal(side, clasp(side), elbowOut(side)); g[side].v0 = 1; }
+  return g;
+}
+
+// ---- DAY 1: waiting together; A gives up on the bus and walks off, B sits down
+(function day1() {
+  const a = A1.tr, b = B1.tr;
+  // B checks his watch
+  const w = B1.goal('L', watchSpot, watchPole);
+  w.to(T.watch0, T.watch0 + 0.24, 1, E.io).to(T.watch1 - 0.22, T.watch1, 0, E.io);
+  b.head.to(T.watch0 + 0.04, T.watch0 + 0.26, 26, E.io).to(T.watch1 - 0.2, T.look0 + 0.3, 12, E.io);
+  b.hyaw.to(T.watch0 + 0.04, T.watch0 + 0.26, -8, E.io);
+  // both look down the road (left); nothing comes
+  for (const [tr, lag] of [[a, 0], [b, 0.06]]) {
+    tr.hyaw.to(T.look0 + lag, T.look0 + 0.36 + lag, -72, E.io);
+    tr.head.to(T.look0 + lag, T.look0 + 0.36 + lag, 12, E.io);
+    tr.twist.to(T.look0 + lag, T.look0 + 0.42 + lag, -9, E.io);
+    tr.roll.to(T.look0 + lag, T.look0 + 0.42 + lag, 2.5, E.io);
+  }
+  a.hyaw.to(T.look1 - 0.04, T.look1 + 0.18, 0, E.io); a.head.to(T.look1 - 0.04, T.look1 + 0.18, 0, E.io);
+  a.twist.to(T.look1, T.look1 + 0.24, 0, E.io); a.roll.to(T.look1, T.look1 + 0.24, 0, E.io);
+  // A shrugs: shoulders up, forearms out, palms up, head tilted
+  const s0 = T.shrug - 0.12, s1 = T.shrug + 0.05, s2 = T.shrug + 0.17, s3 = T.shrug + 0.42;
+  a.shDrop.to(s0, s1, -10, E.out2).to(s2, s3, 0, E.io);
+  for (const S of ['L', 'R']) {
+    a['aOut' + S].to(s0, s1, 28, E.out2).to(s2, s3, 9, E.io);
+    a['aEl' + S].to(s0, s1, 78, E.out2).to(s2, s3, 12, E.io);
+    a['aSw' + S].to(s0, s1, 12, E.out2).to(s2, s3, 4, E.io);
+  }
+  a.headRoll.to(s0, s1, 9, E.out2).to(s2, s3, 0, E.io);
+  // turns left and walks off
+  A1.turn(T.aTurn0, T.aTurn1, -180, { steps: 2, lift: 7, mood: 'walk' });
+  T.aGone = A1.walk(T.aTurn1, [-220, LANE], MOOD.walk, 'R');
+  // B looks at A, then after him, then sits down
+  b.hyaw.to(T.look1 + 0.04, T.look1 + 0.3, -28, E.io).to(T.aTurn1 + 0.1, T.aTurn1 + 0.6, -64, E.io).to(3.12, 3.42, 0, E.io);
+  b.head.to(T.look1 + 0.04, T.look1 + 0.3, 4, E.io).to(3.1, 3.4, 14, E.io);
+  b.twist.to(T.look1 + 0.06, T.look1 + 0.36, -6, E.io).to(3.12, 3.42, 0, E.io);
+  b.roll.to(T.look1 + 0.06, T.look1 + 0.36, 0, E.io);
+  // sit: drop back onto the bench (tired), settle, then hunch forward
+  b.pf.to(T.sit0 - 0.02, T.sitHit + 0.04, PF, E.io);
+  b.pz.to(T.sit0 + 0.02, T.sitHit, SIT_Z - H0 - 4, E.in2).to(T.sitHit, T.sitHit + 0.26, SIT_Z - H0, E.out2);
+  b.lean.to(T.sit0, T.sit0 + 0.14, 24, E.io).to(T.sit0 + 0.14, T.sitHit + 0.3, 14, E.over);
+  b.head.to(T.sit0, T.sitHit + 0.2, 18, E.io);
+  for (const S of ['L', 'R']) {
+    b['aSw' + S].to(T.sit0, T.sitHit, 20, E.io); b['aEl' + S].to(T.sit0, T.sitHit, 40, E.io); b['aOut' + S].to(T.sit0, T.sitHit, 13, E.io);
+  }
+  const h0 = T.sitHit + 0.28, h1 = T.sit1 + 0.25;
+  b.lean.to(h0, h1, 38, E.io2); b.slump.to(h0, h1, 16, E.io2); b.head.to(h0, h1, 30, E.io2); b.shDrop.to(h0, h1, 5, E.io2);
+  b.idle.to(h0, h1, 0.5); b.breath.to(h0, h1 + 0.4, 1.3);
+  for (const side of ['L', 'R']) B1.goal(side, clasp(side), elbowOut(side)).to(h0 + (side === 'L' ? 0 : 0.06), h1, 1, E.io);
+})();
+
+// A's jog into the last scene brakes over a longer distance (shorter and shorter steps, see Fig.walk)
+const JOG_IN = { ...MOOD.jog, td: 1.3 };
+
+// A in the background: jogs (day 30) and runs (day 180) past behind the shelter, right to left, at steady speed.
+// The move starts off screen so A is at full speed and passes the middle of the frame (x 380) at tMid.
+function passBy(F, x0, x1, m, tMid, xMid = 380) {
+  const D = Math.abs(x0 - x1), N = Math.max(2, Math.round(D / m.L)), L = D / N, v = L * m.cad, Ta = m.ta ?? 0.95 / m.cad;
+  const t0 = tMid - (Math.abs(x0 - xMid) / v + Ta / 2);
+  return F.walk(t0, [x1, BG], m, 'R');
+}
+passBy(A30, 1300, -500, MOOD.jog, T.jog30 - 0.05);
+A30.tr.head.v0 = -2; A30.tr.idle.v0 = 0.6;
+passBy(A180, 1500, -600, MOOD.run, T.run180);
+A180.tr.head.v0 = -4; A180.tr.slump.v0 = -3; A180.tr.idle.v0 = 0.6;
+
+// ---- DAY 30: B hunched in the rain, barely moving
+seated(B30, { lean: 39, slump: 17, head: 33, shDrop: 6, breath: 1.2 });
+
+// ---- DAY 180: snow on B, one look at the watch
+(function day180() {
+  const g = seated(B180, { lean: 41, slump: 19, head: 35, shDrop: 7, idle: 0.3, breath: 1.0 });
+  const w0 = T.watch180, w1 = w0 + 0.78;
+  g.L.to(w0, w0 + 0.3, 0, E.io).to(w1 - 0.24, w1, 1, E.io);
+  B180.goal('L', (t, J) => add(add(J.Hc, mul(J.Ft, 34)), add(mul(J.Rt, -4), [0, 0, -40])), watchPole).to(w0, w0 + 0.3, 1, E.io).to(w1 - 0.26, w1, 0, E.io);
+  B180.tr.head.to(w0 + 0.06, w0 + 0.3, 40, E.io).to(w1 - 0.2, w1 + 0.05, 35, E.io);
+  B180.tr.hyaw.to(w0 + 0.06, w0 + 0.3, -10, E.io).to(w1 - 0.2, w1 + 0.05, 0, E.io);
+})();
+
+// ---- DAY 365: B gets up stiffly and taps the timetable; A jogs in and stops next to him; the sign dies; they leave together
+(function day365() {
+  const b = B365.tr, a = A365.tr;
+  const g = seated(B365, { lean: 40, slump: 18, head: 33, shDrop: 7, breath: 1.2 });
+  // hands from between the knees onto the knees
+  const kneeHand = side => (t, J) => add(J.knee[side], add(mul(J.Ft, 3), [0, 0, 8]));
+  const kneePole = side => (t, J) => add(J.sh[side], add(add(mul(J.Rt, sgn(side) * 55), mul(J.Ft, -22)), [0, 0, -30]));
+  const k0 = T.stand0;
+  for (const side of ['L', 'R']) {
+    g[side].to(k0, k0 + 0.3, 0, E.io);
+    B365.goal(side, kneeHand(side), kneePole(side)).to(k0, k0 + 0.3, 1, E.io).to(k0 + 0.78, k0 + 1.02, 0, E.io);
+  }
+  b.head.to(k0, k0 + 0.3, 22, E.io); b.lean.to(k0, k0 + 0.3, 36, E.io);
+  // stiff: up half way, a stop, then the rest of the way
+  b.lean.to(k0 + 0.26, k0 + 0.52, 46, E.io2).to(k0 + 0.62, T.stand1, 9, E.io2);
+  b.pf.to(k0 + 0.34, k0 + 0.56, PF * 0.45, E.io2).to(k0 + 0.64, T.stand1, 0, E.io2);
+  b.pz.to(k0 + 0.38, k0 + 0.58, (SIT_Z - H0) * 0.5, E.io2).to(k0 + 0.66, T.stand1, -3, E.io2);
+  b.slump.to(k0 + 0.5, T.stand1, 7, E.io2); b.shDrop.to(k0 + 0.5, T.stand1, 3, E.io2);
+  b.head.to(k0 + 0.5, T.stand1, 10, E.io2);
+  b.lean.to(T.stand1, T.stand1 + 0.3, 4, E.io);
+  // turn toward the pole and tap the timetable twice with the near (left) hand
+  B365.turn(T.bTurn0, T.bTurn1, -168, { steps: 2, lift: 5, mood: 'shuffle' });
+  const tapPt = [420, TABLE.d0 - 1.5, 262];
+  const tapOff = t => { let o = 0; for (const c of T.taps) { const x = (t - c) / 0.07; o += Math.exp(-x * x); } return o; };
+  const tap = B365.goal('L', t => add(tapPt, [-1, -6 + 6 * tapOff(t), 1.5 * tapOff(t)]), (t, J) => add(J.sh.L, add(add(mul(J.Rt, -46), mul(J.Ft, -10)), [0, 0, -50])));
+  tap.to(T.tapUp, T.taps[0] - 0.06, 1, E.io).to(T.tapDown, T.tapDown + 0.36, 0, E.io);
+  b.hyaw.to(T.tapUp - 0.1, T.tapUp + 0.2, 14, E.io).to(T.tapDown, T.tapDown + 0.3, 0, E.io);
+  b.head.to(T.tapUp - 0.1, T.tapUp + 0.2, 6, E.io).to(T.tapDown, T.tapDown + 0.3, 8, E.io);
+  // looks at A, then up at the sign, and stays looking up until it goes dark
+  b.head.to(T.lookA, T.lookA + 0.35, 1, E.io);
+  b.head.to(T.lookSign, T.lookSign + 0.55, -30, E.io); b.hyaw.to(T.lookSign, T.lookSign + 0.55, 18, E.io);
+  b.lean.to(T.lookSign, T.lookSign + 0.55, 0, E.io); b.slump.to(T.lookSign, T.lookSign + 0.55, 4, E.io);
+  b.head.to(T.dark + 0.2, T.dark + 0.62, 10, E.io); b.hyaw.to(T.dark + 0.2, T.dark + 0.62, 0, E.io);
+  // hesitates (weight forward, back), straightens up, then walks off normally and upright (the reference walk)
+  b.lean.to(T.hes0, T.hes0 + 0.13, 7, E.io).to(T.hes0 + 0.13, T.bWalk + 0.1, 3, E.io);
+  b.slump.to(T.hes0, T.bWalk + 0.3, 0, E.io); b.shDrop.to(T.hes0, T.bWalk + 0.3, 0, E.io);
+  b.head.to(T.bWalk - 0.1, T.bWalk + 0.4, 0, E.io);
+  T.bGone = B365.walk(T.bWalk, [-320, -46], MOOD.walk, 'L');
+
+  // A jogs in from the left, slows down and stops next to B (the planner eases the stop, the torso follows through)
+  T.aStop = A365.walk(T.aIn0, [AX - 15, LANE], JOG_IN, 'R');
+  a.head.v0 = -2;
+  // out of breath, standing tall
+  a.pant.to(T.aStop - 0.4, T.aStop + 0.15, 3.4, E.io).to(T.aStop + 0.9, 14.9, 1.3, E.io);
+  a.breath.to(T.aStop, T.aStop + 0.5, 1.3);
+  a.lean.to(T.aStop - 0.1, T.aStop + 0.7, 0, E.io); a.slump.to(T.aStop, T.aStop + 0.7, -4, E.io);
+  a.head.to(T.aStop, T.aStop + 0.6, -5, E.io); a.shDrop.to(T.aStop, T.aStop + 0.7, -2, E.io);
+  a.aOutL.to(T.aStop, T.aStop + 0.6, 7); a.aOutR.to(T.aStop, T.aStop + 0.6, 7);
+  // glances up when the sign flickers
+  a.head.to(T.flick0 + 0.02, T.flick0 + 0.3, -20, E.io).to(T.dark + 0.02, T.nod, -4, E.io);
+  // "come on": a quick nod back toward the road, then he turns left and waits, looking back at B
+  a.head.to(T.nod, T.nod + 0.1, 7, E.io).to(T.nod + 0.1, T.nod + 0.24, -15, E.out2).to(T.nod + 0.3, T.nod + 0.55, -3, E.io);
+  a.lean.to(T.nod + 0.08, T.nod + 0.22, -3, E.io).to(T.nod + 0.3, T.nod + 0.5, 1, E.io);
+  A365.turn(T.aTurnL0, T.aTurnL1, -180, { steps: 3, lift: 7, mood: 'walk' });
+  a.hyaw.to(T.aTurnL1 - 0.05, T.aTurnL1 + 0.3, 52, E.io).to(T.aWalk2 - 0.1, T.aWalk2 + 0.25, 0, E.io);
+  a.twist.to(T.aTurnL1 - 0.05, T.aTurnL1 + 0.3, 12, E.io).to(T.aWalk2 - 0.1, T.aWalk2 + 0.25, 0, E.io);
+  a.head.to(T.aTurnL1 - 0.05, T.aTurnL1 + 0.3, 8, E.io).to(T.aWalk2, T.aWalk2 + 0.3, 0, E.io);
+  a.pant.to(T.aWalk2, T.aWalk2 + 0.6, 0.5, E.io);
+  T.aGone2 = A365.walk(T.aWalk2, [-340, -10], MOOD.walk, 'R');
+})();
+
+// ---------------------------------------------------------------- camera: still; the last shot drifts right as they leave
+const CAMX = new Track(380).to(15.9, 18.9, 462, E.sine);
+function setCam(t) { cam.x = CAMX.at(t); cam.zoom = 1.1; cam.hy = 605; cam.h = 250; cam.D0 = 900; }
+
+// ---------------------------------------------------------------- weather
+const RAIN = (() => { const r = mulberry32(77), a = []; for (let i = 0; i < 230; i++) a.push({ x: r() * 900 - 60, y: r() * 1500, v: 1700 + r() * 700, l: 26 + r() * 34, w: 0.8 + r() * 1.3, a: 0.16 + r() * 0.24 }); return a; })();
+const FLAKES = (() => { const r = mulberry32(91), a = []; for (let i = 0; i < 240; i++) a.push({ x: r() * 800 - 40, y: r() * 1400, v: 55 + r() * 85, s: 1.3 + r() * 2.9, ph: r() * TAU, f: 0.4 + r() * 0.9, a: 0.55 + r() * 0.45 }); return a; })();
+const PUDDLES = [
+  { x: 405, d: -150, rx: 128, rd: 30, neon: 1 },
+  { x: 140, d: -250, rx: 95, rd: 26, neon: 0.25 },
+  { x: 610, d: -112, rx: 72, rd: 18, neon: 0.4 },
+  { x: 270, d: -330, rx: 70, rd: 20, neon: 0.5 },
+];
+const snowAmt = t => sstep(T.cut180 - 0.1, T.cut365 - 0.1, t);          // how much snow has piled up
+
+function drawRain(c, t) {
+  c.save(); c.lineCap = 'round';
+  for (const p of RAIN) {
+    const y = ((p.y + t * p.v) % 1500) - 110, x = p.x - 0.12 * y;
+    c.strokeStyle = `rgba(214,214,216,${p.a})`; c.lineWidth = p.w;
+    c.beginPath(); c.moveTo(x, y); c.lineTo(x - 0.12 * p.l, y + p.l); c.stroke();
+  }
+  c.restore();
+}
+// short-lived splashes on the ground and ripples in the puddles, a new set every frame-slot
+function drawSplashes(c, t) {
+  const slot = Math.floor(t * 30);
+  c.save(); c.lineWidth = 1.1;
+  for (let s = slot - 4; s <= slot; s++) {
+    const r = mulberry32(5000 + s), age = t - s / 30;
+    if (age < 0) continue;
+    for (let i = 0; i < 9; i++) {
+      const x = r() * 900 - 90, d = -480 + r() * 600, pd = r();
+      const pu = PUDDLES[Math.floor(r() * PUDDLES.length)];
+      const inP = pd < 0.45;
+      const wx = inP ? pu.x + (r() - 0.5) * pu.rx * 1.5 : x, wd = inP ? pu.d + (r() - 0.5) * pu.rd * 1.3 : d;
+      if (wd > 140) continue;
+      const [X, Y, k] = P([wx, wd, 0]);
+      const u = age / 0.16; if (u > 1) continue;
+      c.strokeStyle = `rgba(220,220,222,${0.45 * (1 - u)})`;
+      c.beginPath(); c.ellipse(X, Y, (2 + 9 * u) * k, (0.7 + 2.6 * u) * k, 0, 0, TAU); c.stroke();
+    }
+  }
+  c.restore();
+}
+function drawSnow(c, t, near) {
+  c.save();
+  for (let i = 0; i < FLAKES.length; i++) {
+    const p = FLAKES[i];
+    if ((i % 3 === 0) !== near) continue;
+    const y = ((p.y + t * p.v * (near ? 1.4 : 1)) % 1400) - 60;
+    const x = p.x + 14 * Math.sin(t * p.f + p.ph) + 0.04 * y;
+    const s = p.s * (near ? 1.7 : 1);
+    c.fillStyle = `rgba(250,250,250,${p.a * (near ? 0.85 : 0.7)})`;
+    c.beginPath(); c.arc(x, y, s, 0, TAU); c.fill();
+  }
+  c.restore();
+}
+
+// ---------------------------------------------------------------- set drawing
+function quad(c, pts, fill, stroke, lw = 1.5) {
+  poly(c, pts);
+  if (fill) { c.fillStyle = fill; c.fill(); }
+  if (stroke) { c.strokeStyle = stroke; c.lineWidth = lw; c.stroke(); }
+}
+const BLACK = '#0b0b0c';
+const frameCol = () => ({ front: BLACK, top: '#1a1a1c', side: '#121214', edge: 'rgba(0,0,0,0.5)' });
+function post(c, x, d, z0, z1, w = 5) { box(c, { x0: x - w / 2, x1: x + w / 2, d0: d - w / 2, d1: d + w / 2, z0, z1 }, frameCol()); }
+
+function drawShelterBack(c, pal, t, sn) {
+  const { x0, x1, d0, d1, z1 } = SHELTER;
+  // back glass: light grey, see-through
+  const g = [[x0, d1, 16], [x1, d1, 16], [x1, d1, z1], [x0, d1, z1]];
+  quad(c, g, grey(lerp(206, 150, pal.name === 'night' ? 1 : 0), pal.name === 'night' ? 0.12 : 0.3));
+  // a few soft highlights in the glass
+  c.save(); poly(c, g); c.clip();
+  for (const [a, w] of [[0.18, 26], [0.27, 9], [0.62, 34], [0.71, 10]]) {
+    const xa = lerp(x0, x1, a);
+    quad(c, [[xa, d1, 16], [xa + w, d1, 16], [xa + w + 110, d1, z1], [xa + 110, d1, z1]], grey(255, pal.name === 'night' ? 0.03 : 0.07));
+  }
+  c.restore();
+  // frame of the back panel
+  c.save(); c.lineJoin = 'round';
+  poly(c, g); c.strokeStyle = BLACK; c.lineWidth = 3; c.stroke();
+  const m1 = P([x0, d1, 60]), m2 = P([x1, d1, 60]);
+  c.beginPath(); c.moveTo(m1[0], m1[1]); c.lineTo(m2[0], m2[1]); c.lineWidth = 2.2; c.stroke();
+  c.restore();
+  post(c, x0, d1, 0, z1 + 4); post(c, x1, d1, 0, z1 + 4);
+  // side panels (left one seen from outside, right one from inside)
+  for (const x of [x0, x1]) quad(c, [[x, d0, 16], [x, d1, 16], [x, d1, z1], [x, d0, z1]], grey(200, pal.name === 'night' ? 0.08 : 0.2), BLACK, 2.4);
+}
+function drawShelterFront(c, pal, t, sn) {
+  const { x0, x1, d0, d1, z1, roof } = SHELTER;
+  post(c, x0, d0, 0, z1 + 2); post(c, x1, d0, 0, z1 + 2);
+  // roof slab: underside (we look up at it), then the front edge
+  quad(c, [[x0 - 8, d0 - 8, z1], [x1 + 8, d0 - 8, z1], [x1 + 8, d1 + 8, z1], [x0 - 8, d1 + 8, z1]], '#151517');
+  box(c, { x0: x0 - 8, x1: x1 + 8, d0: d0 - 8, d1: d1 + 8, z0: z1, z1: z1 + roof }, { front: '#202023', top: '#2a2a2d', side: '#18181a' });
+  if (sn > 0) snowCap(c, [x0 - 10, d0 - 9, z1 + roof], [x1 + 10, d0 - 9, z1 + roof], 1.5 + 6 * sn);
+}
+function drawBench(c, pal, t, sn) {
+  const { x0, x1, d0, d1, z0, z1 } = BENCH;
+  const col = { front: '#2c2c2f', top: '#3c3c40', side: '#232326', edge: 'rgba(0,0,0,0.55)' };
+  for (const x of [x0 + 14, x1 - 14]) { box(c, { x0: x - 2.5, x1: x + 2.5, d0: d1 - 6, d1: d1 - 1, z0: 0, z1: z0 }, frameCol()); }
+  box(c, { x0: x0, x1: x1, d0: d1 - 2, d1: d1 + 2, z0: z1 + 22, z1: z1 + 40 }, col);          // back rail
+  for (const x of [x0 + 14, x1 - 14]) box(c, { x0: x - 2, x1: x + 2, d0: d1 - 1, d1: d1 + 1, z0: z1, z1: z1 + 24 }, frameCol());
+  box(c, { x0, x1, d0, d1, z0, z1 }, col);
+  for (const x of [x0 + 14, x1 - 14]) box(c, { x0: x - 2.5, x1: x + 2.5, d0: d0 + 1, d1: d0 + 6, z0: 0, z1: z0 }, frameCol());
+  // slat line and outline
+  c.save(); c.strokeStyle = 'rgba(0,0,0,0.7)'; c.lineWidth = 1.6;
+  let a = P([x0, d0, z1]), b = P([x1, d0, z1]); c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  a = P([x0, d0, z0]); b = P([x1, d0, z0]); c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  c.restore();
+  if (sn > 0) {
+    // the free part of the bench (B sits at the left end) and the back rail fill up with snow
+    snowCap(c, [x0 + 128, d0 + 2, z1], [x1, d0 + 2, z1], 1.2 + 7 * sn);
+    snowCap(c, [x0 + 2, d1, z1 + 40], [x1 - 2, d1, z1 + 40], 1 + 4.5 * sn);
+  }
+}
+// a thin white snow layer with a grey outline sitting on top of an edge (screen-space thickness th)
+function snowCap(c, a, b, th) {
+  const A = P(a), B = P(b), k = A[2];
+  c.save(); c.lineJoin = 'round';
+  c.beginPath();
+  c.moveTo(A[0] - 1, A[1] + 1);
+  c.quadraticCurveTo(A[0] + 2, A[1] - th * k, A[0] + 10 * k, A[1] - th * k);
+  c.lineTo(B[0] - 10 * k, B[1] - th * k);
+  c.quadraticCurveTo(B[0] - 2, B[1] - th * k, B[0] + 1, B[1] + 1);
+  c.closePath();
+  c.fillStyle = '#f4f4f2'; c.fill(); c.strokeStyle = 'rgba(110,110,112,0.9)'; c.lineWidth = 1.3; c.stroke();
+  c.restore();
+}
+
+function drawPole(c, pal, t, sn) {
+  box(c, { x0: POLE.x - 3.5, x1: POLE.x + 3.5, d0: POLE.d - 3.5, d1: POLE.d + 3.5, z0: 0, z1: POLE.z1 }, { front: '#1d1d20', top: '#2a2a2d', side: '#151517' });
+  // timetable
+  const tb = TABLE;
+  box(c, { ...tb, z0: tb.z0, z1: tb.z1 }, { front: grey(pal.name === 'night' ? 150 : 196), top: grey(120), side: grey(110), edge: 'rgba(0,0,0,0.6)' });
+  const fr = [[tb.x0, tb.d0, tb.z0], [tb.x1, tb.d0, tb.z0], [tb.x1, tb.d0, tb.z1], [tb.x0, tb.d0, tb.z1]];
+  quad(c, fr, null, BLACK, 2.2);
+  const k = P([tb.x0, tb.d0, tb.z1])[2];
+  const tl = P([tb.x0 + 6, tb.d0, tb.z1 - 8]);
+  c.save();
+  c.fillStyle = '#1b1b1d';
+  c.font = `800 ${(8.6 * k).toFixed(2)}px "JetBrains Mono", "DejaVu Sans Mono", monospace`; c.textBaseline = 'top';
+  c.fillText('NEXT BUS:', tl[0], tl[1]);
+  c.font = `800 ${(10.5 * k).toFixed(2)}px "JetBrains Mono", "DejaVu Sans Mono", monospace`;
+  const l2 = P([tb.x0 + 6, tb.d0, tb.z1 - 22]); c.fillText('SOON', l2[0], l2[1]);
+  // empty timetable rows
+  c.strokeStyle = 'rgba(20,20,22,0.35)'; c.lineWidth = 1.1;
+  for (let i = 0; i < 4; i++) { const z = tb.z1 - 40 - i * 7.5; const a = P([tb.x0 + 6, tb.d0, z]), b = P([tb.x1 - 6 - (i % 2) * 14, tb.d0, z]); c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke(); }
+  c.restore();
+  if (sn > 0) snowCap(c, [tb.x0 - 1, tb.d0, tb.z1], [tb.x1 + 1, tb.d0, tb.z1], 1 + 3 * sn);
+  // the sign box (its tubes are drawn after the light pass, they glow)
+  box(c, SIGN, { front: '#121214', top: '#1c1c1f', side: '#0e0e10', edge: 'rgba(0,0,0,0.6)' });
+  const s = SIGN, sf = [[s.x0, s.d0, s.z0], [s.x1, s.d0, s.z0], [s.x1, s.d0, s.z1], [s.x0, s.d0, s.z1]];
+  quad(c, sf, null, '#2e2e32', 2.6);
+  const inner = [[s.x0 + 6, s.d0, s.z0 + 6], [s.x1 - 6, s.d0, s.z0 + 6], [s.x1 - 6, s.d0, s.z1 - 6], [s.x0 + 6, s.d0, s.z1 - 6]];
+  quad(c, inner, null, 'rgba(255,255,255,0.06)', 1.2);
+  // the bracket on the pole
+  box(c, { x0: POLE.x - 5, x1: POLE.x + 5, d0: -5, d1: 3, z0: POLE.z1 - 8, z1: s.z0 }, frameCol());
+  if (sn > 0) snowCap(c, [s.x0 - 2, s.d0, s.z1], [s.x1 + 2, s.d0, s.z1], 1.5 + 6 * sn);
+}
+// MOTIVATION in warm yellow tubes. on = 0..1; drawn after the light pass (it is a light)
+function signRect() {
+  const s = SIGN, a = P([s.x0, s.d0, s.z1]), b = P([s.x1, s.d0, s.z0]);
+  return { cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2, w: b[0] - a[0], h: b[1] - a[1] };
+}
+function signText(c, on) {
+  const { cx, cy, w, h } = signRect();
+  const size = w * 0.122;
+  c.save();
+  c.font = `800 ${size.toFixed(2)}px "JetBrains Mono", "DejaVu Sans Mono", monospace`;
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  const txt = 'MOTIVATION', sp = size * 0.1;
+  const cw = c.measureText('M').width, total = txt.length * cw + (txt.length - 1) * sp;
+  const put = (style, blur, alpha, lw) => {
+    c.shadowColor = blur ? rgb(NEON, alpha) : 'transparent'; c.shadowBlur = blur;
+    let x = cx - total / 2 + cw / 2;
+    for (const ch of txt) {
+      if (lw) { c.lineWidth = lw; c.strokeStyle = style; c.strokeText(ch, x, cy); } else { c.fillStyle = style; c.fillText(ch, x, cy); }
+      x += cw + sp;
+    }
+  };
+  // dead tubes: dark grey glass
+  put('#3c3a36', 0, 0, 0);
+  if (on > 0.003) {
+    c.globalCompositeOperation = 'lighter';
+    put(rgb(NEON, 0.9 * on), 22, 0.9 * on, size * 0.16);
+    c.globalCompositeOperation = 'source-over';
+    put(rgb(mixc([60, 58, 54], NEON_CORE, Math.min(1, on * 1.1))), 10, 0.8 * on, 0);
+  }
+  c.restore();
+  return { cx, cy, w, h };
+}
+function drawLamp(c, pal, t, lit) {
+  const L = LAMP;
+  box(c, { x0: L.x - 3.5, x1: L.x + 3.5, d0: L.d - 3.5, d1: L.d + 3.5, z0: 0, z1: L.z1 }, { front: '#18181a', top: '#222225', side: '#121214' });
+  // the arm bends over toward the road, the head hangs at its end
+  const p0 = P([L.x, L.d, L.z1]), p1 = P([L.x + 18, L.d, L.z1 + 22]), p2 = P([L.x + 52, L.d, L.z1 + 22]);
+  c.save(); c.lineCap = 'round'; c.strokeStyle = '#18181a'; c.lineWidth = 6 * p0[2];
+  c.beginPath(); c.moveTo(p0[0], p0[1]); c.quadraticCurveTo(p1[0], p1[1], p2[0], p2[1]); c.stroke();
+  const h = P([L.x + 58, L.d, L.z1 + 16]), k = h[2];
+  c.beginPath(); c.moveTo(h[0] - 22 * k, h[1] - 6 * k); c.lineTo(h[0] + 18 * k, h[1] - 6 * k); c.lineTo(h[0] + 12 * k, h[1] + 4 * k); c.lineTo(h[0] - 16 * k, h[1] + 4 * k); c.closePath();
+  c.fillStyle = '#1c1c1f'; c.fill(); c.strokeStyle = BLACK; c.lineWidth = 2; c.stroke();
+  c.beginPath(); c.ellipse(h[0] - 2 * k, h[1] + 4.5 * k, 13 * k, 2.6 * k, 0, 0, TAU);
+  c.fillStyle = lit ? '#f2f2ee' : '#55555a'; c.fill();
+  c.restore();
+  return [h[0] - 2 * k, h[1] + 5 * k];
+}
+
+// the far edge of town: a few low blocks on the right, open land and a line of poles to the left
+const FAR = (() => {
+  const r = mulberry32(17), blocks = [];
+  let x = 400;
+  while (x < 1000) { const w = 50 + r() * 90; blocks.push({ x, w, h: 30 + r() * 95, win: r() }); x += w + r() * 18; }
+  return { blocks };
+})();
+function drawFar(c, pal, t, yH) {
+  const fc = pal.far;
+  c.save();
+  for (const b of FAR.blocks) {
+    const X = (b.x - cam.x) * 0.62 + W / 2;
+    c.fillStyle = grey(fc); c.fillRect(X, yH - b.h * 0.62, b.w * 0.62, b.h * 0.62 + 1);
+    if (pal.name === 'night') {
+      const r = mulberry32(Math.floor(b.x));
+      for (let yy = yH - b.h * 0.62 + 6; yy < yH - 6; yy += 9) for (let xx = X + 5; xx < X + b.w * 0.62 - 5; xx += 9) if (r() < 0.16) { c.fillStyle = grey(70, 0.8); c.fillRect(xx, yy, 3, 4); }
+    }
+  }
+  // distant poles and a sagging wire, out of town to the left
+  c.strokeStyle = grey(fc, 0.9); c.lineWidth = 1.4;
+  let prev = null;
+  for (let i = 0; i < 6; i++) {
+    const X = 40 + i * 70 - (cam.x - 380) * 0.62, top = yH - 34;
+    c.beginPath(); c.moveTo(X, yH); c.lineTo(X, top); c.moveTo(X - 6, top + 4); c.lineTo(X + 6, top + 4); c.stroke();
+    if (prev !== null) { c.beginPath(); c.moveTo(prev, top + 4); c.quadraticCurveTo((prev + X) / 2, top + 11, X, top + 4); c.stroke(); }
+    prev = X;
+  }
+  c.restore();
+}
+
+function drawGround(c, pal, t, sn) {
+  const yH = P([0, HORIZ, 0])[1];
+  // sky
+  let g = c.createLinearGradient(0, 0, 0, yH);
+  g.addColorStop(0, grey(pal.skyT)); g.addColorStop(1, grey(pal.skyH));
+  c.fillStyle = g; c.fillRect(0, 0, W, yH + 1);
+  drawFar(c, pal, t, yH);
+  // ground (snow makes it lighter as it piles up)
+  const gv0 = pal.name === 'snow' ? lerp(150, pal.g0, sn) : pal.g0, gv1 = pal.name === 'snow' ? lerp(84, pal.g1, sn) : pal.g1;
+  g = c.createLinearGradient(0, yH, 0, H);
+  g.addColorStop(0, grey(gv0)); g.addColorStop(1, grey(gv1));
+  c.fillStyle = g; c.fillRect(0, yH, W, H - yH);
+  // the field behind the back path is a little darker
+  const yb = P([0, BG + 40, 0])[1];
+  c.fillStyle = grey(0, 0.08); c.fillRect(0, yH, W, yb - yH);
+  // road: darker band in front of the curb, with a dashed centre line
+  const yc = P([0, CURB, 0])[1];
+  c.fillStyle = grey(pal.road < 0 ? 0 : 255, Math.abs(pal.road) / 100 + 0.08); c.fillRect(0, yc, W, H - yc);
+  c.fillStyle = grey(pal.name === 'night' ? 40 : 200, pal.name === 'night' ? 0.5 : 0.22); c.fillRect(0, yc - 4, W, 3);
+  c.fillStyle = grey(0, 0.5); c.fillRect(0, yc - 1, W, 2.2);
+  const ys = P([0, BG - 18, 0])[1];
+  c.fillStyle = grey(0, 0.18); c.fillRect(0, ys, W, 1.6);
+  c.save(); c.fillStyle = grey(pal.name === 'night' ? 60 : 210, pal.name === 'night' ? 0.4 : 0.3);
+  for (let x = -400; x < 1400; x += 150) {
+    poly(c, [[x, -290, 0], [x + 80, -290, 0], [x + 80, -305, 0], [x, -305, 0]]); c.fill();
+  }
+  c.restore();
+  return yH;
+}
+function drawPuddles(c, pal, t) {
+  for (const p of PUDDLES) {
+    const [X, Y, k] = P([p.x, p.d, 0]);
+    const yA = P([p.x, p.d - p.rd, 0])[1], yB = P([p.x, p.d + p.rd, 0])[1];
+    const rx = p.rx * k, ry = (yA - yB) / 2;
+    c.save();
+    c.beginPath(); c.ellipse(X, Y, rx, ry, 0, 0, TAU);
+    c.fillStyle = 'rgba(8,8,10,0.55)'; c.fill();
+    c.strokeStyle = 'rgba(200,200,205,0.10)'; c.lineWidth = 1.2; c.stroke();
+    c.restore();
+  }
+}
+// the sign mirrored in the puddles: a wavy, stretched yellow streak (emissive, after the light pass)
+const PUD = document.createElement('canvas'); PUD.width = 360; PUD.height = 90;
+const pudc = PUD.getContext('2d');
+function puddleNeon(t, on) {
+  if (on <= 0.003) return;
+  pudc.setTransform(1, 0, 0, 1, 0, 0); pudc.clearRect(0, 0, PUD.width, PUD.height);
+  pudc.font = '800 34px "JetBrains Mono", "DejaVu Sans Mono", monospace'; pudc.textAlign = 'center'; pudc.textBaseline = 'middle';
+  pudc.shadowColor = rgb(NEON, 1); pudc.shadowBlur = 10; pudc.fillStyle = rgb(NEON_CORE);
+  pudc.save(); pudc.translate(180, 45); pudc.scale(1, -1); pudc.fillText('MOTIVATION', 0, 0); pudc.restore();
+  const s = signRect();
+  for (const p of PUDDLES) {
+    const [X, Y, k] = P([p.x, p.d, 0]);
+    const yA = P([p.x, p.d - p.rd, 0])[1], yB = P([p.x, p.d + p.rd, 0])[1];
+    const rx = p.rx * k, ry = (yA - yB) / 2;
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(X, Y, rx, ry, 0, 0, TAU); ctx.clip();
+    ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.5 * on * p.neon;
+    ctx.filter = 'blur(1.6px)';
+    // drawn strip by strip with a ripple offset
+    const w = s.w * 1.05 * k / 1.1, h = ry * 1.7, x0 = s.cx + (X - s.cx) * 0.25 - w / 2;
+    const n = 14;
+    for (let i = 0; i < n; i++) {
+      const sy = i * PUD.height / n, dy = Y - ry * 0.75 + i * h / n;
+      const ox = 4 * Math.sin(t * 7 + i * 1.3) * k;
+      ctx.drawImage(PUD, 0, sy, PUD.width, PUD.height / n + 0.5, x0 + ox, dy, w, h / n + 1);
+    }
+    ctx.filter = 'none';
+    // a soft yellow sheen in the water
+    const gg = ctx.createRadialGradient(s.cx, Y, 0, s.cx, Y, rx * 1.2);
+    gg.addColorStop(0, rgb(NEON, 0.25)); gg.addColorStop(1, rgb(NEON, 0));
+    ctx.fillStyle = gg; ctx.fillRect(X - rx, Y - ry, 2 * rx, 2 * ry);
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------- figure props: the watch, snow caps, breath
+function watchProp(c, J) {
+  const el = J.el.L, hd = J.hand.L, w = lerp3(el, hd, 0.8), a = P(lerp3(el, hd, 0.72)), b = P(lerp3(el, hd, 0.88)), k = a[2];
+  c.save(); c.lineCap = 'butt';
+  c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]);
+  c.strokeStyle = INK; c.lineWidth = (DIM.limbW + 2 * DIM.outline) * k; c.stroke();
+  c.strokeStyle = '#3a3a3e'; c.lineWidth = DIM.limbW * 0.92 * k; c.stroke();
+  c.restore();
+  return w;
+}
+function figureProps(fig, J, sec, t) {
+  const props = [];
+  if (fig.id[0] === 'B') {
+    const ad = (J.sh.L[1] + J.el.L[1] + J.hand.L[1]) / 3 - 0.5;
+    props.push({ d: ad - 0.01, draw: c => watchProp(c, J) });
+  }
+  if (sec === 'snow' && fig.id[0] === 'B') {
+    const sn = snowAmt(t);
+    const headD = Math.min((J.P[1] + J.N[1]) / 2 - 0.2, J.Hc[1]);
+    props.push({ d: headD + 0.05, draw: c => snowOnShoulders(c, J, sn) });
+    props.push({ d: -1e4, draw: c => snowOnHead(c, J, sn) });
+  }
+  return props;
+}
+function snowOnHead(c, J, sn) {
+  const th = 2 + 8 * sn;
+  const [X, Y, k] = P(J.Hc), r = (DIM.headR + DIM.outline * 0.4) * k, T2 = th * k;
+  // a cap on top of the head: thickest on top, thin at the sides (an ellipse cut by the head)
+  c.save();
+  c.beginPath(); c.rect(X - 3 * r, Y - 3 * r, 6 * r, 6 * r); c.arc(X, Y, r, 0, TAU, true); c.clip();
+  c.beginPath(); c.rect(X - 3 * r, Y - 3 * r, 6 * r, 3 * r - r * 0.25); c.clip();
+  c.beginPath(); c.ellipse(X, Y - r * 0.32, r * 0.9, r * 0.68 + T2, 0, 0, TAU);
+  c.fillStyle = '#fbfbfa'; c.fill(); c.strokeStyle = 'rgba(70,70,72,0.95)'; c.lineWidth = 1.6; c.stroke();
+  c.restore();
+  // its soft shadow on the head just below the cap
+  c.save();
+  c.beginPath(); c.arc(X, Y, DIM.headR * k, 0, TAU); c.clip();
+  c.beginPath(); c.arc(X, Y - r * 0.02, r * 0.98, PI + 0.5, TAU - 0.5);
+  c.strokeStyle = 'rgba(120,120,124,0.45)'; c.lineWidth = 3 * k; c.stroke();
+  c.restore();
+}
+function snowOnShoulders(c, J, sn) {
+  const T2 = (1.5 + 6 * sn) * P(J.N)[2];
+  c.save(); c.lineCap = 'round';
+  // along the shoulders and the top of the hunched back
+  for (const [p0, p1] of [[lerp3(J.C, J.N, 0.3), J.N], [lerp3(J.N, J.sh.L, 0.05), J.sh.L], [lerp3(J.N, J.sh.R, 0.05), J.sh.R]]) {
+    const k = P(J.N)[2], a = P(p0), b = P(p1), up = (DIM.limbW / 2 + DIM.outline) * k + T2 * 0.4;
+    c.beginPath(); c.moveTo(a[0], a[1] - up); c.lineTo(b[0], b[1] - up * 0.9);
+    c.strokeStyle = 'rgba(70,70,72,0.95)'; c.lineWidth = T2 * 0.85 + 2.6; c.stroke();
+    c.strokeStyle = '#fbfbfa'; c.lineWidth = T2 * 0.85; c.stroke();
+  }
+  c.restore();
+}
+// breath clouds in the cold: one puff at the start of every out-breath (B breathes with the engine's 3.6 s cycle)
+function breathPuffs(c, fig, t, J) {
+  const sd = fig.seed, per = 3.6;
+  for (let n = -2; n < 8; n++) {
+    const t0 = ((0.5 * PI - sd) / TAU + n) * per;
+    const age = t - t0;
+    if (age < 0 || age > 1.6) continue;
+    const base = add(add(J.Hc, mul(norm(add(J.Ft, [0, 0, -0.5])), 30)), [0, 0, -6]);
+    const p = add(base, add(mul(J.Ft, 16 * age), [5 * age, 0, 14 * age]));
+    const [X, Y, k] = P(p), rr = (7 + 16 * age) * k, a = 0.32 * sstep(0, 0.15, age) * (1 - age / 1.6);
+    const g = c.createRadialGradient(X, Y, 0, X, Y, rr);
+    g.addColorStop(0, `rgba(250,250,250,${a})`); g.addColorStop(1, 'rgba(250,250,250,0)');
+    c.fillStyle = g; c.beginPath(); c.arc(X, Y, rr, 0, TAU); c.fill();
+  }
+}
+
+// ---------------------------------------------------------------- light map (multiplied over the frame)
+const LM = document.createElement('canvas'); LM.width = W / 4; LM.height = H / 4;
+const lmc = LM.getContext('2d');
+function lightPass(ambient, lights) {
+  lmc.setTransform(1, 0, 0, 1, 0, 0); lmc.globalCompositeOperation = 'source-over';
+  lmc.fillStyle = rgb(ambient); lmc.fillRect(0, 0, LM.width, LM.height);
+  lmc.setTransform(0.25, 0, 0, 0.25, 0, 0); lmc.globalCompositeOperation = 'lighter';
+  for (const L of lights) {
+    if (L.a <= 0.002) continue;
+    lmc.save(); lmc.translate(L.x, L.y); lmc.scale(1, L.sy || 1);
+    const g = lmc.createRadialGradient(0, 0, 0, 0, 0, L.r);
+    g.addColorStop(0, rgb(L.col, L.a)); g.addColorStop(L.mid || 0.45, rgb(L.col, L.a * 0.4)); g.addColorStop(1, rgb(L.col, 0));
+    lmc.fillStyle = g; lmc.fillRect(-L.r, -L.r, 2 * L.r, 2 * L.r); lmc.restore();
+  }
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(LM, 0, 0, W, H); ctx.restore();
+}
+function glowAt(x, y, r, col, a, op = 'lighter', sy = 1) {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = op; ctx.translate(x, y); ctx.scale(1, sy);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(-r, -r, 2 * r, 2 * r); ctx.restore();
+}
+
+// background figures are drawn on their own layer so the haze and the glass can soften them without seams
+const BGL = document.createElement('canvas'); BGL.width = W; BGL.height = H;
+const bgx = BGL.getContext('2d');
+
+// ---------------------------------------------------------------- one day
+function drawSection(sec, t) {
+  const pal = { ...PAL[sec], name: sec };
+  setCam(t);
+  const on = neonI(t);
+  const sn = sec === 'snow' ? snowAmt(t) : 0;
+  const night = sec === 'night';
+  const [fa, fb] = FIGS[sec];
+  const Ja = fa.pose(t), Jb = fb.pose(t);
+  const bgFig = sec === 'rain' || sec === 'snow';
+  const fgA = !bgFig;
+
+  const yH = drawGround(ctx, pal, t, sn);
+  if (sec === 'rain') drawPuddles(ctx, pal, t);
+
+  // everything that stands on the ground, sorted far to near
+  const items = (c, mirror) => {
+    const list = [];
+    list.push({ d: SHELTER.d1, draw: () => drawShelterBack(c, pal, t, sn) });
+    list.push({ d: BENCH.d1 - 1, draw: () => drawBench(c, pal, t, sn) });
+    // B stands right of the pole and in front of it, also while his pelvis is still back over the bench
+    list.push({ d: Math.min(Jb.P[1], POLE.d - 1), draw: () => drawFigure(c, fb, Jb, { props: figureProps(fb, Jb, sec, t).map(p => ({ d: p.d, draw: () => p.draw(c) })) }) });
+    list.push({ d: SHELTER.d0, draw: () => drawShelterFront(c, pal, t, sn) });
+    list.push({ d: POLE.d, draw: () => drawPole(c, pal, t, sn) });
+    list.push({ d: LAMP.d, draw: () => drawLamp(c, pal, t, night) });
+    if (fgA) list.push({ d: Ja.P[1], draw: () => drawFigure(c, fa, Ja) });
+    if (mirror && bgFig) list.push({ d: Ja.P[1], draw: () => drawFigure(c, fa, Ja) });
+    list.sort((a, b) => b.d - a.d);
+    for (const it of list) it.draw();
+  };
+  reflection(c => items(c, true), P([0, BG, 0])[1], pal.refl);
+
+  // the background runner, softened by distance and weather, behind the glass
+  if (bgFig) {
+    bgx.setTransform(1, 0, 0, 1, 0, 0); bgx.clearRect(0, 0, W, H);
+    contactShadow(bgx, Ja, 0.35);
+    drawFigure(bgx, fa, Ja);
+    bgx.globalCompositeOperation = 'source-atop'; bgx.fillStyle = grey(pal.haze, pal.hazeA); bgx.fillRect(0, 0, W, H);
+    bgx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(BGL, 0, 0);
+  }
+  contactShadow(ctx, Jb, 0.42);
+  if (fgA) contactShadow(ctx, Ja, 0.5);
+  items(ctx, false);
+  if (sec === 'snow') breathPuffs(ctx, fb, t, Jb);
+
+  // weather in front
+  if (sec === 'rain') { drawSplashes(ctx, t); drawRain(ctx, t); }
+  if (sec === 'snow') { drawSnow(ctx, t, false); }
+
+  // light: ambient, the sign's warm pool, the street lamp at night
+  const sg = P([(SIGN.x0 + SIGN.x1) / 2, SIGN.d0, (SIGN.z0 + SIGN.z1) / 2]);
+  const sgF = P([(SIGN.x0 + SIGN.x1) / 2, -40, 0]);
+  const lampH = P([LAMP.x + 56, LAMP.d, LAMP.z1 + 20]), lampF = P([LAMP.x + 60, -40, 0]);
+  const nI = pal.neon * on;
+  lightPass([pal.amb, pal.amb, pal.amb], [
+    { x: sg[0], y: sg[1] + 120, r: 470, col: NEON_L, a: nI * 0.75, sy: 1.15, mid: 0.38 },
+    { x: sgF[0], y: sgF[1], r: 330, col: NEON_L, a: nI * 0.5, sy: 0.32 },
+    { x: lampH[0], y: lampH[1] + 300, r: 560, col: [232, 232, 228], a: night ? 0.62 : 0, sy: 1.0, mid: 0.4 },
+    { x: lampF[0], y: lampF[1], r: 400, col: [240, 240, 236], a: night ? 0.55 : 0, sy: 0.3 },
+  ]);
+
+  // lights themselves
+  if (night) {
+    const lh = P([LAMP.x + 56, LAMP.d, LAMP.z1 + 20]);
+    softLayer(16, 'screen', c => {
+      const g = c.createLinearGradient(0, lh[1], 0, lampF[1] + 30);
+      g.addColorStop(0, 'rgba(235,235,230,0.17)'); g.addColorStop(1, 'rgba(235,235,230,0)');
+      c.fillStyle = g; c.beginPath(); c.moveTo(lh[0] - 14, lh[1]); c.lineTo(lh[0] + 14, lh[1]); c.lineTo(lh[0] + 210, lampF[1] + 30); c.lineTo(lh[0] - 210, lampF[1] + 30); c.closePath(); c.fill();
+    });
+    glowAt(lh[0], lh[1] + 4, 90, [240, 240, 236], 0.5);
+    glowAt(lh[0], lh[1] + 4, 26, [255, 255, 255], 0.6);
+  }
+  if (sec === 'rain') puddleNeon(t, on);
+  const st = signText(ctx, on);
+  glowAt(st.cx, st.cy, st.w * 0.85, NEON, (night ? 0.3 : sec === 'rain' ? 0.24 : 0.17) * on, 'lighter', 0.55);
+  glowAt(st.cx, st.cy, st.w * 0.55, NEON_L, (night ? 0.16 : 0.1) * on, 'lighter', 0.4);
+  if (sec === 'snow') drawSnow(ctx, t, true);
+
+  vignette(pal.vig);
+  // the day label, small and grey at the bottom
+  dayLabel(SECS.find(s => s.name === sec).label, pal.label);
+  if (night) {
+    captionAt(t, 'IT NEVER CAME.', T.text1a, T.text1b, 44, 10);
+    captionAt(t, 'START WITHOUT IT.', T.text2a, T.text2b, 44, 10);
+  }
+}
+function dayLabel(text, v) {
+  ctx.save();
+  ctx.font = '700 21px "JetBrains Mono", "DejaVu Sans Mono", monospace'; ctx.textBaseline = 'middle';
+  const sp = 7, cw = ctx.measureText('M').width, total = text.length * cw + (text.length - 1) * sp;
+  let x = W / 2 - total / 2;
+  ctx.fillStyle = grey(v, 0.9);
+  for (const ch of text) { ctx.fillText(ch, x, 1206); x += cw + sp; }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- frame: one day, or two days dissolving
+const BUF = document.createElement('canvas'); BUF.width = W; BUF.height = H;
+const bufc = BUF.getContext('2d');
+function draw(t) {
+  let i = SECS.findIndex(s => t < s.t1); if (i < 0) i = SECS.length - 1;
+  const s = SECS[i];
+  // inside a dissolve window around a cut?
+  let other = null, w = 0;
+  if (i > 0 && t < s.t0 + XF / 2) { other = SECS[i - 1]; w = 1 - inv(s.t0 - XF / 2, s.t0 + XF / 2, t); }
+  else if (i < SECS.length - 1 && t > s.t1 - XF / 2) { other = SECS[i + 1]; w = inv(s.t1 - XF / 2, s.t1 + XF / 2, t); }
+  if (!other) { drawSection(s.name, t); return; }
+  w = E.sine(w);
+  drawSection(other.name, t);
+  bufc.setTransform(1, 0, 0, 1, 0, 0); bufc.clearRect(0, 0, W, H); bufc.drawImage(cv, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  drawSection(s.name, t);
+  ctx.save(); ctx.globalAlpha = w; ctx.drawImage(BUF, 0, 0); ctx.restore();
+}
+
+// ---------------------------------------------------------------- checks, render, cues
+const CHECK_FIGS = [[A1, 0, T.cut30 + 0.3], [B1, 0, T.cut30 + 0.3], [A30, T.cut30 - 0.3, T.cut180 + 0.3], [B30, T.cut30 - 0.3, T.cut180 + 0.3],
+  [A180, T.cut180 - 0.3, T.cut365 + 0.3], [B180, T.cut180 - 0.3, T.cut365 + 0.3], [A365, T.cut365 - 0.3, T.end], [B365, T.cut365 - 0.3, T.end]];
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.fadeOut, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+// which day a time belongs to (for the footstep sounds: dry, puddle splash, snow crunch)
+const secAt = t => (SECS.find(s => t < s.t1) || SECS[SECS.length - 1]).name;
+function getCues() {
+  const steps = [];
+  const keep = (F, a, b, where) => { for (const c of F.cues) if (c.t >= a && c.t < b) steps.push({ ...c, sec: secAt(c.t), where }); };
+  keep(A1, 0, T.cut30, 'front'); keep(A30, T.cut30, T.cut180, 'back'); keep(A180, T.cut180, T.cut365, 'back');
+  keep(A365, T.cut365, T.end, 'front'); keep(B365, T.cut365, T.end, 'front');
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  // on-screen spans (sounds of things that are off screen are softer)
+  const onScreen = (F, t) => { setCam(t); const r = F.worldRoot(t); const X = P([r[0], r[1], 0])[0]; return X > -40 && X < W + 40; };
+  steps.forEach(c => { const F = { A1, A30, A180, A365, B365 }[c.fig]; c.onScreen = onScreen(F, c.t); });
+  setCam(0);
+  return {
+    story: { ...T, flick: FLICK, secs: SECS.map(s => ({ name: s.name, t0: s.t0, t1: s.t1 })) },
+    steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end,
+  };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+window.__debug = { A1, B1, A30, B30, A180, B180, A365, B365, cam, P, neonI };
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>

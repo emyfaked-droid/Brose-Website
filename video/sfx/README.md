@@ -66,3 +66,12 @@ cut out one by one, so a recording of separate taps / steps with small gaps work
 `string_slide`, `soft_heartbeat`. Search terms are in `FILES_RED` in `sound-timeline.js`. `rope_pull` and `footsteps_asphalt`
 are cut into single hits (`footsteps_asphalt`: hits 1-5 are hard running steps, 6-10 calm walking steps). `run_breathing` is
 laid from the start of the run (3.5 s): running breaths, a gasp at 2.75 s (tripping), a winded groan at 3.1 s (the knees).
+
+## Extra files for "Motivation"
+
+`street_day`, `car_pass_far`, `neon_buzz`, `bench_creak`, `rain`, `winter_wind`, `night_crickets`, `footsteps_street`,
+`footsteps_puddle`, `footsteps_snow`, `jog_breathing`, `neon_flicker_off`. Search terms are in `FILES_MOT` in `sound-timeline.js`:
+"quiet street ambience birds", "distant car passing", "neon sign buzz", "wooden bench creak", "rain on bus shelter roof",
+"cold winter wind snow", "night ambience crickets", "footsteps on concrete street", "footsteps puddle", "footsteps snow",
+"heavy breathing after running", "neon light flicker turn off". The three footstep files are cut into single steps, so use
+recordings of separate steps with small gaps.

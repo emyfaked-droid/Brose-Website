@@ -29,7 +29,12 @@
     "red:stills": "FILM=red-thread node scripts/stills.js",
     "red:render": "FILM=red-thread node scripts/render.js",
     "red:mix": "FILM=red-thread node scripts/mix.js",
-    "red:build": "npm run red:check && npm run red:render && npm run red:mix"
+    "red:build": "npm run red:check && npm run red:render && npm run red:mix",
+    "mot:check": "FILM=motivation node scripts/check.js && FILM=motivation node scripts/popcheck.js",
+    "mot:stills": "FILM=motivation node scripts/stills.js",
+    "mot:render": "FILM=motivation node scripts/render.js",
+    "mot:mix": "FILM=motivation node scripts/mix.js",
+    "mot:build": "npm run mot:check && npm run mot:render && npm run mot:mix"
   },
   "dependencies": {
     "playwright": "^1.50.0"
