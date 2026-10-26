@@ -59,3 +59,10 @@ cut out one by one, so a recording of separate taps / steps with small gaps work
 `soft_snore`, `tape_rewind`, `tired_sigh`, `keys`, `bag_drop`, `night_outside`, `sofa_flop`, `blanket_rustle` (plus the existing
 `room_tone`, `clock_tick`, `phone_alarm`, `door_open`, `door_close`, `footsteps_wood`, `footsteps_barefoot`). Search terms are in
 `FILES_TIRED` in `sound-timeline.js`. A real `soft_snore` recording should breathe about every 3.6 s (that is the film's breathing).
+
+## Extra files for "The Red Thread"
+
+`city_night`, `streetlamp_hum`, `string_tug`, `rope_pull`, `footsteps_asphalt`, `run_breathing`, `knee_fall`, `sit_down_curb`,
+`string_slide`, `soft_heartbeat`. Search terms are in `FILES_RED` in `sound-timeline.js`. `rope_pull` and `footsteps_asphalt`
+are cut into single hits (`footsteps_asphalt`: hits 1-5 are hard running steps, 6-10 calm walking steps). `run_breathing` is
+laid from the start of the run (3.5 s): running breaths, a gasp at 2.75 s (tripping), a winded groan at 3.1 s (the knees).

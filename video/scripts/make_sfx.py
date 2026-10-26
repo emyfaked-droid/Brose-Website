@@ -885,6 +885,187 @@ def make_blanket_rustle():
     save('blanket_rustle.wav', reverb(fade(y, 0.05, 0.3), 0.35, 0.12, seed=572), peak=0.7)
 
 
+# ------------------------------------------------------------------ The Red Thread
+def loopable(x, xf=0.6):
+    """crossfade the tail into the head so the file loops without a seam (returns len(x) - xf)"""
+    n = int(xf * SR)
+    a = np.sqrt(np.linspace(0, 1, n))
+    head = x[:n] * a + x[-n:] * a[::-1]
+    return np.concatenate([head, x[n:-n]])
+
+
+def make_city_night():
+    """a city far away at night: low traffic rumble, wide air, a few cars passing streets away"""
+    r = rng(601)
+    n = int(16.6 * SR)
+    t = np.arange(n) / SR
+    rumble = fft_filter(r.standard_normal(n), 30, 260, 2)
+    rumble /= np.abs(rumble).max()
+    air = fft_filter(r.standard_normal(n), 400, 2600, 2)
+    air /= np.abs(air).max()
+    y = rumble * (0.55 + 0.12 * np.sin(2 * np.pi * t / 8.3)) + air * 0.07
+    for at, dur, a, lo, hi in [(1.0, 4.5, 0.42, 120, 900), (5.8, 3.8, 0.3, 160, 1300), (9.6, 5.0, 0.45, 110, 800), (13.4, 3.4, 0.28, 150, 1100)]:
+        env = np.exp(-((t - at - dur / 2) / (dur / 3.4)) ** 2)
+        car = fft_filter(r.standard_normal(n), lo, hi, 2)
+        y += car / np.abs(car).max() * env * a
+    save('city_night.wav', loopable(y, 0.6), peak=0.55)
+
+
+def make_streetlamp_hum():
+    """an old street lamp: 100 Hz mains hum with buzzy odd harmonics and a slow, uneven flutter"""
+    r = rng(611)
+    n = int(8.0 * SR)
+    t = np.arange(n) / SR
+    hum = sum(a * np.sin(2 * np.pi * 100 * k * t + ph) for k, a, ph in [(1, 1.0, 0), (2, 0.35, 1.1), (3, 0.5, 0.4), (5, 0.22, 2.0), (7, 0.12, 0.7), (9, 0.07, 1.9)])
+    buzz = np.tanh(3.0 * np.sin(2 * np.pi * 100 * t)) * 0.18
+    flutter = 1 + 0.12 * np.sin(2 * np.pi * 0.25 * t) + 0.05 * np.sin(2 * np.pi * 1.0 * t + 0.6)
+    hiss = fft_filter(r.standard_normal(n), 2500, 7000, 2) * 0.015
+    y = fft_filter((hum + buzz) * flutter, 70, 3200, 2) + hiss
+    save('streetlamp_hum.wav', loopable(y, 0.5), peak=0.5)
+
+
+def make_string_tug():
+    """a hard tug on a thin taut thread: a quick fibre snap, a short dull twang, the slack whipping"""
+    r = rng(621)
+    t = tt(0.9)
+    snap = fft_filter(r.standard_normal(len(t)), 1500, 7000) * np.exp(-t / 0.006) * 1.0
+    twang = np.sin(2 * np.pi * (190 + 60 * np.exp(-t / 0.02)) * t) * np.exp(-t / 0.07) * 0.35
+    whip = np.zeros_like(t)
+    for at, dur, a in [(0.03, 0.12, 0.35), (0.12, 0.16, 0.22), (0.24, 0.2, 0.12)]:
+        whip += fft_filter(r.standard_normal(len(t)), 700, 4500, 2) * np.exp(-((t - at - dur / 2) / (dur / 3)) ** 2) * a
+    grip = fft_filter(r.standard_normal(len(t)), 300, 2500) * np.exp(-t / 0.02) * 0.25
+    x = np.concatenate([np.zeros(int(0.3 * SR)), snap + twang + whip + grip])
+    save('string_tug.wav', reverb(x, 0.5, 0.12, seed=622), peak=0.8)
+
+
+def pull_hit(r, fast):
+    """one hand-over-hand grab: the fingers close on the thread, it slides through the other hand"""
+    t = tt(0.45)
+    d = 0.13 if fast else 0.2
+    grab = fft_filter(r.standard_normal(len(t)), 900, 5000) * np.exp(-t / 0.004) * 0.9
+    slide = fft_filter(r.standard_normal(len(t)), 1200, 6000, 2) * np.exp(-((t - 0.02 - d / 2) / (d / 2.6)) ** 2) * 0.45
+    skin = fft_filter(r.standard_normal(len(t)), 250, 1500, 2) * np.exp(-t / 0.03) * 0.35
+    return grab + slide + skin
+
+
+def make_rope_pull():
+    """eight grabs, 0.6 s apart (the mix slices them and puts one on every pulling stroke)"""
+    r = rng(631)
+    buf = np.zeros(int(5.4 * SR))
+    for i in range(8):
+        place(buf, norm(pull_hit(r, i >= 4), 0.8 - 0.08 * (i % 3)), 0.3 + i * 0.6)
+    save('rope_pull.wav', reverb(buf, 0.45, 0.1, seed=632), peak=0.8)
+
+
+def asphalt_step(seed, hard):
+    r = rng(seed)
+    t = tt(0.5)
+    click = fft_filter(r.standard_normal(len(t)), 1800, 7500) * np.exp(-t / 0.003) * (1.4 if hard else 0.8)
+    f0 = 85 + 15 * r.random()
+    thump = np.sin(2 * np.pi * (f0 + 50 * np.exp(-t / 0.015)) * t) * np.exp(-t / (0.035 if hard else 0.045)) * (1.5 if hard else 0.9)
+    grit = np.zeros_like(t)
+    for k in range(int(30 if hard else 14)):          # sand and grit under the sole
+        at = 0.01 + r.random() * (0.09 if hard else 0.14)
+        place(grit, fft_filter(r.standard_normal(int(0.004 * SR)), 2500, 9000) * np.hanning(int(0.004 * SR)) * (0.1 + 0.15 * r.random()), at)
+    roll = fft_filter(r.standard_normal(len(t)), 600, 3000) * np.exp(-((t - 0.07) / 0.05) ** 2) * (0.08 if hard else 0.12)
+    x = click + thump + grit + roll
+    slap = np.zeros_like(x)                            # one faint echo off the buildings
+    place(slap, fft_filter(x, 300, 4000) * 0.12, 0.085)
+    return x + slap
+
+
+def make_footsteps_asphalt():
+    """five hard running steps, then five calm walking steps (slices 0-4 run, 5-9 walk)"""
+    buf = np.zeros(int(8.0 * SR))
+    for i in range(10):
+        place(buf, norm(asphalt_step(640 + i, i < 5), 0.85 - 0.12 * ((i * 3) % 4) / 3), 0.25 + i * 0.75)
+    save('footsteps_asphalt.wav', buf, peak=0.85)
+
+
+def breath(r, dur, inhale, amp, vowel=(800, 1250, 2500)):
+    t = tt(dur)
+    env = np.sin(np.pi * np.clip(t / dur, 0, 1)) ** (1.6 if inhale else 0.9)
+    if not inhale:
+        env *= np.exp(-t / (dur * 0.8))
+    noise = r.standard_normal(len(t))
+    x = formants(noise, [(vowel[0], 400, 1.0), (vowel[1], 500, 0.7), (vowel[2], 900, 0.35)])
+    x = fft_filter(x, 250 if inhale else 180, 5000 if inhale else 3500, 2)
+    return x / (np.abs(x).max() + 1e-9) * env * amp
+
+
+def make_run_breathing():
+    """3.6 s, starts as the run starts: hard running breaths (in-out with the steps), a sharp gasp at
+    2.75 s (tripping), a winded groan as the knees hit (3.1 s), then heavy panting"""
+    r = rng(651)
+    buf = np.zeros(int(3.9 * SR))
+    at = 0.05
+    while at < 2.6:
+        place(buf, breath(r, 0.16, True, 0.45), at)
+        place(buf, breath(r, 0.2, False, 0.8, (650, 1100, 2400)), at + 0.18)
+        at += 0.44 + 0.03 * r.random()
+    place(buf, breath(r, 0.22, True, 1.0, (900, 1500, 2700)), 2.72)       # gasp
+    place(buf, breath(r, 0.35, False, 0.9, (550, 950, 2300)), 3.08)       # winded groan
+    at = 3.45
+    while at < 3.85:
+        place(buf, breath(r, 0.18, True, 0.55), at)
+        place(buf, breath(r, 0.24, False, 0.75, (650, 1100, 2400)), at + 0.2)
+        at += 0.5
+    save('run_breathing.wav', fade(fft_filter(buf, 150, 6000, 2), 0.02, 0.1), peak=0.75)
+
+
+def make_knee_fall():
+    """falling onto both knees on asphalt: two dull hits, cloth, a short grit scrape"""
+    r = rng(661)
+    t = tt(1.0)
+    y = np.zeros_like(t)
+    for at, a in [(0.3, 1.0), (0.36, 0.8)]:
+        tt2 = tt(0.6)
+        hit = np.sin(2 * np.pi * (95 + 60 * np.exp(-tt2 / 0.015)) * tt2) * np.exp(-tt2 / 0.06) * 1.5 * a
+        hit += fft_filter(r.standard_normal(len(tt2)), 200, 1800) * np.exp(-tt2 / 0.025) * 0.8 * a
+        place(y, hit, at)
+    scrape = fft_filter(r.standard_normal(len(t)), 1800, 8000, 2) * np.exp(-((t - 0.45) / 0.07) ** 2) * 0.18
+    cloth = cloth_burst(r, t, 0.3, 0.3, 0.3, 300, 3000)
+    save('knee_fall.wav', reverb(y + scrape + cloth, 0.5, 0.1, seed=662), peak=0.85)
+
+
+def make_sit_down_curb():
+    """sitting down heavily on a concrete curb: a soft low thump, clothes, the shoes slide on grit"""
+    r = rng(671)
+    t = tt(1.1)
+    thump = np.zeros_like(t)
+    tt2 = tt(0.7)
+    place(thump, np.sin(2 * np.pi * (70 + 35 * np.exp(-tt2 / 0.03)) * tt2) * np.exp(-tt2 / 0.09) * 1.3, 0.3)
+    stone = modes(tt2, [(310, 0.03, 0.25), (520, 0.02, 0.15)])
+    place(thump, stone, 0.3)
+    cloth = cloth_burst(r, t, 0.22, 0.35, 0.45, 250, 3500)
+    scuff = fft_filter(r.standard_normal(len(t)), 1500, 7000, 2) * np.exp(-((t - 0.5) / 0.06) ** 2) * 0.12
+    save('sit_down_curb.wav', reverb(thump + cloth + scuff, 0.45, 0.1, seed=672), peak=0.8)
+
+
+def make_string_slide():
+    """a thin thread sliding fast over the street: a soft, fine hiss that swells and fades (1.4 s)"""
+    r = rng(681)
+    t = tt(1.4)
+    env = np.sin(np.pi * np.clip(t / 1.3, 0, 1)) ** 1.3
+    hiss = fft_filter(r.standard_normal(len(t)), 2500, 9000, 2)
+    tick = np.zeros_like(t)
+    for k in range(70):                                 # grains of grit it brushes over
+        place(tick, fft_filter(r.standard_normal(int(0.003 * SR)), 3000, 9000) * np.hanning(int(0.003 * SR)) * r.random(), r.random() * 1.3)
+    save('string_slide.wav', fade((hiss * 0.5 + tick * 0.8) * env, 0.05, 0.1), peak=0.6)
+
+
+def make_soft_heartbeat():
+    """one soft, warm heartbeat (lub-dub)"""
+    r = rng(691)
+    buf = np.zeros(int(1.3 * SR))
+    for at, f, g, dec in [(0.3, 50, 1.0, 0.08), (0.6, 60, 0.55, 0.07)]:
+        t = tt(0.6)
+        body = np.sin(2 * np.pi * (f + 18 * np.exp(-t / 0.03)) * t) * np.minimum(t / 0.015, 1) * np.exp(-t / dec) * g
+        soft = fft_filter(r.standard_normal(len(t)), 40, 220, 2) * np.exp(-t / 0.05) * 0.25 * g
+        place(buf, body + soft, at)
+    save('soft_heartbeat.wav', reverb(fft_filter(buf, 25, 300, 2), 0.6, 0.15, seed=692), peak=0.85)
+
+
 if __name__ == '__main__':
     make_footsteps()
     make_door_close()
@@ -928,3 +1109,13 @@ if __name__ == '__main__':
     make_night_outside()
     make_sofa_flop()
     make_blanket_rustle()
+    make_city_night()
+    make_streetlamp_hum()
+    make_string_tug()
+    make_rope_pull()
+    make_footsteps_asphalt()
+    make_run_breathing()
+    make_knee_fall()
+    make_sit_down_curb()
+    make_string_slide()
+    make_soft_heartbeat()

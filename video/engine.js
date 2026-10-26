@@ -364,7 +364,13 @@ class Fig {
       const toe = [heel[0] + f[0] * FL * cc, heel[1] + f[1] * FL * cc, heel[2] + FL * sn];
       const lo = Math.min(heel[2], toe[2]);
       if (lo < 0) { heel[2] -= lo; toe[2] -= lo; ank[2] -= lo; }
-      feet[side] = { heel, toe, ank, pitch: th, yaw: yw, kyaw: tg.kyaw === undefined ? undefined : angLerp(ft.yaw, tg.kyaw, w), planted: w >= 1, u: w >= 1 ? 1 : w * 0.7, plant: g, kdir: tg.kdir, kw: w };
+      // knee direction: blends from what the foot had (an earlier goal's kyaw / kdir) to this goal's, never jumps
+      const kyFrom = ft.kyaw === undefined ? undefined : ft.kyaw;
+      const kyaw = tg.kyaw !== undefined ? angLerp(kyFrom ?? ft.yaw, tg.kyaw, w) : kyFrom === undefined ? undefined : angLerp(kyFrom, angLerp(yaw, yw, 0.5), w);
+      let kdir = tg.kdir, kw = w;
+      if (ft.kdir && tg.kdir) { kdir = lerp3(norm(ft.kdir), norm(tg.kdir), w); kw = lerp(ft.kw, 1, w); }
+      else if (ft.kdir) { kdir = ft.kdir; kw = ft.kw * (1 - w); }
+      feet[side] = { heel, toe, ank, pitch: th, yaw: yw, kyaw, planted: w >= 1, u: w >= 1 ? 1 : w * 0.7, plant: g, kdir, kw };
     }
     J.feet = feet;
 

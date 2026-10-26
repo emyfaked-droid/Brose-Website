@@ -141,3 +141,18 @@ Tag someone you should check on today.
   Kniebeuge-Richtung für Fußziele (`kdir`), Untertitel in Farbe.
 - Ton: Wenn ein Film sehr leise ist, hebt die Normalisierung auf -14 LUFS alles stark an. Laute Einzelgeräusche
   (Türen, Taschen) deshalb eher leise ansetzen, sonst muss der Limiter zu viel abfangen.
+
+---
+
+## 10. Fünfter Film: The Red Thread
+
+- Datei `red-thread.html`. Befehle: `npm run red:check`, `red:stills`, `red:render`, `red:mix`, `red:build`.
+- Der Faden ist eine Seil-Simulation (Verlet-Kette). Damit er sich nicht wie Gummi dehnt, kommt nach den weichen Abständen
+  ein "Follow the leader"-Durchgang, der jede Strecke auf höchstens die Gliedlänge zieht. Wird er straff gezogen, gibt B
+  am anderen Ende Faden nach; B wickelt ihn nach einem festen Tempo wieder auf.
+- Gestaltete Momente (Schlaufen um die Laternen, um die Beine, Loslassen) sind weiche Führungen über der Physik.
+  Wichtig: Führungen und Kollisionen dürfen keine Geschwindigkeit aufstauen (sonst fliegt der Faden weg), und der Faden
+  darf durch eine Schlaufe rutschen, sonst reißt er die Schlaufe auf.
+- Engine: Wenn ein Fußziel ein anderes ablöst, wird die Kniebeuge-Richtung jetzt überblendet statt umgeschaltet
+  (sonst klappt das Knie um). Die anderen Filme bleiben pixelgleich.
+- Ton: "alles 10 dB leiser für 1,5 s" geht als Lautstärke-Rampe im jeweiligen Atmo-Bett (`filter: volume=...:eval=frame`).

@@ -24,7 +24,12 @@
     "tired:stills": "FILM=tired-for-you node scripts/stills.js",
     "tired:render": "FILM=tired-for-you node scripts/render.js",
     "tired:mix": "FILM=tired-for-you node scripts/mix.js",
-    "tired:build": "npm run tired:check && npm run tired:render && npm run tired:mix"
+    "tired:build": "npm run tired:check && npm run tired:render && npm run tired:mix",
+    "red:check": "FILM=red-thread node scripts/check.js && FILM=red-thread node scripts/popcheck.js",
+    "red:stills": "FILM=red-thread node scripts/stills.js",
+    "red:render": "FILM=red-thread node scripts/render.js",
+    "red:mix": "FILM=red-thread node scripts/mix.js",
+    "red:build": "npm run red:check && npm run red:render && npm run red:mix"
   },
   "dependencies": {
     "playwright": "^1.50.0"

@@ -268,9 +268,55 @@ function timelineTired(S, cues) {
   return C;
 }
 
+const FILES_RED = {
+  'city_night.mp3':        { search: '"city night ambience distant traffic"', use: 'bed under the whole film (-30 dB)' },
+  'streetlamp_hum.mp3':    { search: '"street lamp buzz"', use: 'while A stands under the lamps (-36 dB)' },
+  'string_tug.mp3':        { search: '"string pull snap"', use: 'the two hard tugs' },
+  'rope_pull.mp3':         { search: '"rope pulling hand over hand"', use: 'one grab on every pulling stroke' },
+  'footsteps_asphalt.mp3': { search: '"footsteps asphalt"', use: 'A running hard, B walking calmly' },
+  'run_breathing.mp3':     { search: '"heavy breathing running"', use: 'the run, the stumble, winded on the knees' },
+  'knee_fall.mp3':         { search: '"person falls to knees"', use: 'A drops to its knees' },
+  'sit_down_curb.mp3':     { search: '"sitting down on concrete"', use: 'A sits down on the curb' },
+  'string_slide.mp3':      { search: '"string sliding on ground"', use: 'the thread slides away over the street (quiet)' },
+  'soft_heartbeat.mp3':    { search: '"single soft heartbeat"', use: 'the hands meet (single, quiet)' },
+};
+
+function timelineRed(S, cues) {
+  const C = [], add = c => C.push(c), END = S.end;
+  // at the stillness every ambience drops by 10 dB for 1.5 s (smooth ramps, done inside each bed)
+  const duck = at => { const a = (S.still0 - at).toFixed(3), b = (S.still0 + 1.5 - at).toFixed(3);
+    return `volume='1-0.684*clip((t-${a})/0.25,0,1)*(1-clip((t-${b})/0.35,0,1))':eval=frame`; };
+  add({ file: 'city_night.mp3', at: 0, dur: END, vol: -30, fadeIn: 0.5, fadeOut: 0.8, loop: true, filter: duck(0) });
+  add({ file: 'streetlamp_hum.mp3', at: 0, dur: S.run, vol: -36, fadeIn: 0.5, fadeOut: 0.5, loop: true });
+  add({ file: 'streetlamp_hum.mp3', at: S.free0, offset: 1.3, dur: END - S.free0, vol: -36, fadeIn: 0.6, fadeOut: 0.8, loop: true, filter: duck(S.free0) });
+  // the thread
+  add({ file: 'string_tug.mp3', at: S.tug1, vol: -23, align: 'onset', fadeOut: 0.2 });
+  add({ file: 'string_tug.mp3', at: S.tug2, vol: -24, align: 'onset', fadeOut: 0.2, rate: 1.06 });
+  S.strokes.forEach((t, i) => add({ file: 'rope_pull.mp3', slice: i, at: t, vol: -27 + Math.min(3, i * 0.5), align: 'onset', fadeOut: 0.05 }));
+  add({ file: 'string_slide.mp3', at: S.move0, dur: S.move1 - S.move0, vol: -33, fadeIn: 0.2, fadeOut: 0.3 });
+  // A: the run, the fall, the curb
+  add({ file: 'run_breathing.mp3', at: S.run, dur: S.free0 - S.run, vol: -25, fadeIn: 0.15, fadeOut: 0.3 });
+  add({ file: 'knee_fall.mp3', at: S.knee - 0.06, vol: -22, align: 'onset', fadeOut: 0.3 });
+  add({ file: 'sit_down_curb.mp3', at: S.sitHit, vol: -25, align: 'onset', fadeOut: 0.3 });
+  // the hands meet
+  add({ file: 'soft_heartbeat.mp3', at: S.meet0, vol: -27, align: 'onset', fadeOut: 0.4 });
+  // steps on the heel contacts: A running hard on the asphalt (slices 0-4), B calm (slices 5-9)
+  let n = 0;
+  for (const c of cues.steps) {
+    const run = c.mood === 'run', jitter = ((n * 7919) % 13) / 13 - 0.5;
+    let vol = run ? -22 : c.who === 'B' ? -28 : -31;
+    if (c.type === 'settle') vol -= 3;
+    add({ file: 'footsteps_asphalt.mp3', slice: run ? n % 5 : 5 + (n % 5), at: c.t, vol: vol + jitter * 2, rate: 1 + jitter * 0.04,
+          align: 'onset', fadeOut: 0.06, note: `${c.who} ${c.side} ${c.type} frame ${c.frame}` });
+    n++;
+  }
+  return C;
+}
+
 module.exports = { FILES, timeline, TARGET_LUFS: -14, CEILING_DBTP: -1.5,
   films: {
     'it-ends-with-you': { FILES: FILES_IEWY, timeline: timelineIewy },
     'i-wish-i-was-your-phone': { FILES: FILES_PHONE, timeline: timelinePhone },
     'tired-for-you': { FILES: FILES_TIRED, timeline: timelineTired },
+    'red-thread': { FILES: FILES_RED, timeline: timelineRed },
   } };

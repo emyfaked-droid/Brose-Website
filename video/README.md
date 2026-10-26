@@ -1,8 +1,9 @@
-# Stick-figure shorts (Ask Twice, It Ends With You, I Wish I Was Your Phone, Tired For You)
+# Stick-figure shorts (Ask Twice, It Ends With You, I Wish I Was Your Phone, Tired For You, The Red Thread)
 
-Four films share one engine (`engine.js`): `index.html` = **Ask Twice**, `it-ends-with-you.html` = **It Ends With You**,
-`i-wish-i-was-your-phone.html` = **I Wish I Was Your Phone**, `tired-for-you.html` = **Tired For You**.
-Use `FILM=<page name>` (or the `npm run iewy:*` / `phone:*` / `tired:*` scripts) to point the render, check and mix scripts at another film.
+Five films share one engine (`engine.js`): `index.html` = **Ask Twice**, `it-ends-with-you.html` = **It Ends With You**,
+`i-wish-i-was-your-phone.html` = **I Wish I Was Your Phone**, `tired-for-you.html` = **Tired For You**,
+`red-thread.html` = **The Red Thread**.
+Use `FILM=<page name>` (or the `npm run iewy:*` / `phone:*` / `tired:*` / `red:*` scripts) to point the render, check and mix scripts at another film.
 
 
 A 19-second vertical (720×1280, 30 fps) stick-figure short drawn entirely in code,
@@ -125,3 +126,24 @@ turns warm. **HE'S NOT LAZY. / HE'S TIRED FOR YOU.**
 - Sound: `FILES_TIRED` / `timelineTired`; the snore is laid on his in-breaths (the breathing period is the file's period).
   `mix.js` now re-checks the true peak after AAC encoding and limits lower if the encoder pushed it over the ceiling.
 - `npm run tired:check | tired:stills | tired:render | tired:mix | tired:build`; output `out/tired-for-you.mp4`.
+
+## The Red Thread (`red-thread.html`)
+
+19 s, a city street at night. A notices a red thread tied to its little finger, tugs it twice, pulls hand over hand faster and
+faster (the slack piles up at its feet, nothing comes), then runs after it. The camera tracks with parallax (the skyline moves much
+slower than the street lamps); the thread catches round two lamp posts and finally round A's legs, A drops to its knees. A frees
+itself and sits on the curb, head down (**YOU DON'T HAVE TO PULL.**), opens its hand and lets the slack fall. The thread slides away
+over the street and lifts into a calm line; B walks in along it, winding it round its hand. A looks up and stands, the hands meet
+and the thread glows (**IT'S ALREADY TIED.**). Red is used only for the thread.
+
+- The thread is a rope simulation (900 particles, Verlet, fixed 1/240 s steps, deterministic): gravity, air drag, floor friction,
+  collisions with the street, the lamp posts, the curb and A's body (capsules). After the soft constraints a follow-the-leader pass
+  keeps it from stretching. The far end is B's spool: B lets thread out when it is pulled tight and reels it in at a scripted rate.
+- Designed moments are soft guides on top of the physics: the wraps round the posts are loops the thread can slide through
+  (the stretch from A's hand to the post is never shorter than the way), the tangle is two loops on A's shins, the slack A
+  holds is released particle by particle as the fingers open. Hand over hand: each stroke grips the thread one reach further.
+- Engine: foot goals now blend the knee direction (`kyaw` / `kdir`) from the goal underneath instead of switching it (no knee
+  flip when one foot goal takes over from another); the other four films render pixel-identical.
+- Sound: `FILES_RED` / `timelineRed`; every pulling stroke gets a grab, the steps are A's hard running steps and B's calm ones,
+  and at 9.4 s both ambiences duck by 10 dB for 1.5 s (a volume ramp inside the bed).
+- `npm run red:check | red:stills | red:render | red:mix | red:build`; output `out/red-thread.mp4`.

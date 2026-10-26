@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Red Thread</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   THE RED THREAD: a red thread on A's little finger. A pulls, runs, gets
+   tangled, gives up and lets go. Then B comes along the thread.
+   The thread is a rope simulation (Verlet chain); B holds the other end
+   the whole time, off screen at first. The engine lives in engine.js.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story
+const T = {
+  fadeIn: 0.5,
+  look0: 0.55, look1: 1.15, turn0: 1.15,
+  tug1: 1.4, tug2: 1.7,
+  pull0: 2.2, pull1: 3.5,
+  run: 3.5, tangle: 6.1, fall0: 6.25, knee: 6.6, camStop: 6.2,
+  free0: 7.0, sit0: 7.1, sitHit: 7.5,
+  text1a: 8.0, text1b: 11.0,
+  open0: 9.0, open1: 9.8, still0: 9.4,
+  move0: 10.4, move1: 11.6,
+  bWalk: 11.35, bStop: 13.4,
+  headUp0: 13.4, headUp1: 14.0, stand0: 13.6, stand1: 14.4,
+  meet0: 14.4, meet1: 15.2,
+  text2a: 15.0, text2b: 18.0,
+  fadeOut: 18.2, end: 19.0,
+  stills: [1.0, 2.8, 5.0, 6.8, 9.4, 11.0, 13.8, 15.5],
+};
+
+// ---------------------------------------------------------------- the street
+const POSTS = [-155, 190, 535, 880, 1225, 1570, 1915, 2260];      // street lamps along the front of the sidewalk
+const POST_D = 8, POST_H = 318, POST_R = 4;
+const LEDGE = { x0: -900, x1: 3200, d0: 76, d1: 100, z1: 30 };  // the low concrete ledge at the back of the sidewalk
+const A0 = [250, 40], X_END = 1290;                            // where A stands, where its run ends
+const B0 = [1765, 36], B_STOP = [1438, 40];
+const RED = [226, 34, 48], LAMPC = [204, 210, 224];
+const SKY = (() => {     // the skyline: far buildings with a few dim windows (deterministic)
+  const r = mulberry32(91), out = [];
+  for (let x = -2600, i = 0; x < 5200; i++) {
+    const w = 260 + r() * 420, h = 900 + r() * 1700, d = 1500 + r() * 1100;
+    const wins = [];
+    for (let wz = 120; wz < h - 80; wz += 70) for (let wx = 50; wx < w - 50; wx += 62) if (r() < 0.33) wins.push([wx, wz, 0.35 + r() * 0.65]);
+    out.push({ x, w, h, d, wins, shade: 0.75 + r() * 0.3 });
+    x += w * (0.55 + r() * 0.5);
+  }
+  return out.sort((a, b) => b.d - a.d);
+})();
+
+// ---------------------------------------------------------------- the figures
+const A = new Fig('A', { x: A0[0], d: A0[1], yaw: -25, seed: 2.1 });
+const B = new Fig('B', { x: B0[0], d: B0[1], yaw: 180, seed: 4.6 });
+const KNOT = J => add(J.hand.R, add(mul(J.Ft, 3), [0, 0, -3]));     // the thread is tied round A's little finger
+const midPole = (side, fn, down = 60, out = 18) => (t, J) => add(lerp3(J.sh[side], fn(t, J), 0.5), add(mul(J.Rt, (side === 'R' ? 1 : -1) * out), [0, 0, -down]));
+
+// hand over hand: strokes get shorter (faster); the hands take turns
+const STROKES = (() => { const out = []; let t = T.pull0; for (let j = 0; t < T.pull1 - 0.05; j++) { const d = lerp(0.24, 0.13, Math.min(1, j / 5)); out.push({ t0: t, t1: t + d, side: j % 2 ? 'L' : 'R' }); t += d; } return out; })();
+function strokeHand(side, t, J) {
+  const sg = side === 'R' ? 1 : -1, sh = J.sh[side];
+  const FW = add(sh, add(add(mul(J.Ft, 60), mul(J.Rt, sg * 2)), [0, 0, -22]));
+  const BK = add(sh, add(add(mul(J.Ft, 16), mul(J.Rt, sg * 12)), [0, 0, -82]));
+  let p = FW, pulled = false;
+  for (const s of STROKES) {
+    if (t < s.t0) break;
+    const u = clamp((t - s.t0) / (s.t1 - s.t0));
+    if (s.side === side) { p = lerp3(FW, BK, E.io(u)); pulled = true; }              // pulls back
+    else if (pulled) p = add(lerp3(BK, FW, E.io(u)), [0, 0, 10 * Math.sin(PI * u)]);  // reaches forward again
+  }
+  return p;
+}
+
+(function a() {
+  const F = A, tr = A.tr;
+  tr.breath.v0 = 1.1;
+  // notices the thread, lifts its hand and looks at it
+  const look = (t, J) => add(add(J.N, add(mul(J.F, 30), mul(J.R, 5))), [0, 0, 4]);
+  const gLook = F.goal('R', look, midPole('R', look, 50, 26));
+  gLook.to(T.look0, T.look1, 1, E.io).to(T.turn0, T.turn0 + 0.3, 0, E.io);
+  tr.head.to(T.look0 + 0.1, T.look1, 16, E.io).to(T.turn0, T.turn0 + 0.3, 2, E.io);
+  tr.headRoll.to(T.look0 + 0.1, T.look1, -8, E.io).to(T.turn0, T.turn0 + 0.3, 0, E.io);
+  F.turn(T.turn0, T.turn0 + 0.25, 0, { steps: 2, lift: 4 });
+  // two hard tugs with the tied hand
+  const tug = (t, J) => {
+    const fw = add(J.sh.R, add(mul(J.Ft, 44), [0, 0, -34])), back = add(J.sh.R, add(add(mul(J.Ft, 14), mul(J.Rt, 14)), [0, 0, -12]));
+    const yank = a => { const u = (t - a) / 0.3; return u <= 0 || u >= 1 ? 0 : u < 0.25 ? E.out2(u / 0.25) : 1 - E.io((u - 0.25) / 0.75); };
+    return lerp3(fw, back, yank(T.tug1) + yank(T.tug2));
+  };
+  const gTug = F.goal('R', tug, midPole('R', tug, 40, 24));
+  gTug.to(T.turn0 + 0.05, T.tug1 - 0.02, 1, E.io);
+  tr.lean.to(T.tug1, T.tug1 + 0.08, -7, E.out2).to(T.tug1 + 0.1, T.tug1 + 0.3, 2, E.io).to(T.tug2, T.tug2 + 0.08, -8, E.out2).to(T.tug2 + 0.1, T.tug2 + 0.3, 4, E.io);
+  // hand over hand, faster and faster
+  const gR = F.goal('R', (t, J) => strokeHand('R', t, J), midPole('R', (t, J) => strokeHand('R', t, J), 40, 26));
+  const gL = F.goal('L', (t, J) => strokeHand('L', t, J), midPole('L', (t, J) => strokeHand('L', t, J), 40, 26));
+  gR.to(T.pull0 - 0.25, T.pull0, 1, E.io).to(T.pull1 - 0.04, T.pull1 + 0.36, 0, E.io);
+  gL.to(T.pull0 - 0.3, T.pull0, 1, E.io).to(T.pull1 - 0.04, T.pull1 + 0.36, 0, E.io);
+  gTug.to(T.pull0 - 0.25, T.pull0, 0, E.io);
+  tr.lean.to(T.pull0 - 0.2, T.pull0 + 0.2, 10, E.io); tr.pz.to(T.pull0 - 0.2, T.pull0 + 0.2, -10, E.io);
+  tr.head.to(T.pull0 - 0.2, T.pull0 + 0.2, 8, E.io);
+  tr.pz.to(T.run - 0.1, T.run + 0.2, 0, E.io); tr.head.to(T.run, T.run + 0.3, -2, E.io);
+  // runs after the thread
+  F.walk(T.run, [X_END, A0[1]], MOOD.run, 'R');
+  // caught by its own thread: stumbles and drops to its knees (shins flat behind, sitting back a little, hunched)
+  const ZP = 66, KNX = X_END + 52, D = A0[1], PKX = KNX - Math.sqrt(DIM.thigh ** 2 - (ZP - 10) ** 2);
+  for (const side of ['R', 'L']) {
+    const sg = side === 'R' ? -1 : 1;
+    F.footGoal(side, () => ({ ank: [KNX - 76, D + sg * 9, 7], pitch: 0, yaw: 180, kyaw: 0, kdir: [1, 0, -0.35], lift: side === 'R' ? 10 : 16 }))
+      .to(T.fall0 + (side === 'R' ? 0.05 : 0), T.knee - (side === 'R' ? 0.02 : 0), 1, E.in2);
+  }
+  tr.ox.to(T.fall0, T.knee, PKX - X_END, E.io);
+  tr.pz.to(T.fall0 + 0.05, T.knee, ZP - H0, E.in2);
+  tr.lean.to(T.tangle, T.fall0 + 0.2, 30, E.io).to(T.knee - 0.05, T.knee + 0.4, 26, E.out2);
+  tr.head.to(T.fall0, T.knee, 20, E.io); tr.slump.to(T.knee, T.knee + 0.4, 14, E.io);
+  tr.breath.to(T.knee, T.knee + 0.3, 2.6);
+  const thigh = side => (t, J) => add(lerp3(J.hip[side], J.knee[side], 0.8), [0, 0, 9]);
+  F.goal('R', thigh('R'), midPole('R', thigh('R'), 20, 40)).to(T.fall0 + 0.1, T.knee + 0.05, 1, E.io);
+  F.goal('L', thigh('L'), midPole('L', thigh('L'), 20, 40)).to(T.fall0 + 0.12, T.knee + 0.07, 1, E.io);
+  // frees its legs: tugs the loops off its shins
+  const shin = side => (t, J) => add(lerp3(J.knee[side], J.ank[side], 0.25 + 0.1 * Math.sin((t - T.free0) * 14)), [0, side === 'R' ? -9 : 9, 12 + 8 * Math.sin((t - T.free0) * 14)]);
+  const fR = F.goal('R', shin('R'), midPole('R', shin('R'), 10, 40)), fL = F.goal('L', shin('L'), midPole('L', shin('L'), 10, 40));
+  fR.to(T.free0 - 0.1, T.free0 + 0.08, 1, E.io); fL.to(T.free0 - 0.07, T.free0 + 0.11, 1, E.io);
+  tr.lean.to(T.free0 - 0.1, T.free0 + 0.1, 22, E.io); tr.head.to(T.free0 - 0.1, T.free0 + 0.1, 30, E.io); tr.slump.to(T.free0 - 0.1, T.free0 + 0.1, 20, E.io);
+  // sits back on the ledge, forearms on the knees, head down
+  const SY = -40, SF = fwd(SY), SR = rgt(SY), SEAT = [X_END + 6, 88, LEDGE.z1 + 8];
+  tr.yaw.to(T.sit0, T.sitHit + 0.1, SY, E.io);
+  tr.ox.to(T.sit0, T.sitHit, SEAT[0] - X_END, E.io); tr.od.to(T.sit0, T.sitHit, SEAT[1] - A0[1], E.io);
+  tr.pz.to(T.sit0, T.sit0 + 0.12, ZP - H0 + 10, E.io).to(T.sit0 + 0.12, T.sitHit, SEAT[2] - H0, E.in2);
+  const feetAt = sg => [SEAT[0] + SF[0] * 64 + SR[0] * sg * 10, SEAT[1] + SF[1] * 64 + SR[1] * sg * 10, 7];
+  for (const side of ['R', 'L']) F.footGoal(side, () => ({ ank: feetAt(side === 'R' ? 1 : -1), pitch: 0, yaw: SY, kdir: [SF[0] * 0.5, SF[1] * 0.5, 1], lift: 26 }))
+    .to(T.sit0 + 0.05, T.sitHit + 0.05, 1, E.io);
+  tr.lean.to(T.sit0, T.sit0 + 0.18, 2, E.io).to(T.sitHit, T.sitHit + 0.5, 22, E.io); tr.slump.to(T.sit0, T.sit0 + 0.18, 6, E.io); tr.head.to(T.sit0, T.sit0 + 0.2, 14, E.io);
+  tr.slump.to(T.sitHit, T.sitHit + 0.6, 17, E.io); tr.head.to(T.sitHit - 0.1, T.sitHit + 0.6, 24, E.io);
+  tr.breath.to(T.sitHit, T.sitHit + 0.5, 2.4).to(8.6, 9.6, 1.3);
+  const fore = side => (t, J) => add(J.knee[side], add(mul(J.F, 24), add(mul(J.R, (side === 'R' ? 1 : -1) * 4), [0, 0, -6 + (side === 'R' ? 5 * E.io(inv(T.open0, T.open0 + 0.4, t)) * (1 - E.io(inv(T.open1, T.open1 + 0.5, t))) : 0)])));
+  F.goal('R', fore('R'), (t, J) => add(J.knee.R, [0, -6, -20])).to(T.sit0 + 0.2, T.sitHit + 0.15, 1, E.io);
+  F.goal('L', fore('L'), (t, J) => add(J.knee.L, [0, 6, -20])).to(T.sit0 + 0.22, T.sitHit + 0.17, 1, E.io);
+  // looks up at B, stands up slowly, turns to B, the hands meet
+  tr.head.to(T.headUp0, T.headUp1, 0, E.io); tr.slump.to(T.headUp0, T.headUp1 + 0.3, 4, E.io);
+  const fc = add(lerp3(feetAt(1), feetAt(-1), 0.5), mul([SF[0], SF[1], 0], -6));
+  tr.ox.to(T.stand0, T.stand1, fc[0] - X_END, E.io); tr.od.to(T.stand0, T.stand1, fc[1] - A0[1], E.io);
+  tr.pz.to(T.stand0, T.stand1, -2, E.io);
+  tr.lean.to(T.stand0, T.stand0 + 0.3, 30, E.io).to(T.stand0 + 0.3, T.stand1, 3, E.io);
+  tr.yaw.to(T.stand0 + 0.2, T.meet0 + 0.3, -16, E.io);
+  tr.breath.to(T.stand0, T.stand1, 1.0);
+  const meet = (t, J) => meetPoint(t);
+  F.goal('R', meet, midPole('R', meet, 50, 20)).to(T.meet0, T.meet1, 1, E.io);
+})();
+
+(function b() {
+  const F = B, tr = B.tr;
+  tr.breath.v0 = 1.0;
+  F.walk(T.bWalk, B_STOP, MOOD.walk, 'L');
+  // winds the thread round its left hand as it walks
+  const hold = (t, J) => add(J.sh.L, add(add(mul(J.Ft, 30), mul(J.Rt, 4)), [0, 0, -52]));
+  const wind = (t, J) => { const h = hold(t, J), a = TAU * 1.5 * t; return add(h, add(mul(J.Rt, 12 * Math.cos(a)), add(mul(J.Ft, 3), [0, 0, 11 * Math.sin(a)]))); };
+  F.goal('L', hold, midPole('L', hold, 50, 20)).to(T.bWalk - 0.3, T.bWalk + 0.2, 1, E.io);
+  const gW = F.goal('R', wind, midPole('R', wind, 50, 20));
+  gW.to(T.bWalk - 0.2, T.bWalk + 0.3, 1, E.io).to(T.bStop + 0.2, T.bStop + 0.6, 0, E.io);
+  tr.head.v0 = 8;
+  tr.head.to(T.bStop - 0.3, T.bStop + 0.3, 4, E.io);
+  // holds out its hand
+  const meet = (t, J) => meetPoint(t);
+  F.goal('L', meet, midPole('L', meet, 50, 20)).to(T.meet0 - 0.1, T.meet1 - 0.1, 1, E.io);
+})();
+// where the two hands meet: between them, a little in front
+function meetPoint(t) {
+  const a = A.pose(t, true), b = B.pose(t, true);
+  return add(lerp3(a.sh.R, b.sh.L, 0.5), [0, -6, -42]);
+}
+
+// ---------------------------------------------------------------- the thread (rope simulation)
+// N particles 6 apart. Particle 0 is tied to A's finger. The other end comes from B: first it lies on the street out of
+// frame, from 10.4 s B lifts it and holds it in its hand. B lets thread out whenever it is pulled tight and takes thread in
+// (reels) at the rates below. Gravity, air drag, floor friction, the lamp posts and the ledge are collisions; hands can
+// grip it (hand over hand, holding the slack). After the soft constraints a follow-the-leader pass keeps the thread from
+// stretching. The wraps round the posts are loops the thread is pulled into (soft guides) that the thread can slide
+// through; the tangle round A's legs is a loop on its shins. Fixed 1/240 s steps, so frame t always gives the same shape.
+const ROPE = (() => {
+  const N = 900, SP = 6, DT = 1 / 240, G = 1500, R_TH = 1.4, ITER = 14;
+  const T0 = -1.2;                                     // settle the starting shape before the film begins
+  // B takes thread in: reel speed (units/s) while there is slack; slack it aims for (thread length / straight distance)
+  const reelV = t => t < T.move0 ? 0 : t < T.move1 ? 300 + 1500 * Math.sin(PI * inv(T.move0, T.move1, t)) : t < T.bStop ? 900 : t < T.meet1 + 0.3 ? 400 : 60;
+  const reelAim = t => t < T.meet0 ? 1.08 : 1.02;
+  const FLOOR_S = add(B.pose(0).hand.L, [40, 0, 0]); FLOOR_S[2] = R_TH;
+  const source = (t, bJ) => lerp3(FLOOR_S, add(bJ.hand.L, [0, 0, -2]), E.io(inv(T.move0, T.move1 - 0.3, t)));
+  const bodyOf = J => ({ x: J.P[0], y: J.P[1], caps: [[J.P, J.N, 11], [J.hip.R, J.knee.R, 7], [J.hip.L, J.knee.L, 7], [J.knee.R, J.ank.R, 6], [J.knee.L, J.ank.L, 6]] });
+  const hands = t => { const a = A.pose(t), b = B.pose(t); return { knot: KNOT(a), aR: a.hand.R, aL: a.hand.L, S: source(t, b), aJ: a, body: bodyOf(a) }; };
+  // the posts the thread catches on while A runs past
+  const WRAPS = [535, 880].map(x => ({ x, t: null }));
+  for (const w of WRAPS) for (let t = T.run; t < T.knee; t += 0.005) if (A.worldRoot(t)[0] > w.x + 36) { w.t = t; break; }
+  const WN = 34, WL = WN * SP;                          // particles / length of thread in one wrap
+  const helix = (x, u) => { const a = u * 4.8 * PI + 0.6; return [x + Math.cos(a) * (POST_R + 5), POST_D + Math.sin(a) * (POST_R + 5), 86 - 76 * u]; };
+  let st = null;
+  function init() {
+    const h = hands(T0), p = new Float64Array(N * 3);
+    const drop = [h.knot[0] + 40, h.knot[1], R_TH], d1 = len(sub(drop, h.knot)), d2 = len(sub(h.S, drop));
+    const free = Math.ceil((d1 * 1.05 + d2 * 1.03) / SP);
+    for (let i = 0; i < N; i++) {
+      const s = i * SP;
+      let q = s < d1 * 1.05 ? lerp3(h.knot, drop, s / (d1 * 1.05)) : lerp3(drop, h.S, Math.min(1, (s - d1 * 1.05) / (d2 * 1.03)));
+      if (s >= d1 * 1.05) q[1] += 9 * Math.sin((s - d1 * 1.05) / 70) * Math.min(1, (s - d1 * 1.05) / 60);
+      if (i > free) q = add(h.S, [(i - free) * SP, 0, 0]);
+      q[2] = Math.max(R_TH, q[2]);
+      p.set(q, i * 3);
+    }
+    return { n: 0, p, q: Float64Array.from(p), kf: free, grips: {}, last: 0, wraps: [], legs: [], bunch: null, reeled: 0, pin: new Uint8Array(N), held: new Uint8Array(N) };
+  }
+  const D3 = (p, i, x) => Math.hypot(p[i * 3] - x[0], p[i * 3 + 1] - x[1], p[i * 3 + 2] - x[2]);
+  // pull particle i toward point x until it is at most SP away (follow the leader); keep a little of the motion as speed
+  function ftl(p, q, i, x) {
+    const a = i * 3, ex = p[a] - x[0], ey = p[a + 1] - x[1], ez = p[a + 2] - x[2], d = Math.hypot(ex, ey, ez);
+    if (d <= SP) return;
+    const f = (SP - d) / d, mx = ex * f, my = ey * f, mz = ez * f;
+    p[a] += mx; p[a + 1] += my; p[a + 2] += mz; q[a] += mx; q[a + 1] += my; q[a + 2] += mz;
+  }
+  // a designed pull (guides, grips, the held bunch); held particles lose most of their speed each step
+  function pull(p, q, i, x, w) {
+    const a = i * 3; st.held[i] = 1;
+    for (let c = 0; c < 3; c++) p[a + c] += (x[c] - p[a + c]) * w;
+  }
+  function step(t) {
+    const { p, q, pin } = st;
+    const h = hands(t), S = h.S;
+    let K = Math.floor(st.kf);
+    const pt = i => [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]];
+    // B reels while there is slack
+    let freeLen = 0; for (let i = 1; i < K; i++) freeLen += Math.hypot(p[i * 3] - p[i * 3 - 3], p[i * 3 + 1] - p[i * 3 - 2], p[i * 3 + 2] - p[i * 3 - 1]);
+    const reeling = reelV(t) > 0 && freeLen > reelAim(t) * len(sub(S, h.knot)) && st.kf > 12;
+    if (reeling) { const dk = reelV(t) * DT / SP; st.kf -= dk; st.reeled += dk * SP; }
+    K = Math.floor(st.kf);
+    // integrate
+    for (let i = 0; i < N; i++) {
+      const a = i * 3;
+      if (i >= K) { const o = (i - st.kf) * SP; p[a] = S[0] + o; p[a + 1] = S[1]; p[a + 2] = S[2]; q[a] = p[a]; q[a + 1] = p[a + 1]; q[a + 2] = p[a + 2]; continue; }
+      const fr = p[a + 2] < R_TH + 0.6 ? 0.2 : 0.012;
+      for (let c = 0; c < 3; c++) {
+        const v = (p[a + c] - q[a + c]) * (1 - (c < 2 ? fr : 0.012));
+        q[a + c] = p[a + c]; p[a + c] += v + (c === 2 ? -G * DT * DT : 0);
+      }
+    }
+    // grips: each pulling stroke grabs the thread ahead of the hand
+    const grips = [];
+    for (const s of STROKES) if (t >= s.t0 && t < s.t1) {
+      if (!(s.t0 in st.grips)) {
+        // the hand closes on the thread about one arm's reach further along and draws it in
+        const best = Math.min(K - 3, st.last + 16);
+        st.grips[s.t0] = best; st.last = best;
+      }
+      if (st.grips[s.t0] > 0) grips.push([st.grips[s.t0], add(s.side === 'R' ? h.aR : h.aL, [0, 0, -2]), sstep(s.t0 - 0.04, s.t0 + 0.35 * (s.t1 - s.t0), t)]);
+    }
+    // wraps: when A has run past a post, the thread between A and the post is pulled round it
+    if (t < T.tangle) for (const w of WRAPS) if (w.t !== null && t >= w.t && !st.wraps.some(g => g.x === w.x)) {
+      // the stretch of thread about as far along it as the post is from the hand gets caught
+      const lim = st.wraps.length ? Math.min(...st.wraps.map(g => g.s)) - WL : (K - 30) * SP;
+      st.wraps.push({ x: w.x, s: Math.min(lim, len(sub(helix(w.x, 0), h.knot)) * 1.06), t0: t });
+    }
+    const wrapW = g => 0.3 * sstep(g.t0, g.t0 + 0.2, t) * (1 - sstep(T.free0, T.free0 + 0.4, t));
+    // the wraps slide: the thread from A's hand to the nearest wrap (and from wrap to wrap) is never shorter than the way
+    if (t < T.tangle) {
+      const ws = st.wraps.slice().sort((a, b) => a.s - b.s);
+      ws.forEach((g, j) => {
+        const need = j === 0 ? len(sub(helix(g.x, 0), h.knot)) * 1.04 : ws[j - 1].s + WL + len(sub(helix(g.x, 0), helix(ws[j - 1].x, 1))) * 1.04;
+        g.s = Math.max(g.s, need);
+        // still pulled tight into the wrap: the thread slides round the post
+        const i0 = Math.ceil(g.s / SP), d = D3(p, i0 - 1, pt(i0));
+        if (d > SP * 1.3 && wrapW(g) > 0.29) g.s += Math.min(d - SP * 1.3, 4);
+      });
+    }
+    // the tangle: two loops of thread round A's shins
+    if (t >= T.tangle && !st.legs.length) for (const side of ['R', 'L']) {
+      const leg = lerp3(h.aJ.knee[side], h.aJ.ank[side], 0.5);
+      let best = -1, bd = 1e9;
+      const lim = st.wraps.length ? Math.min(...st.wraps.map(g => g.s)) / SP - 4 : K - 30;
+      for (let i = 4; i < lim; i++) { if (st.legs.some(g => i >= g.i0 - 4 && i < g.i0 + g.n + 4)) continue; const d = D3(p, i, leg); if (d < bd) { bd = d; best = i; } }
+      if (best > 0) st.legs.push({ side, i0: Math.max(3, best - 8), n: 17 });
+    }
+    const legTarget = (g, j) => {
+      const u = j / (g.n - 1), ang = u * 3.2 * PI + (g.side === 'L' ? 1 : 0);
+      const k = h.aJ.knee[g.side], an = h.aJ.ank[g.side], ax = norm(sub(k, an)), s = lerp3(an, k, 0.2 + 0.6 * u);
+      const e1 = norm(cross(ax, Math.abs(ax[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0])), e2 = cross(ax, e1);
+      return add(s, add(mul(e1, 8.5 * Math.cos(ang)), mul(e2, 8.5 * Math.sin(ang))));
+    };
+    // A holds the loops it pulled off its legs, then opens its hand: they fall bit by bit
+    if (t >= T.free0 + 0.25 && !st.bunch) st.bunch = st.legs.flatMap(g => Array.from({ length: g.n }, (_, j) => g.i0 + j));
+    const bunchW = j => { const rel = T.open0 + (T.open1 - T.open0) * (j / st.bunch.length); return sstep(T.free0 + 0.25, T.sitHit, t) * (1 - sstep(rel - 0.05, rel + 0.12, t)); };
+    pin.fill(0); pin[0] = 1; st.held.fill(0);
+    for (const [g, , w] of grips) if (w >= 0.999) pin[g] = 1;
+    if (st.bunch) st.bunch.forEach((i, j) => { if (bunchW(j) >= 0.999) pin[i] = 1; });
+    for (const g of st.wraps) if (wrapW(g) > 0.29) for (let i = Math.ceil(g.s / SP); i <= Math.min(K - 2, Math.floor((g.s + WL) / SP)); i++) pin[i] = 1;
+    const legW = 0.3 * sstep(T.tangle, T.tangle + 0.15, t) * (1 - sstep(T.free0 + 0.3, T.free0 + 0.6, t));
+    for (let it = 0; it < ITER; it++) {
+      // distance constraints (the last link to B's end pulls only the thread)
+      for (let i = 0; i < K; i++) {
+        const a = i * 3, b = a + 3;
+        const ex = p[b] - p[a], ey = p[b + 1] - p[a + 1], ez = p[b + 2] - p[a + 2], d = Math.sqrt(ex * ex + ey * ey + ez * ez) || 1e-6;
+        if (d <= SP && it > 3) continue;
+        if (i + 1 >= K) break;
+        const f = (d - SP) / d * 0.5, wa = i === 0 ? 0 : 1;
+        p[a] += ex * f * wa; p[a + 1] += ey * f * wa; p[a + 2] += ez * f * wa;
+        p[b] -= ex * f; p[b + 1] -= ey * f; p[b + 2] -= ez * f;
+      }
+      p[0] = h.knot[0]; p[1] = h.knot[1]; p[2] = h.knot[2];
+      for (const [g, hp, w] of grips) pull(p, q, g, hp, w);
+      if (st.bunch && t < T.open1 + 0.2) st.bunch.forEach((i, j) => {
+        const w = bunchW(j); if (w <= 0) return;
+        const r = mulberry32(i * 31)(), tgt = add(h.aR, [Math.cos(j * 2.4) * 5, Math.sin(j * 2.4) * 5, -4 - r * 8]);
+        pull(p, q, i, tgt, w);
+      });
+      for (const g of st.wraps) {
+        const w = wrapW(g); if (w <= 0) continue;
+        const i0 = Math.ceil(g.s / SP), i1 = Math.min(K - 2, Math.floor((g.s + WL) / SP));
+        for (let i = i0; i <= i1; i++) pull(p, q, i, helix(g.x, (i * SP - g.s) / WL), w);
+      }
+      if (legW > 0) for (const g of st.legs) for (let j = 0; j < g.n; j++) pull(p, q, g.i0 + j, legTarget(g, j), legW);
+      // collisions: A's body (the thread hangs in front of it, not through it), floor, posts, ledge
+      if (it % 2 === 1) for (let i = 5; i < K; i++) {
+        const a = i * 3;
+        if (st.held[i] || Math.abs(p[a] - h.body.x) > 70 || Math.abs(p[a + 1] - h.body.y) > 60 || p[a + 2] > 280) continue;
+        for (const [c0, c1, r] of h.body.caps) {
+          const ab = sub(c1, c0), ap = [p[a] - c0[0], p[a + 1] - c0[1], p[a + 2] - c0[2]];
+          const u = clamp(dot(ap, ab) / (dot(ab, ab) || 1)), cx = c0[0] + ab[0] * u, cy = c0[1] + ab[1] * u, cz = c0[2] + ab[2] * u;
+          const ex = p[a] - cx, ey = p[a + 1] - cy, ez = p[a + 2] - cz, d = Math.hypot(ex, ey, ez), rr = r + R_TH;
+          if (d < rr && d > 1e-6) { const f = rr / d; p[a] = cx + ex * f; p[a + 1] = cy + ey * f; p[a + 2] = cz + ez * f; }
+        }
+      }
+      for (let i = 1; i < K; i++) {
+        const a = i * 3;
+        if (p[a + 2] < R_TH) { p[a + 2] = R_TH; q[a + 2] = Math.min(q[a + 2], R_TH); }
+        if (t < T.move0) for (const x of POSTS) {
+          const ex = p[a] - x, ey = p[a + 1] - POST_D, d = Math.hypot(ex, ey), r = POST_R + R_TH;
+          if (d < r && p[a + 2] < POST_H) {
+            const nx = ex / (d || 1e-6), ny = ey / (d || 1e-6);
+            let vx = p[a] - q[a], vy = p[a + 1] - q[a + 1]; const vn = vx * nx + vy * ny;
+            if (vn < 0) { vx -= vn * nx; vy -= vn * ny; }
+            p[a] = x + nx * r; p[a + 1] = POST_D + ny * r; q[a] = p[a] - vx; q[a + 1] = p[a + 1] - vy;
+          }
+        }
+        if (p[a + 1] > LEDGE.d0 - R_TH && p[a + 1] < LEDGE.d1 && p[a + 2] < LEDGE.z1 + R_TH) {
+          const up = LEDGE.z1 + R_TH - p[a + 2], fw = p[a + 1] - (LEDGE.d0 - R_TH);
+          if (up < fw) { p[a + 2] += up; q[a + 2] = Math.min(q[a + 2], p[a + 2]); } else { p[a + 1] -= fw; q[a + 1] = Math.max(q[a + 1], p[a + 1]); }
+        }
+      }
+    }
+    // the thread does not stretch: B's pull drags it from B's end, A's pull from the finger (pinned bits stay put)
+    // (while B reels, its pull is applied last and it lets nothing out)
+    for (let i = 1; i < K; i++) if (!pin[i]) ftl(p, q, i, pt(i - 1));
+    if (reeling) for (let i = K - 1; i >= 1; i--) if (!pin[i]) ftl(p, q, i, i === K - 1 ? S : pt(i + 1));
+    // pulled tight at B's end: B lets thread out
+    const gap = D3(p, K - 1, S) - SP;
+    if (gap > 0.3 && !reeling) {
+      const k0 = K; st.kf = Math.min(N - 2, st.kf + Math.min(gap / SP, 2)); K = Math.floor(st.kf);
+      const a = pt(k0 - 1);
+      for (let i = k0; i < K; i++) { const u = (i - k0 + 1) / (K - k0 + 1), v = lerp3(a, S, u); p.set(v, i * 3); q.set(v, i * 3); }
+    }
+    for (let i = 1; i < K; i++) {
+      if (!st.held[i]) continue;
+      const a = i * 3, k = pin[i] ? 0 : 0.85;
+      for (let c = 0; c < 3; c++) q[a + c] = p[a + c] - (p[a + c] - q[a + c]) * k;
+    }
+    // no thread ever moves faster than this (keeps the solver calm when a hand yanks)
+    for (let i = 1; i < K; i++) {
+      const a = i * 3, vx = p[a] - q[a], vy = p[a + 1] - q[a + 1], vz = p[a + 2] - q[a + 2], v = Math.hypot(vx, vy, vz), vm = 1400 * DT;
+      if (v > vm) { const f = vm / v; q[a] = p[a] - vx * f; q[a + 1] = p[a + 1] - vy * f; q[a + 2] = p[a + 2] - vz * f; }
+    }
+  }
+  function at(t) {
+    const n = Math.floor((t - T0) / DT);
+    if (!st || st.n > n) st = init();
+    while (st.n < n) { step(T0 + st.n * DT); st.n++; }
+    return { p: st.p, K: Math.floor(st.kf), kf: st.kf, reeled: st.reeled, S: source(t, B.pose(t)) };
+  }
+  return { at, N, SP, WRAPS, st: () => st };
+})();
+
+// ---------------------------------------------------------------- drawing helpers
+function lightPass(ambient, lights) {
+  lmc.setTransform(1, 0, 0, 1, 0, 0); lmc.globalCompositeOperation = 'source-over';
+  lmc.fillStyle = rgb(ambient); lmc.fillRect(0, 0, LM.width, LM.height);
+  lmc.setTransform(0.25, 0, 0, 0.25, 0, 0); lmc.globalCompositeOperation = 'lighter';
+  for (const L of lights) {
+    if (L.a <= 0.002) continue;
+    if (L.rect) { lmc.fillStyle = rgb(L.col, L.a); lmc.fillRect(L.rect[0], L.rect[1], L.rect[2], L.rect[3]); continue; }
+    lmc.save(); lmc.translate(L.x, L.y); lmc.scale(1, L.sy || 1);
+    const g = lmc.createRadialGradient(0, 0, 0, 0, 0, L.r);
+    g.addColorStop(0, rgb(L.col, L.a)); g.addColorStop(L.mid || 0.45, rgb(L.col, L.a * 0.4)); g.addColorStop(1, rgb(L.col, 0));
+    lmc.fillStyle = g; lmc.fillRect(-L.r, -L.r, 2 * L.r, 2 * L.r); lmc.restore();
+  }
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(LM, 0, 0, W, H); ctx.restore();
+}
+const LM = document.createElement('canvas'); LM.width = W / 4; LM.height = H / 4;
+const lmc = LM.getContext('2d');
+function glowAt(x, y, r, col, a, op = 'lighter') {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = op;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+function drawPost(c, x) {
+  const k = P([x, POST_D, 0])[2];
+  const base = P([x, POST_D, 0]), top = P([x, POST_D, POST_H]), arm = P([x + 26, POST_D + 20, POST_H + 6]), head = P([x + 26, POST_D + 20, POST_H - 4]);
+  c.save(); c.lineCap = 'round';
+  c.strokeStyle = '#0b0c10'; c.lineWidth = 9 * k; c.beginPath(); c.moveTo(base[0], base[1]); c.lineTo(top[0], top[1]); c.quadraticCurveTo(top[0], arm[1], arm[0], arm[1]); c.stroke();
+  c.strokeStyle = '#3a3d46'; c.lineWidth = 5 * k; c.beginPath(); c.moveTo(base[0], base[1]); c.lineTo(top[0], top[1]); c.quadraticCurveTo(top[0], arm[1], arm[0], arm[1]); c.stroke();
+  // the lamp head
+  c.beginPath(); c.ellipse(head[0], head[1], 16 * k, 6 * k, 0, 0, TAU); c.fillStyle = '#1a1b20'; c.fill();
+  if (!MIRROR) { c.beginPath(); c.ellipse(head[0], head[1] + 3 * k, 12 * k, 3 * k, 0, 0, TAU); c.fillStyle = rgb(LAMPC); c.fill(); }
+  c.restore();
+}
+function drawLedge(c) {
+  const col = { front: rgb([112, 115, 126]), top: rgb([158, 161, 172]), side: rgb([84, 86, 96]), edge: 'rgba(0,0,0,0.45)' };
+  box(c, { x0: cam.x - 900, x1: cam.x + 900, d0: LEDGE.d0, d1: LEDGE.d1, z0: 0, z1: LEDGE.z1 }, col);
+}
+// the thread, as short segments sorted with everything else; thicker, softer red near the camera
+function threadSegs(c, rope, tShow, ends) {
+  const { p, K } = rope, out = [];
+  const pt = i => [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]];
+  const last = Math.min(K, ROPE.N - 1);
+  for (let i = 0; i < last; i++) {
+    const a = i === 0 ? ends.knot : pt(i), b = pt(i + 1);
+    if (Math.abs(a[0] - cam.x) > 900) continue;
+    out.push({ d: (a[1] + b[1]) / 2, draw: () => {
+      const pa = P(a), pb = P(b), k = (pa[2] + pb[2]) / 2;
+      c.strokeStyle = rgb(RED); c.lineWidth = Math.max(2.6, 3.4 * k); c.lineCap = 'round';
+      c.beginPath(); c.moveTo(pa[0], pa[1]); c.lineTo(pb[0], pb[1]); c.stroke();
+    } });
+  }
+  return out;
+}
+function drawCoil(c, J, turns) {
+  const h = J.hand.L, k = P(h)[2];
+  c.save(); c.strokeStyle = rgb(RED); c.lineWidth = 2.6 * k;
+  for (let i = 0; i < turns; i++) {
+    const q = P(add(h, [0, 0, -1 + i * 0.8]));
+    c.beginPath(); c.ellipse(q[0], q[1], (7.5 + i * 0.3) * k, 3.4 * k, 0.25 + i * 0.35, 0, TAU); c.stroke();
+  }
+  c.restore();
+}
+
+// ---------------------------------------------------------------- camera: still, then it runs with A, then still again
+function camX(t) {
+  if (t <= T.run) return 340;
+  const target = τ => τ <= T.run ? 340 : τ < T.camStop ? Math.max(340, A.worldRoot(τ)[0] + 150) : X_END + 78;
+  return spring('camx', target, t, T.run, 0.85, 1.0);
+}
+
+// ---------------------------------------------------------------- frame
+function draw(t) {
+  cam.x = camX(t); cam.zoom = 1.27; cam.hy = 650; cam.h = 245;
+  const aJ = A.pose(t), bJ = B.pose(t);
+  const rope = ROPE.at(t);
+  const glow = sstep(T.meet0 + 0.2, T.meet1, t);
+  const horizon = P([0, 4000, 0])[1];
+  // night sky
+  let g = ctx.createLinearGradient(0, 0, 0, horizon);
+  g.addColorStop(0, '#07080b'); g.addColorStop(1, '#22262f');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, horizon + 2);
+  // skyline (far away, so it moves much slower than the street when the camera runs)
+  for (const b of SKY) {
+    const sx0 = P([b.x, b.d, 0])[0], sx1 = P([b.x + b.w, b.d, 0])[0];
+    if (sx1 < -10 || sx0 > W + 10) continue;
+    poly(ctx, [[b.x, b.d, 0], [b.x + b.w, b.d, 0], [b.x + b.w, b.d, b.h], [b.x, b.d, b.h]]);
+    ctx.fillStyle = rgb([26 * b.shade, 28 * b.shade, 36 * b.shade]); ctx.fill();
+    for (const [wx, wz, br] of b.wins) {
+      const q = P([b.x + wx, b.d, wz]), k = q[2];
+      ctx.fillStyle = rgb([128 * br, 130 * br, 138 * br]); ctx.fillRect(q[0], q[1], 22 * k, 30 * k);
+    }
+  }
+  // ground: far dark, sidewalk a little lighter, the street in front darker
+  const yFar = P([0, 1400, 0])[1], ySideB = P([0, LEDGE.d1, 0])[1], ySideF = P([0, -2, 0])[1];
+  g = ctx.createLinearGradient(0, horizon, 0, H);
+  g.addColorStop(0, '#0d0e12'); g.addColorStop(1, '#08090b');
+  ctx.fillStyle = g; ctx.fillRect(0, horizon, W, H - horizon);
+  g = ctx.createLinearGradient(0, ySideB, 0, ySideF);
+  g.addColorStop(0, '#2c2e35'); g.addColorStop(1, '#3a3c44');
+  ctx.fillStyle = g; ctx.fillRect(0, ySideB, W, ySideF - ySideB);
+  g = ctx.createLinearGradient(0, ySideF, 0, H);
+  g.addColorStop(0, '#202227'); g.addColorStop(1, '#0d0e11');
+  ctx.fillStyle = g; ctx.fillRect(0, ySideF, W, H - ySideF);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, ySideF - 1, W, 3);
+  // sidewalk slabs
+  ctx.save(); ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1;
+  for (let x = Math.floor((cam.x - 700) / 60) * 60; x < cam.x + 700; x += 60) { const a = P([x, -2, 0]), b2 = P([x, LEDGE.d0, 0]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b2[0], b2[1]); ctx.stroke(); }
+  ctx.restore();
+
+  const bVisible = Math.abs(B.worldRoot(t)[0] - cam.x) < 520;
+  const items = (c, refl) => {
+    const list = [{ d: LEDGE.d1, draw: () => drawLedge(c) }];
+    for (const x of POSTS) if (Math.abs(x - cam.x) < 600) list.push({ d: POST_D, draw: () => drawPost(c, x) });
+    list.push({ d: aJ.P[1], draw: () => drawFigure(c, A, aJ) });
+    if (bVisible) list.push({ d: bJ.P[1], draw: () => { drawFigure(c, B, bJ); if (t > T.move0) drawCoil(c, bJ, Math.min(6, 1 + Math.floor(rope.reeled / 140))); } });
+    for (const s of threadSegs(c, rope, t, { knot: KNOT(aJ) })) list.push(s);
+    list.sort((a, b) => b.d - a.d);
+    for (const it of list) it.draw();
+  };
+  reflection(c => items(c, true), yFar, 0.3);
+  contactShadow(ctx, aJ, 0.5);
+  if (bVisible) contactShadow(ctx, bJ, 0.5);
+  items(ctx, false);
+
+  // light: a dark street, pools of cold light under the lamps
+  const lights = [];
+  for (const x of POSTS) {
+    if (Math.abs(x - cam.x) > 700) continue;
+    const head = P([x + 26, POST_D + 20, POST_H - 4]), pool = P([x + 26, POST_D + 30, 0]), mid = P([x + 26, POST_D + 30, 130]);
+    lights.push({ x: pool[0], y: pool[1], r: 260 * pool[2], col: LAMPC, a: 0.55, sy: 0.3 });
+    lights.push({ x: mid[0], y: mid[1], r: 250 * mid[2], col: LAMPC, a: 0.5, mid: 0.5 });
+    lights.push({ x: head[0], y: head[1], r: 90 * head[2], col: LAMPC, a: 0.5 });
+  }
+  const mp = P(meetPoint(t));
+  lights.push({ x: mp[0], y: mp[1], r: 180, col: [255, 120, 120], a: 0.35 * glow });
+  lightPass([124, 128, 148], lights);
+  // lamp heads glow, faint light cones
+  for (const x of POSTS) {
+    if (Math.abs(x - cam.x) > 700) continue;
+    const head = P([x + 26, POST_D + 20, POST_H - 4]), pool = P([x + 26, POST_D + 30, 0]);
+    glowAt(head[0], head[1] + 4, 60 * head[2], LAMPC, 0.5);
+    softLayer(14, 'screen', c => {
+      const gg = c.createLinearGradient(0, head[1], 0, pool[1]);
+      gg.addColorStop(0, rgb(LAMPC, 0.12)); gg.addColorStop(1, rgb(LAMPC, 0));
+      c.fillStyle = gg; c.beginPath(); c.moveTo(head[0] - 10, head[1]); c.lineTo(head[0] + 10, head[1]); c.lineTo(head[0] + 120 * head[2], pool[1]); c.lineTo(head[0] - 120 * head[2], pool[1]); c.closePath(); c.fill();
+    });
+  }
+  // the thread's own soft red glow (brighter when the hands meet), and its glow in the wet street
+  softLayer(10, 'lighter', c => {
+    const { p, K } = rope;
+    c.strokeStyle = rgb(RED, 0.5 + 0.4 * glow); c.lineWidth = 9 + 6 * glow; c.lineCap = 'round'; c.lineJoin = 'round';
+    c.beginPath(); const k0 = P(KNOT(aJ)); c.moveTo(k0[0], k0[1]);
+    for (let i = 1; i < Math.min(K, ROPE.N); i++) { const q = P([p[i * 3], p[i * 3 + 1], p[i * 3 + 2]]); c.lineTo(q[0], q[1]); }
+    c.stroke();
+  });
+  if (glow > 0) {
+    glowAt(mp[0], mp[1], 130, RED, 0.45 * glow);
+    const fl = P([meetPoint(t)[0], meetPoint(t)[1], 0]);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.translate(fl[0], fl[1] + 10); ctx.scale(1, 0.25);
+    g = ctx.createRadialGradient(0, 0, 0, 0, 0, 220); g.addColorStop(0, rgb(RED, 0.35 * glow)); g.addColorStop(1, rgb(RED, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 220, 0, TAU); ctx.fill(); ctx.restore();
+  }
+  vignette(0.7);
+  captionAt(t, "YOU DON'T HAVE TO PULL.", T.text1a, T.text1b, 34, 8);
+  captionAt(t, "IT'S ALREADY TIED.", T.text2a, T.text2b, 40, 10);
+}
+
+// ---------------------------------------------------------------- checks, render, cues
+const CHECK_FIGS = [[A, 0, T.end], [B, 10, T.end]];
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.fadeOut, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  const steps = [];
+  for (const f of [A, B]) for (const c of f.cues) if (f === A || c.t > T.bWalk - 0.1) steps.push({ ...c, who: f.id });
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T, strokes: STROKES.map(s => +s.t0.toFixed(3)) }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+window.__debug = { A, B, ROPE, cam, P, meetPoint };
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
