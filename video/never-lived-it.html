@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>We Never Lived It</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   WE NEVER LIVED IT: a couple on a sofa, side by side, each in the cold
+   light of their own phone. One selfie, close for a second, then apart
+   again while the likes count up. Later two empty rooms (split screen):
+   the same selfie on both screens, the only warm light in the film.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds)
+const T = {
+  fadeIn: 0.5,
+  lean0: 1.5, lean1: 1.95, back0: 2.8, back1: 3.35,   // she leans toward him, he does not notice, she leans back
+  up0: 4.0, up1: 4.32,                 // he raises the phone for a selfie
+  sit0: 4.2, sit1: 4.46,               // both sit up fast, heads together, his arm round her shoulder
+  flash: 5.1,                          // the camera flash
+  down0: 5.5, down1: 5.95,             // apart again, back to the phones
+  likes0: 6.0, likes1: 7.3,            // the heart counter
+  cut0: 7.5, cut: 7.95, cut1: 8.3,     // dip to black, change of set, back in
+  stop0: 10.3, stop1: 11.4,            // thumbs still, heads sink
+  text0: 10.0, text1: 13.5,            // line 1
+  text2: 12.0, text3: 15.5,            // line 2
+  faceDown: 15.0,                      // he puts the phone face down on the bed
+  screenOff: 15.75,                    // her screen goes dark
+  end0: 16.5, end: 18.0,
+  stills: [2.2, 4.8, 6.9, 12.8],
+};
+const SPLIT = t => t >= T.cut;
+
+// ---------------------------------------------------------------- set
+const WALL = 300;
+const SEAT = 84;                                       // sofa seat cushion
+const SOFA = { x0: 196, x1: 468, d0: 100, d1: 200 };      // seen from the front: the seat faces the camera
+const LAMP = [332, 150, 330];                           // pendant lamp above the sofa (barely on)
+const PF = -80, SIT_Z = SEAT + 7;                      // pelvis 80 behind the feet, on the cushion
+const BED = { x0: 40, x1: 232, d0: 20, d1: 210, z1: 58 };
+const BED_Z = BED.z1 + 7;
+const RWALL = 566;                                     // her room: the side wall she leans against
+const SPOT = [196, 34, BED.z1 + 1.3];                  // his phone, face down on the bed
+const COLD = [150, 156, 168], WARMC = [255, 206, 108], GLOWC = [132, 176, 255], FLASHC = [236, 242, 255];
+
+// ---------------------------------------------------------------- helpers
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function mkTaps(seed, spans, g0, g1) {
+  const r = mulberry32(seed), out = [];
+  for (const [a, b] of spans) for (let t = a + r() * 0.2; t < b; t += g0 + r() * (g1 - g0)) out.push(+t.toFixed(3));
+  return out;
+}
+const thumbOf = taps => u => { let z = 0; for (const a of taps) { const x = (u - a + 0.05) / 0.045; if (x > -3 && x < 3) z += Math.exp(-x * x); } return z; };
+// a screen turned a little toward the camera (so the photo reads), still facing the one holding it
+function toCamera(st, k) { const n = norm(add(st.n, [0, -k, 0])); return { c: st.c, a: st.a, n: norm(sub(n, mul(st.a, dot(n, st.a)))) }; }
+// the phone held in front of the chest, screen tilted up toward the face
+function holdFrame(J, fk = 37, dz = -60, tilt = 12) {
+  const th = tilt * D2R;
+  return { c: add(add(J.N, mul(J.Ft, fk)), [0, 0, dz]),
+           a: norm(add(mul(J.Ft, Math.cos(th)), [0, 0, Math.sin(th)])),
+           n: norm(add(mul(J.Ft, -Math.sin(th)), [0, 0, Math.cos(th)])) };
+}
+function blendFrame(A, B, k) {
+  if (k <= 0) return A; if (k >= 1) return B;
+  const a = norm(lerp3(A.a, B.a, k));
+  let n = norm(lerp3(A.n, B.n, k)); n = norm(sub(n, mul(a, dot(n, a))));
+  return { c: lerp3(A.c, B.c, k), a, n };
+}
+const fin = (st, extra) => Object.assign(st, { r: norm(cross(st.n, st.a)) }, extra);
+const flashAt = t => t < T.flash ? Math.exp(-Math.pow((t - T.flash) / 0.03, 2)) : Math.exp(-(t - T.flash) / 0.14);
+const elbowPole = F => side => (t, J) => add(add(J.sh[side], add(mul(J.Ft, -18), mul(J.Rt, (side === 'R' ? 1 : -1) * 48))), [0, 0, -60]);
+function gripGoals(F, phoneFn, thumb) {
+  const grip = side => (t, J) => {
+    const st = phoneFn(J, t), sg = side === 'R' ? 1 : -1;
+    let p = add(add(sub(st.c, mul(st.a, 6)), mul(st.r, sg * 6)), mul(st.n, -2.5));
+    if (side === 'R') {
+      p = add(p, [0.8 * thumb(t), 0, 2.4 * thumb(t)]);
+      if (st.move) p = lerp3(p, add(st.c, [-3, 0, 7]), st.move);   // palm on its back when it lies on the bed
+    }
+    return p;
+  };
+  const R = F.goal('R', grip('R'), elbowPole(F)('R')); R.v0 = 1;
+  const L = F.goal('L', grip('L'), elbowPole(F)('L')); L.v0 = 1;
+  return { R, L };
+}
+function seated(F, z, lean = 22, slump = 9, head = 26) {
+  const tr = F.tr;
+  tr.pf.v0 = PF; tr.pz.v0 = z - H0; tr.lean.v0 = lean; tr.slump.v0 = slump; tr.head.v0 = head; tr.shDrop.v0 = 2; tr.idle.v0 = 0.7;
+}
+
+// heart counter and its pings (they get faster and faster)
+const PINGS = (() => { const out = []; let t = T.likes0, dt = 0.34; while (t < T.likes1) { out.push(+t.toFixed(3)); t += dt; dt = Math.max(0.055, dt * 0.8); } return out; })();
+const likes = t => Math.round(12 * Math.pow(2431 / 12, clamp(inv(T.likes0, T.likes1, t), 0, 1)));
+
+// ---------------------------------------------------------------- part 1: the sofa
+const HE = new Fig('HE', { x: 298, d: 58, yaw: -90, seed: 2.3 });     // facing the camera; she sits on his left
+const SHE = new Fig('SHE', { x: 366, d: 58, yaw: -90, seed: 3.7 });
+const TAPS_HE = mkTaps(11, [[0.55, 3.95], [6.1, 7.7]], 0.32, 0.62);
+const TAPS_SHE = mkTaps(23, [[0.7, T.lean0 - 0.1], [T.back1 + 0.1, 4.1], [6.2, 7.7]], 0.36, 0.7);
+const thumbHE = thumbOf(TAPS_HE), thumbSHE = thumbOf(TAPS_SHE);
+const SELFIE = new Track(0).to(T.up0, T.up1, 1, E.out2).to(T.down0, T.down0 + 0.4, 0, E.io);
+const LAPPED = new Track(0).to(T.sit0 - 0.05, T.sit1, 1, E.io).to(T.down0 + 0.05, T.down1, 0, E.io);
+const pingGlow = u => { let g = 0; for (const a of PINGS) if (u > a) g += 0.3 * Math.exp(-(u - a) / 0.25); return Math.min(g, 0.5); };
+
+function phoneHE(J, t) {
+  const base = holdFrame(J);
+  const self = { c: add(J.N, [30, -66, 74]), a: norm([0.08, 0.5, 1]), n: norm([-0.15, 1, -0.55]) };
+  self.n = norm(sub(self.n, mul(self.a, dot(self.n, self.a))));
+  return fin(blendFrame(base, self, SELFIE.at(t)), { glow: 1 + 0.05 * thumbHE(t) + pingGlow(t) });
+}
+function phoneSHE(J, t) {
+  const base = holdFrame(J);
+  const hip = lerp3(J.hip.L, J.hip.R, 0.5), knee = lerp3(J.knee.L, J.knee.R, 0.5);
+  const lap = { c: add(lerp3(hip, knee, 0.55), [0, 0, 14]), a: norm([0, -1, 0.12]), n: norm([0, 0.12, 1]) };
+  return fin(blendFrame(base, lap, LAPPED.at(t)), { glow: 1 + 0.05 * thumbSHE(t) - 0.35 * LAPPED.at(t) });
+}
+
+(function sofa() {
+  // him: scrolls, the selfie, scrolls
+  const F = HE, tr = F.tr;
+  seated(F, SIT_Z);
+  const g = gripGoals(F, phoneHE, thumbHE);
+  g.L.to(T.up0 + 0.05, T.up0 + 0.3, 0, E.io).to(T.down0 + 0.15, T.down1, 1, E.io);
+  const hug = (t, J) => add(SHE.pose(t, true).sh.L, [2, 2, 7]);
+  F.goal('L', hug, (t, J) => add(J.sh.L, [10, 40, -40])).to(T.sit0 + 0.02, T.sit1 + 0.06, 1, E.out2).to(T.down0, T.down0 + 0.3, 0, E.io);
+  tr.lean.to(T.sit0, T.sit1, 4, E.out2).to(T.down0 + 0.05, T.down1, 22, E.io);
+  tr.slump.to(T.sit0, T.sit1, 0, E.out2).to(T.down0 + 0.05, T.down1, 9, E.io);
+  tr.head.to(T.up0, T.sit1, -8, E.out2).to(T.down0, T.down1, 26, E.io);
+  tr.roll.to(T.sit0, T.sit1, -7, E.out2).to(T.down0, T.down1, 0, E.io);
+  tr.headRoll.to(T.sit0, T.sit1, -12, E.out2).to(T.down0, T.down1, 0, E.io);
+  tr.twist.to(T.up0, T.sit1, -8, E.io).to(T.down0, T.down1, 0, E.io);
+  // her: leans toward him, nothing, leans back; the selfie; back to the phone
+  const S = SHE, ts = S.tr;
+  seated(S, SIT_Z);
+  gripGoals(S, phoneSHE, thumbSHE);
+  ts.roll.to(T.lean0, T.lean1, 13, E.io).to(T.back0, T.back1, 0, E.io);
+  ts.head.to(T.lean0, T.lean1, 8, E.io).to(T.back0, T.back1, 26, E.io);
+  ts.hyaw.to(T.lean0 + 0.1, T.lean1 + 0.1, -26, E.io).to(T.back0 - 0.05, T.back1 - 0.1, 0, E.io);
+  ts.slump.to(T.lean0, T.lean1, 5, E.io).to(T.back0, T.back1, 12, E.io);
+  ts.shDrop.to(T.back0, T.back1, 5, E.io);
+  ts.lean.to(T.sit0, T.sit1, 5, E.out2).to(T.down0 + 0.05, T.down1, 22, E.io);
+  ts.slump.to(T.sit0, T.sit1, 0, E.out2).to(T.down0 + 0.05, T.down1, 11, E.io);
+  ts.shDrop.to(T.sit0, T.sit1, 0, E.out2).to(T.down0, T.down1, 4, E.io);
+  ts.head.to(T.sit0, T.sit1, -8, E.out2).to(T.down0, T.down1, 26, E.io);
+  ts.roll.to(T.sit0, T.sit1, 11, E.out2).to(T.down0, T.down1, 0, E.io);
+  ts.headRoll.to(T.sit0, T.sit1, 14, E.out2).to(T.down0, T.down1, 0, E.io);
+})();
+
+// ---------------------------------------------------------------- part 2: two rooms
+const HE2 = new Fig('HE2', { x: 300, d: 62, yaw: 0, seed: 5.1 });
+const SHE2 = new Fig('SHE2', { x: 532, d: 74, yaw: 180, seed: 6.4 });
+const TAPS2_HE = mkTaps(31, [[8.4, T.stop0 - 0.1]], 0.75, 1.15);
+const TAPS2_SHE = mkTaps(37, [[8.6, T.stop0 - 0.2]], 0.8, 1.2);
+const thumbHE2 = thumbOf(TAPS2_HE), thumbSHE2 = thumbOf(TAPS2_SHE);
+
+function phoneHE2(J, t) {
+  let st = toCamera(holdFrame(J, 36, -62, 48), 1.1);
+  const p0 = T.faceDown, flip = E.io(inv(p0, p0 + 0.32, t)), move = E.io(inv(p0 + 0.04, p0 + 0.52, t));
+  let { c, a, n } = st;
+  if (flip > 0) { const ax = cross(a, n), ph = PI * flip; n = norm(add(mul(n, Math.cos(ph)), mul(ax, -Math.sin(ph)))); }
+  if (move > 0) {
+    c = add(lerp3(c, SPOT, move), [0, 0, 9 * Math.sin(PI * move)]);
+    a = norm(lerp3(a, [1, 0, 0], move)); n = norm(sub(n, mul(a, dot(n, a))));
+  }
+  return fin({ c, a, n }, { glow: 1 + 0.04 * thumbHE2(t), photo: true, move, placed: t >= p0 + 0.52 });
+}
+function phoneSHE2(J, t) {
+  const st = toCamera(holdFrame(J, 42, -44, 52), 1.1);
+  return fin(st, { glow: (1 + 0.04 * thumbSHE2(t)) * (1 - sstep(T.screenOff, T.screenOff + 0.12, t)), photo: true, off: sstep(T.screenOff, T.screenOff + 0.12, t) });
+}
+
+(function rooms() {
+  // him on the edge of the bed
+  const F = HE2, tr = F.tr;
+  seated(F, BED_Z, 22, 9, 26);
+  const g = gripGoals(F, phoneHE2, thumbHE2);
+  tr.head.to(T.stop0, T.stop1, 38, E.io); tr.slump.to(T.stop0, T.stop1, 17, E.io); tr.shDrop.to(T.stop0, T.stop1, 7, E.io);
+  tr.breath.to(T.stop0, T.stop1, 1.6);
+  const p0 = T.faceDown;
+  const rest = side => (t, J) => add(lerp3(J.hip[side], J.knee[side], 0.62), [0, (side === 'R' ? -1 : 1) * 2, 9]);
+  g.L.to(p0, p0 + 0.3, 0, E.io);
+  F.goal('L', rest('L'), elbowPole(F)('L')).to(p0 + 0.02, p0 + 0.42, 1, E.io);
+  F.goal('R', rest('R'), elbowPole(F)('R')).to(p0 + 0.85, p0 + 1.25, 1, E.io);
+  tr.head.to(p0 + 0.6, p0 + 1.6, 44, E.io); tr.slump.to(p0 + 0.6, p0 + 1.6, 20, E.io);
+  // her on the floor, back against the wall, knees up
+  const S = SHE2, ts = S.tr;
+  ts.pz.v0 = 22 - H0; ts.lean.v0 = -16; ts.slump.v0 = 12; ts.head.v0 = 30; ts.shDrop.v0 = 3; ts.idle.v0 = 0.6;
+  for (const side of ['R', 'L']) {
+    const sg = side === 'R' ? 1 : -1;
+    // facing left: her right side is +d
+    S.footGoal(side, () => ({ ank: S.toSkel([532 - 86, 74 + sg * 11, 7]), pitch: 0, yaw: 180, kdir: [-0.2, 0, 1], lift: 0 })).v0 = 1;
+  }
+  gripGoals(S, phoneSHE2, thumbSHE2);
+  ts.head.to(T.stop0 + 0.1, T.stop1 + 0.1, 42, E.io); ts.slump.to(T.stop0 + 0.1, T.stop1 + 0.1, 20, E.io); ts.shDrop.to(T.stop0, T.stop1, 7, E.io);
+  ts.breath.to(T.stop0, T.stop1, 1.6);
+  ts.head.to(T.screenOff + 0.2, T.screenOff + 1.2, 48, E.io); ts.headRoll.to(T.screenOff + 0.2, T.screenOff + 1.2, 8, E.io);
+})();
+const FIGS = [HE, SHE, HE2, SHE2];
+
+// ---------------------------------------------------------------- props
+function drawSofa(c) {
+  const col = k => ({ front: rgb([74, 76, 84].map(v => v * k)), top: rgb([96, 98, 108].map(v => v * k)), side: rgb([56, 58, 64].map(v => v * k)), edge: 'rgba(0,0,0,0.35)' });
+  const { x0, x1, d0, d1 } = SOFA;
+  box(c, { x0, x1, d0: d1 - 24, d1, z0: 8, z1: 196 }, col(0.9));                     // backrest
+  box(c, { x0: x0 + 24, x1: x1 - 24, d0: d0 + 4, d1: d1 - 24, z0: 8, z1: 54 }, col(0.78));     // base
+  box(c, { x0: x0 + 24, x1: x1 - 24, d0, d1: d1 - 24, z0: 54, z1: SEAT }, col(1.08));       // seat cushion
+  for (const ax of [x0, x1 - 24]) box(c, { x0: ax, x1: ax + 24, d0: d0 + 2, d1: d1 - 22, z0: 8, z1: 126 }, col(1.0));   // armrests
+  for (const fx of [x0 + 6, x1 - 12]) box(c, { x0: fx, x1: fx + 6, d0: d0 + 6, d1: d0 + 12, z0: 0, z1: 8 }, col(0.5));
+  c.save(); c.strokeStyle = 'rgba(0,0,0,0.45)'; c.lineWidth = 2;
+  const a = P([x0 + 24, d0, 54]), b = P([x1 - 24, d0, 54]); c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  const m0 = P([(x0 + x1) / 2, d0, 54]), m1 = P([(x0 + x1) / 2, d0, SEAT]); c.beginPath(); c.moveTo(m0[0], m0[1]); c.lineTo(m1[0], m1[1]); c.stroke();
+  c.restore();
+}
+function drawBed(c) {
+  const col = k => ({ front: rgb([70, 72, 80].map(v => v * k)), top: rgb([98, 100, 110].map(v => v * k)), side: rgb([54, 56, 62].map(v => v * k)), edge: 'rgba(0,0,0,0.35)' });
+  const { x0, x1, d0, d1, z1 } = BED;
+  box(c, { x0: x0 - 14, x1: x0, d0, d1, z0: 0, z1: 150 }, col(0.85));                 // headboard
+  box(c, { x0, x1, d0, d1, z0: 8, z1: 34 }, col(0.7));                                // frame
+  box(c, { x0, x1: x1 + 2, d0: d0 - 1, d1, z0: 34, z1 }, col(1.05));                  // mattress
+  box(c, { x0: x0 + 4, x1: x0 + 44, d0: d0 + 18, d1: d1 - 18, z0: z1, z1: z1 + 14 }, col(1.12));   // pillow
+}
+// the phone: a dark slab; the screen glows cold, or shows the warm selfie
+function drawPhone(c, st) {
+  const L = st.photo ? 17 : 14, Wd = st.photo ? 8.5 : 7, Th = 1.3;
+  const pt = (sa, sw, sn) => add(add(add(st.c, mul(st.a, sa * L)), mul(st.r, sw * Wd)), mul(st.n, sn * Th));
+  const face = sn => [pt(-1, -1, sn), pt(1, -1, sn), pt(1, 1, sn), pt(-1, 1, sn)];
+  const camP = [cam.x, -cam.D0, cam.h], k = P(st.c)[2];
+  const screenUp = dot(st.n, sub(camP, st.c)) > 0;
+  c.save(); c.lineJoin = 'round';
+  for (const sn of [-1, 1]) { poly(c, face(sn)); c.fillStyle = '#16171a'; c.fill(); c.lineWidth = 2.6 * k; c.strokeStyle = INK; c.stroke(); }
+  poly(c, face(screenUp ? 1 : -1));
+  const b = clamp(0.35 + 0.65 * st.glow, 0, 1.2);
+  if (!screenUp) { c.fillStyle = '#2a2b30'; c.fill(); }
+  else if (st.photo) {
+    c.fillStyle = rgb(mixc([30, 32, 38], [196, 214, 245], Math.min(1, b))); c.fill();         // the app around the photo
+    if (b > 0.36) drawPhoto(c, st, Math.min(1, b));
+  } else { c.fillStyle = rgb(mixc([40, 44, 52], [226, 236, 255], Math.min(1, b))); c.fill(); }
+  c.restore();
+}
+// the selfie on the screen: warm, two small heads close together
+function drawPhoto(c, st, b) {
+  const L = 17, Wd = 8.5, k = P(st.c)[2];
+  const pt = (sa, sw) => add(add(add(st.c, mul(st.a, sa * L)), mul(st.r, sw * Wd)), mul(st.n, 1.4));
+  poly(c, [pt(-0.62, -0.86), pt(0.62, -0.86), pt(0.62, 0.86), pt(-0.62, 0.86)]);
+  c.fillStyle = rgb(mixc([30, 32, 38], WARMC, b)); c.fill();
+  for (const sw of [-0.3, 0.3]) {
+    const h = P(pt(0.2, sw)), sh = P(pt(-0.25, sw * 1.2));
+    c.fillStyle = rgb(mixc([30, 32, 38], [120, 80, 30], b));
+    c.beginPath(); c.arc(h[0], h[1], 2.4 * k, 0, TAU); c.fill();
+    c.beginPath(); c.arc(sh[0], sh[1], 3.2 * k, 0, TAU); c.fill();
+  }
+}
+function drawHeart(x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + 0.35 * s);
+  ctx.bezierCurveTo(x - 0.1 * s, y + 0.2 * s, x - 0.55 * s, y + 0.05 * s, x - 0.5 * s, y - 0.25 * s);
+  ctx.bezierCurveTo(x - 0.45 * s, y - 0.55 * s, x - 0.05 * s, y - 0.55 * s, x, y - 0.22 * s);
+  ctx.bezierCurveTo(x + 0.05 * s, y - 0.55 * s, x + 0.45 * s, y - 0.55 * s, x + 0.5 * s, y - 0.25 * s);
+  ctx.bezierCurveTo(x + 0.55 * s, y + 0.05 * s, x + 0.1 * s, y + 0.2 * s, x, y + 0.35 * s);
+  ctx.fill();
+}
+function drawLikes(t, x, y) {
+  const a = sstep(T.likes0 - 0.05, T.likes0 + 0.12, t);
+  if (a <= 0) return;
+  let pop = 0; for (const p of PINGS) if (t >= p) pop += Math.exp(-(t - p) / 0.07);
+  const sc = 1 + 0.12 * Math.min(pop, 1.4);
+  const txt = likes(t).toLocaleString('en-US');
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.scale(sc, sc);
+  ctx.font = '800 34px "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", monospace';
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  const w = ctx.measureText(txt).width, x0 = -(w + 46) / 2;
+  ctx.shadowColor = rgb(GLOWC, 0.55); ctx.shadowBlur = 18;
+  ctx.fillStyle = rgb([226, 236, 255]);
+  drawHeart(x0 + 15, 0, 30);
+  ctx.fillText(txt, x0 + 46, 2);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- light
+const LM = document.createElement('canvas'); LM.width = W / 4; LM.height = H / 4;
+const lmc = LM.getContext('2d');
+function lightPass(ambient, lights) {
+  lmc.setTransform(1, 0, 0, 1, 0, 0); lmc.globalCompositeOperation = 'source-over';
+  lmc.fillStyle = rgb(ambient); lmc.fillRect(0, 0, LM.width, LM.height);
+  lmc.setTransform(0.25, 0, 0, 0.25, 0, 0); lmc.globalCompositeOperation = 'lighter';
+  for (const L of lights) {
+    if (L.a <= 0.002) continue;
+    lmc.save(); lmc.translate(L.x, L.y); lmc.scale(1, L.sy || 1);
+    const g = lmc.createRadialGradient(0, 0, 0, 0, 0, L.r);
+    g.addColorStop(0, rgb(L.col, L.a)); g.addColorStop(L.mid || 0.45, rgb(L.col, L.a * 0.4)); g.addColorStop(1, rgb(L.col, 0));
+    lmc.fillStyle = g; lmc.fillRect(-L.r, -L.r, 2 * L.r, 2 * L.r); lmc.restore();
+  }
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(LM, 0, 0, W, H); ctx.restore();
+}
+function glowAt(x, y, r, col, a, op = 'lighter') {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = op;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+// a soft cone of phone light from the screen up over the face
+function cones(list) {
+  softLayer(14, 'screen', c => {
+    for (const { ph, J, a } of list) {
+      if (a <= 0.01) continue;
+      const p = P(ph.c), h = P(add(J.Hc, [0, 0, 10]));
+      const dx = h[0] - p[0], dy = h[1] - p[1], dl = Math.hypot(dx, dy) || 1, ux = dx / dl, uy = dy / dl;
+      const e = [p[0] + dx * 1.5, p[1] + dy * 1.5], wd = 46 * p[2];
+      const g = c.createLinearGradient(p[0], p[1], e[0], e[1]);
+      g.addColorStop(0, rgb(GLOWC, 0.5 * a)); g.addColorStop(0.6, rgb(GLOWC, 0.16 * a)); g.addColorStop(1, rgb(GLOWC, 0));
+      c.fillStyle = g; c.beginPath(); c.moveTo(p[0], p[1]);
+      c.lineTo(e[0] - uy * wd, e[1] + ux * wd); c.lineTo(e[0] + uy * wd, e[1] - ux * wd); c.closePath(); c.fill();
+    }
+  });
+}
+function backdrop(x0, x1, wallC, floorC, floorY) {
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb(wallC.map(v => v * 0.7))); g.addColorStop(1, rgb(wallC));
+  ctx.fillStyle = g; ctx.fillRect(x0, 0, x1 - x0, floorY);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb(floorC)); g.addColorStop(1, rgb(floorC.map(v => v * 0.45)));
+  ctx.fillStyle = g; ctx.fillRect(x0, floorY, x1 - x0, H - floorY);
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(x0, floorY - 3, x1 - x0, 5);
+}
+function figItems(c, list) {
+  // list: [{ F, J, ph }] -> drawn with the phone as a prop, sorted by depth with the furniture
+  const out = [];
+  for (const { F, J, ph } of list) {
+    const props = ph && !ph.placed ? [{ d: ph.c[1] - 1.5, draw: () => drawPhone(c, ph) }] : [];
+    out.push({ d: J.P[1], draw: () => drawFigure(c, F, J, { props }) });
+    if (ph && ph.placed) out.push({ d: ph.c[1], draw: () => drawPhone(c, ph) });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- drawing
+function drawSofaScene(t) {
+  cam.x = 332 + 4 * Math.sin(t * 0.4); cam.zoom = lerp(1.68, 1.78, sstep(0, 7.9, t)); cam.hy = 600; cam.h = 175;
+  const jh = HE.pose(t), js = SHE.pose(t), ph = phoneHE(jh, t), ps = phoneSHE(js, t);
+  const floorY = P([0, WALL, 0])[1];
+  backdrop(0, W, [70, 72, 80], [96, 96, 102], floorY);
+  {
+    const a = P([(SOFA.x0 + SOFA.x1) / 2, SOFA.d0 + 40, 0]);
+    ctx.save(); ctx.translate(a[0], a[1]); ctx.scale(1, 0.16);
+    const gg = ctx.createRadialGradient(0, 0, 0, 0, 0, 200 * a[2]); gg.addColorStop(0, 'rgba(0,0,0,0.55)'); gg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gg; ctx.beginPath(); ctx.arc(0, 0, 200 * a[2], 0, TAU); ctx.fill(); ctx.restore();
+  }
+  const items = c => {
+    const list = [{ d: SOFA.d1, draw: () => drawSofa(c) }, ...figItems(c, [{ F: SHE, J: js, ph: ps }, { F: HE, J: jh, ph }])];
+    list.sort((a, b) => b.d - a.d).forEach(it => it.draw());
+  };
+  reflection(items, floorY, 0.3);
+  contactShadow(ctx, jh, 0.5); contactShadow(ctx, js, 0.5);
+  items(ctx);
+  // light: a dark room, a barely-on lamp, each face in its own phone light; the flash lights everything
+  const fl = flashAt(t), lp = P(LAMP);
+  const lights = [
+    { x: lp[0], y: lp[1] + 120, r: 600, col: COLD, a: 0.16, sy: 0.95, mid: 0.4 },
+    { x: lp[0], y: lp[1] + 20, r: 220, col: COLD, a: 0.12 },
+  ];
+  for (const st of [ph, ps]) {
+    const pp = P(add(st.c, mul(st.n, 4))), pf = P([st.c[0], st.c[1], 0]);
+    lights.push({ x: pp[0], y: pp[1] - 14, r: 220 * pp[2] / 1.9, col: GLOWC, a: Math.min(st.glow, 1.2), mid: 0.28 });
+    lights.push({ x: pf[0], y: pf[1], r: 200 * pf[2] / 1.9, col: GLOWC, a: 0.16 * st.glow, sy: 0.28 });
+  }
+  const fp = P(ph.c);
+  lights.push({ x: fp[0], y: fp[1], r: 900, col: FLASHC, a: 1.6 * fl, mid: 0.5 });
+  lightPass([20, 22, 28], lights);
+  cones([{ ph, J: jh, a: 1 - 0.7 * SELFIE.at(t) }, { ph: ps, J: js, a: 1 - 0.6 * LAPPED.at(t) }]);
+  for (const st of [ph, ps]) { const pp = P(st.c); glowAt(pp[0], pp[1], 70 * pp[2] / 1.9, GLOWC, 0.5 * Math.min(st.glow, 1.3)); }
+  // pendant lamp (dim)
+  ctx.save();
+  ctx.strokeStyle = '#1c1c20'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], 0); ctx.lineTo(lp[0], lp[1] - 44); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lp[0] - 11, lp[1] - 46); ctx.lineTo(lp[0] + 11, lp[1] - 46); ctx.lineTo(lp[0] + 48, lp[1]); ctx.lineTo(lp[0] - 48, lp[1]); ctx.closePath();
+  ctx.fillStyle = '#101012'; ctx.fill(); ctx.strokeStyle = '#26262b'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 48, 6.5, 0, 0, TAU); ctx.fillStyle = rgb([70, 74, 82]); ctx.fill();
+  ctx.restore();
+  glowAt(fp[0], fp[1], 260, FLASHC, 0.9 * fl);
+  if (fl > 0.01) { ctx.fillStyle = `rgba(240,244,255,${0.35 * fl})`; ctx.fillRect(0, 0, W, H); }
+  vignette(0.8);
+  const hy = Math.min(P(jh.Hc)[1], P(js.Hc)[1]);
+  drawLikes(t, (P(jh.Hc)[0] + P(js.Hc)[0]) / 2, hy - 110);
+}
+
+// each half of the split is its own room with its own camera
+function inHalf(side, camX, fn) {
+  ctx.save(); ctx.beginPath(); ctx.rect(side < 0 ? 0 : W / 2, 0, W / 2, H); ctx.clip();
+  ctx.translate(side * W / 4, 0);
+  cam.x = camX; fn(); ctx.restore();
+}
+function roomLight(st, J) {
+  const g = st.glow * (st.move ? 1 - st.move : 1);
+  const pp = P(add(st.c, mul(st.n, 4))), pf = P([st.c[0], st.c[1], 0]);
+  lightPass([17, 18, 23], [
+    { x: pp[0], y: pp[1] - 24, r: 230 * pp[2] / 1.9, col: GLOWC, a: 1.0 * g, mid: 0.3 },
+    { x: pf[0], y: pf[1], r: 180 * pf[2] / 1.9, col: GLOWC, a: 0.12 * g, sy: 0.28 },
+  ]);
+  cones([{ ph: st, J, a: 0.75 * g }]);
+  // the photo: the only warm light in the film
+  if (g > 0.02 && dot(st.n, sub([cam.x, -cam.D0, cam.h], st.c)) > 0) { ctx.save(); ctx.globalAlpha = Math.min(1, g); drawPhoto(ctx, st, 1); ctx.restore(); }
+  if (g > 0.02) { const p = P(st.c); glowAt(p[0], p[1], 34 * p[2] / 1.9, WARMC, 0.42 * g); glowAt(p[0], p[1], 70 * p[2] / 1.9, GLOWC, 0.16 * g); }
+}
+function drawRooms(t) {
+  cam.zoom = lerp(1.95, 2.05, sstep(T.cut, T.end, t)); cam.hy = 500; cam.h = 230;
+  inHalf(-1, 252, () => {
+    const J = HE2.pose(t), ph = phoneHE2(J, t), floorY = P([0, WALL, 0])[1];
+    backdrop(0, W, [62, 64, 72], [86, 86, 92], floorY);
+    const items = c => [{ d: BED.d1, draw: () => drawBed(c) }, ...figItems(c, [{ F: HE2, J, ph }])].sort((a, b) => b.d - a.d).forEach(it => it.draw());
+    reflection(items, floorY, 0.26); contactShadow(ctx, J, 0.5); items(ctx);
+    roomLight(ph, J);
+  });
+  inHalf(1, 506, () => {
+    const J = SHE2.pose(t), ph = phoneSHE2(J, t), floorY = P([0, WALL, 0])[1];
+    backdrop(0, W, [58, 60, 68], [82, 82, 88], floorY);
+    const q = [[RWALL, -400, 0], [RWALL, WALL, 0], [RWALL, WALL, 520], [RWALL, -400, 520]].map(P);
+    ctx.beginPath(); q.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath();
+    ctx.fillStyle = rgb([50, 52, 60]); ctx.fill();
+    const items = c => figItems(c, [{ F: SHE2, J, ph }]).forEach(it => it.draw());
+    reflection(items, floorY, 0.26); contactShadow(ctx, J, 0.6); items(ctx);
+    roomLight(ph, J);
+  });
+  vignette(0.8);
+  ctx.fillStyle = '#000'; ctx.fillRect(W / 2 - 4, 0, 8, H);     // the split
+  ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fillRect(W / 2 - 1, 0, 2, H);
+  captionAt(t, 'WE POSTED EVERY MOMENT.', T.text0, T.text1, 31, 6, 196);
+  captionAt(t, 'WE NEVER LIVED ONE.', T.text2, T.text3, 31, 6, 250);
+}
+
+function draw(t) { if (SPLIT(t)) drawRooms(t); else drawSofaScene(t); }
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = [[HE, 0, T.cut], [SHE, 0, T.cut], [HE2, T.cut, T.end], [SHE2, T.cut, T.end]];
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.cut0, T.cut, t) * (1 - sstep(T.cut, T.cut1, t)), sstep(T.end0, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T, taps: [...TAPS_HE, ...TAPS_SHE].filter(x => x < T.cut).sort((a, b) => a - b), pings: PINGS }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
