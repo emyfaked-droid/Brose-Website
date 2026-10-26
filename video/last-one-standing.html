@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pick A Color</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   PICK A COLOR. (last one standing): ten coloured figures on a round,
+   floating stone platform. It crumbles ring by ring from the outside in;
+   two fall with every ring. The last two end up on a pillar that splits
+   in half. A fixed seed decides who falls and who wins.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds)
+const F = [3.0, 7.0, 11.0, 15.0];           // ring k starts to crumble (its cracks come 1 s before)
+const T = {
+  fadeIn: 0.4,
+  rumble: 2.0,
+  crack: F.map(f => f - 1.0),
+  pcrack0: 19.0, pcrack1: 19.8,              // the crack through the middle of the pillar
+  jump: 21.72,                               // the winner leaps across
+  tip: 21.9,                                 // the right half of the pillar breaks off and tips away
+  cheer: 23.0, text0: 23.0, text1: 26.0,
+  end0: 25.0, end: 26.0,
+  stills: [1.0, 7.6, 19.6, 23.6],
+};
+
+// ---------------------------------------------------------------- set (the platform's centre is at x = 360, d = 0)
+const CX = 360, CD = 0;
+const RING = [440, 356, 278, 205, 137];     // outer radius of ring k (ring 4 is the pillar)
+const THK = [54, 90, 138, 200, 1300];       // how far each ring reaches down (a floating rock, a cone underneath)
+const NCH = [12, 10, 8, 7];                 // chunks per ring
+const STONE = [104, 104, 110], WARMC = [255, 206, 108];
+const COLORS = [
+  ['RED', [236, 66, 56]], ['ORANGE', [246, 142, 40]], ['YELLOW', [246, 218, 52]], ['GREEN', [80, 202, 92]],
+  ['TURQUOISE', [44, 208, 196]], ['BLUE', [62, 124, 244]], ['PURPLE', [156, 96, 226]], ['PINK', [242, 116, 184]],
+  ['WHITE', [242, 242, 238]], ['BROWN', [156, 104, 62]],
+];
+const SEED = 4242;
+const rnd = mulberry32(SEED);
+const rr = (a, b) => a + (b - a) * rnd();
+const pol = (r, a) => [CX + r * Math.cos(a), CD + r * Math.sin(a)];
+const radOf = p => Math.hypot(p[0] - CX, p[1] - CD), angOf = p => Math.atan2(p[1] - CD, p[0] - CX);
+
+// who falls with which ring: a seeded shuffle of the ten colours
+const ORDER = (() => { const a = [...Array(10).keys()]; for (let i = 9; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; })();
+const DIES = [];                              // DIES[f] = ring it falls with (4 = the pillar), WIN = winner
+ORDER.forEach((f, i) => { DIES[f] = i < 8 ? Math.floor(i / 2) : 4; });
+const LOSER = ORDER[8], WIN = ORDER[9];
+
+// ---------------------------------------------------------------- figures
+const HECTIC = { ...MOOD.walk, name: 'hectic', L: 64, cad: 3.4, ta: 0.22, td: 0.26, lean: 9 };
+const SHUF = { ...MOOD.bouncy, name: 'shuffle', L: 26, cad: 2.6 };
+const LEAP = { ...MOOD.run, name: 'leap', L: 84, cad: 2.7 };
+const MIN_GAP = 78;
+const BANDS = k => [RING[k + 1] + 18, RING[k] - 24];          // standing on ring k (it will fall with it)
+
+// starting spots: the first two victims on the outer ring, the rest anywhere
+const pos = COLORS.map((_, f) => DIES[f] === 0 ? pol(rr(...BANDS(0)), rr(0, TAU)) : pol(370 * Math.sqrt(rr(0.04, 1)), rr(0, TAU)));
+function relax(spots, band, fixed) {
+  for (let it = 0; it < 120; it++) {
+    for (let i = 0; i < spots.length; i++) for (let j = i + 1; j < spots.length; j++) {
+      const a = spots[i], b = spots[j], dx = b.p[0] - a.p[0], dd = b.p[1] - a.p[1], dl = Math.hypot(dx, dd) || 1;
+      if (dl >= MIN_GAP) continue;
+      const push = (MIN_GAP - dl) / 2 + 0.5, wa = fixed(a) ? 0 : fixed(b) ? 2 : 1, wb = fixed(b) ? 0 : fixed(a) ? 2 : 1;
+      a.p = [a.p[0] - dx / dl * push * wa, a.p[1] - dd / dl * push * wa];
+      b.p = [b.p[0] + dx / dl * push * wb, b.p[1] + dd / dl * push * wb];
+    }
+    for (const s of spots) if (!fixed(s)) { const [r0, r1] = band(s), r = clamp(radOf(s.p), r0, r1), a = angOf(s.p); s.p = pol(r, a); }
+  }
+}
+{ const sp = pos.map((p, f) => ({ f, p })); relax(sp, s => DIES[s.f] === 0 ? BANDS(0) : [30, 400], () => false); sp.forEach(s => { pos[s.f] = s.p; }); }
+
+const FIGS = COLORS.map(([name, col], f) => {
+  const p = pos[f];
+  const fig = new Fig(name, { x: p[0], d: p[1], yaw: rr(-150, -30), seed: 1.1 + f * 0.73 });
+  fig.col = col; fig.f = f;
+  fig.tr.bounce.v0 = 0.6; fig.tr.bounce.to(T.rumble, T.rumble + 0.3, 0);
+  return fig;
+});
+const WIN_SPOT = [CX + 30, -16], LOSE_SPOT = [CX + 86, 24], LAND = [CX - 62, 4];
+
+// phase k: everyone who does not fall with ring k runs inward (short hectic steps); then a little shoving
+const LEAVE = FIGS.map(() => []);          // LEAVE[f][k]: when the figure is off ring k
+const busyUntil = FIGS.map(() => 0);
+for (let k = 0; k < 4; k++) {
+  const alive = FIGS.filter(fg => DIES[fg.f] >= k);
+  const spots = alive.map(fg => {
+    const f = fg.f, p = pos[f];
+    if (DIES[f] === k) return { f, p, fix: true };
+    if (f === WIN || f === LOSER) return k >= 2 ? { f, p: f === WIN ? WIN_SPOT : LOSE_SPOT, fix: true } : { f, p: pol(Math.min(radOf(p) * 0.6, BANDS(k + 1)[0] - 40), angOf(p) + rr(-0.2, 0.2)), band: [20, BANDS(k + 1)[0] - 30] };
+    if (DIES[f] === k + 1) return { f, p: pol(rr(...BANDS(k + 1)), angOf(p) + rr(-0.15, 0.15)), band: BANDS(k + 1) };
+    const rMax = (k + 2 <= 4 ? RING[k + 2] : RING[4]) - 26;
+    return { f, p: pol(Math.min(radOf(p) * 0.7, rMax * rr(0.55, 0.95)), angOf(p) + rr(-0.2, 0.2)), band: [20, rMax] };
+  });
+  relax(spots, s => s.band || [0, 999], s => !!s.fix);
+  for (const s of spots) {
+    const fg = FIGS[s.f], from = pos[s.f], D = Math.hypot(s.p[0] - from[0], s.p[1] - from[1]);
+    if (DIES[s.f] === k) continue;
+    let t0 = Math.max(T.crack[k] + rr(0.05, 0.4), busyUntil[s.f] + 0.05);
+    if (D > 20) {
+      const yaw = Math.atan2(s.p[1] - from[1], s.p[0] - from[0]) / D2R, y0 = fg.tr.yaw.at(t0);
+      const dy = ((yaw - y0 + 540) % 360) - 180;
+      if (Math.abs(dy) > 45) { fg.turn(t0, t0 + 0.34, y0 + dy, { steps: 2, lift: 6 }); t0 += 0.34; }
+      busyUntil[s.f] = fg.walk(t0, s.p, HECTIC, rnd() < 0.5 ? 'R' : 'L');
+      fg.tr.pant.to(busyUntil[s.f], busyUntil[s.f] + 0.4, 1.4).to(busyUntil[s.f] + 2.5, busyUntil[s.f] + 3.5, 0.5);
+    }
+    pos[s.f] = s.p;
+  }
+  // a little shove: whoever is too close to someone takes a small step away
+  for (const s of spots) {
+    if (DIES[s.f] === k || s.fix) continue;
+    let near = null, nd = 1e9;
+    for (const o of spots) if (o !== s) { const d = Math.hypot(o.p[0] - s.p[0], o.p[1] - s.p[1]); if (d < nd) { nd = d; near = o; } }
+    if (!near || nd > MIN_GAP + 14) continue;
+    const away = norm([s.p[0] - near.p[0], s.p[1] - near.p[1], 0]);
+    let q = [s.p[0] + away[0] * 26, s.p[1] + away[1] * 26];
+    const lim = (DIES[s.f] === k + 1 ? BANDS(k + 1)[1] : (k + 2 <= 4 ? RING[k + 2] : RING[4]) - 26);
+    if (radOf(q) > lim) continue;
+    const t0 = busyUntil[s.f] + rr(0.25, 0.7);
+    if (t0 + 0.9 > (T.crack[k + 1] ?? T.pcrack0) - 0.1) continue;
+    busyUntil[s.f] = s.f === WIN || s.f === LOSER ? busyUntil[s.f] : FIGS[s.f].walk(t0, q, SHUF, 'L');
+    if (s.f !== WIN && s.f !== LOSER) pos[s.f] = q;
+  }
+}
+FIGS.forEach(fg => { for (let k = 0; k < 4; k++) { let t = T.crack[k]; while (t < F[k] + 3 && radOf(fg.worldRoot(t)) > RING[k + 1] - 6) t += 1 / 60; LEAVE[fg.f][k] = t; } });
+
+// ---------------------------------------------------------------- the platform: rings of chunks
+const CHUNKS = [];
+for (let k = 0; k < 4; k++) {
+  const n = NCH[k], off = rr(0, TAU / n);
+  for (let i = 0; i < n; i++) {
+    const a0 = off + i * TAU / n, a1 = a0 + TAU / n;
+    // it may only fall once everybody who is not meant to fall has left it
+    let free = F[k];
+    for (const fg of FIGS) if (DIES[fg.f] > k) free = Math.max(free, LEAVE[fg.f][k] + 0.12);
+    CHUNKS.push({ k, i, a0, a1, rIn: RING[k + 1], rOut: RING[k], start: rr(0, 1.3), free, spin: rr(-0.9, 0.9), shade: rr(0.9, 1.08), drift: rr(25, 60) });
+  }
+}
+const angIn = (a, a0, a1) => { let x = a; while (x < a0) x += TAU; while (x >= a0 + TAU) x -= TAU; return x < a1; };
+// the victims' chunks fall a moment apart; every other chunk somewhere in the ring's 1.4 s
+const FALLS = [];                 // { f, t, k, chunk }
+for (let k = 0; k < 4; k++) {
+  const vict = FIGS.filter(fg => DIES[fg.f] === k);
+  const ring = CHUNKS.filter(c => c.k === k);
+  const base = Math.max(...ring.map(c => c.free));
+  ring.forEach(c => { c.start = Math.max(c.free, F[k]) + c.start; });
+  vict.forEach((fg, vi) => {
+    const a = angOf(pos[fg.f]), c = ring.find(c => angIn(a, c.a0, c.a1));
+    const want = base + 0.25 + vi * 0.5;
+    if (!c.victim) c.start = want; c.victim = true;
+    FALLS.push({ f: fg.f, t: c.start + 0.05, k, chunk: c });
+  });
+}
+// the pillar: two halves, the right one breaks off
+const PILLAR = [
+  { half: 'L', a0: PI / 2, a1: 3 * PI / 2, rIn: 0, rOut: RING[4], k: 4, shade: 1.0 },
+  { half: 'R', a0: -PI / 2, a1: PI / 2, rIn: 0, rOut: RING[4], k: 4, shade: 1.0 },
+];
+FALLS.push({ f: LOSER, t: T.tip, k: 4, pillar: true });
+const FALL_OF = f => FALLS.find(x => x.f === f);
+
+// ---------------------------------------------------------------- what the figures do around a fall
+FIGS.forEach(fg => {
+  const f = fg.f, tr = fg.tr, fa = FALL_OF(f);
+  if (fa && !fa.pillar) {
+    const k = fa.k;
+    // the ground cracks under them: they freeze, look down, arms out for balance
+    tr.head.to(T.crack[k] + 0.2, T.crack[k] + 0.6, 26, E.io).to(fa.t - 0.5, fa.t - 0.2, 6, E.io);
+    tr.aOutL.to(T.crack[k] + 0.3, T.crack[k] + 0.7, 38, E.io); tr.aOutR.to(T.crack[k] + 0.32, T.crack[k] + 0.72, 38, E.io);
+    tr.lean.to(fa.t - 0.5, fa.t - 0.2, -8, E.io);
+  }
+  if (fa) {
+    // falling: arms flail above the head
+    for (const side of ['L', 'R']) {
+      const sg = side === 'R' ? 1 : -1, ph = f * 1.7 + (side === 'R' ? 0 : 2);
+      fg.goal(side, (t, J) => add(add(J.sh[side], mul(J.Rt, sg * (22 + 10 * Math.sin(t * 17 + ph)))), [0, 0, 62 + 14 * Math.sin(t * 13 + ph)]),
+        (t, J) => add(J.sh[side], add(mul(J.Rt, sg * 40), [0, 0, 20]))).to(fa.t, fa.t + 0.18, 1, E.out2);
+    }
+    tr.head.to(fa.t, fa.t + 0.2, -16, E.out2);
+  }
+});
+// the last two: nervous on the pillar, the winner leaps, the loser goes with the broken half
+(function finale() {
+  const w = FIGS[WIN], l = FIGS[LOSER];
+  for (const fg of [w, l]) { fg.tr.head.to(T.pcrack0 + 0.1, T.pcrack0 + 0.5, 24, E.io); fg.tr.hyaw.to(T.pcrack0 + 0.6, T.pcrack0 + 1.2, fg === w ? 20 : -20, E.io).to(20.6, 21.2, 0, E.io); }
+  l.tr.aOutL.to(20.2, 20.6, 30, E.io); l.tr.aOutR.to(20.2, 20.6, 30, E.io);
+  const y0 = w.tr.yaw.at(T.jump - 0.5), yaw = 180, dy = ((yaw - y0 + 540) % 360) - 180;
+  if (Math.abs(dy) > 30) w.turn(T.jump - 0.55, T.jump - 0.05, y0 + dy, { steps: 2, lift: 8 });
+  w.tr.lean.to(T.jump - 0.1, T.jump + 0.1, 14, E.io).to(T.jump + 0.5, T.jump + 0.8, 3, E.io);
+  T.land = w.walk(T.jump, LAND, LEAP, 'R');
+  w.tr.pant.to(T.land, T.land + 0.3, 2.2);
+  w.turn(T.land + 0.12, T.land + 0.6, -90, { steps: 2, lift: 6 });
+  for (const side of ['L', 'R']) {
+    const sg = side === 'R' ? 1 : -1;
+    w.goal(side, (t, J) => add(add(J.sh[side], mul(J.Rt, sg * 30)), [0, 0, 92 + 4 * Math.sin(t * 9)]), (t, J) => add(J.sh[side], add(mul(J.Rt, sg * 50), [0, 0, 10])))
+      .to(T.cheer, T.cheer + 0.22, 1, E.out2);
+  }
+  w.tr.head.to(T.cheer - 0.1, T.cheer + 0.3, -14, E.out2);
+  w.tr.bounce.to(T.cheer, T.cheer + 0.2, 1.6).to(24.4, 25.2, 0.6);
+})();
+
+// ---------------------------------------------------------------- falling: the cartoon tumble (screen space)
+const G = 1500;                                  // world units / s^2
+const dropAt = dt => dt > 0 ? 0.5 * G * dt * dt : 0;
+const darkAt = dt => sstep(0.35, 1.05, dt);
+// the right half of the pillar: tips over its outer foot, then drops
+const tipAng = t => t < T.tip ? 0 : 0.62 * E.in2(inv(T.tip, T.tip + 0.6, t)) + Math.max(0, t - T.tip - 0.6) * 1.4;
+const tipDrop = t => dropAt(t - T.tip - 0.45);
+function tipXform(c, t) {
+  const pv = P([CX + RING[4], CD, -240]);
+  c.translate(pv[0], pv[1] + tipDrop(t) * pv[2]); c.rotate(tipAng(t)); c.translate(-pv[0], -pv[1]);
+}
+
+// ---------------------------------------------------------------- drawing the stone
+const nz1 = x => Math.sin(x * 12.9898) * 0.5 + Math.sin(x * 4.1414 + 1.3) * 0.5;
+function arcPts(r, a0, a1, z, n, jag = 0, seed = 0) {
+  const out = [];
+  for (let i = 0; i <= n; i++) { const a = lerp(a0, a1, i / n), rj = r + (i > 0 && i < n ? jag * nz1(a * 9 + seed) : 0); out.push([CX + rj * Math.cos(a), CD + rj * Math.sin(a), z]); }
+  return out;
+}
+function wall(c, ch, r, inner, colTop, k = ch.k) {
+  const n = Math.max(6, Math.ceil((ch.a1 - ch.a0) / 0.05));
+  const vis = a => inner ? Math.sin(a) > 0 : Math.sin(a) < 0;
+  let run = [];
+  const flush = () => {
+    if (run.length < 2) { run = []; return; }
+    const th = THK[k];
+    const top = run.map(a => [CX + r * Math.cos(a), CD + r * Math.sin(a), 0]);
+    const bot = run.map(a => [CX + r * Math.cos(a), CD + r * Math.sin(a), -th * (0.82 + 0.18 * nz1(a * 5 + k))]).reverse();
+    const y0 = P(top[0])[1], y1 = P(bot[0])[1];
+    const g = c.createLinearGradient(0, y0, 0, y1 + 1);
+    g.addColorStop(0, rgb(colTop)); g.addColorStop(Math.min(1, 260 / Math.max(1, y1 - y0)), rgb(colTop.map(v => v * 0.25))); g.addColorStop(1, 'rgba(0,0,0,1)');
+    poly(c, [...top, ...bot]); c.fillStyle = g; c.fill();
+    run = [];
+  };
+  for (let i = 0; i <= n; i++) { const a = lerp(ch.a0, ch.a1, i / n); if (vis(a)) run.push(a); else flush(); }
+  flush();
+}
+function topCol(ch, dark = 0) {
+  const rm = (ch.rIn + ch.rOut) / 2, light = 0.72 + 0.34 * (1 - rm / RING[0]);
+  return STONE.map(v => v * light * ch.shade * (1 - dark));
+}
+function drawChunk(c, ch, dark = 0, inner = false) {
+  const n = Math.max(4, Math.ceil((ch.a1 - ch.a0) / 0.06));
+  const col = topCol(ch, dark), wcol = col.map(v => v * 0.55);
+  wall(c, ch, ch.rOut, false, wcol);
+  if (inner && ch.rIn > 0) wall(c, ch, ch.rIn, true, wcol);
+  const pts = ch.rIn > 0 ? [...arcPts(ch.rOut, ch.a0, ch.a1, 0, n), ...arcPts(ch.rIn, ch.a1, ch.a0, 0, n)] : [...arcPts(ch.rOut, ch.a0, ch.a1, 0, n), [CX, CD, 0]];
+  poly(c, pts); c.fillStyle = rgb(col); c.fill(); c.strokeStyle = rgb(col); c.lineWidth = 1; c.stroke();
+  // a lighter rim along the outer edge
+  c.beginPath(); arcPts(ch.rOut - 2, ch.a0, ch.a1, 0, n).forEach((p, i) => { const q = P(p); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); });
+  c.strokeStyle = rgb(col.map(v => Math.min(255, v * 1.25))); c.lineWidth = 1.6; c.stroke();
+}
+// a falling chunk: drops, drifts outward, turns a little, sinks into the dark; a few pebbles with it
+function fallingChunk(c, ch, t) {
+  const dt = t - ch.start;
+  if (dt <= 0 || dt > 1.5) return;
+  const am = (ch.a0 + ch.a1) / 2, rm = (ch.rIn + ch.rOut) / 2;
+  const ctr = [CX + rm * Math.cos(am), CD + rm * Math.sin(am), 0];
+  const out = [Math.cos(am) * ch.drift * dt, Math.sin(am) * ch.drift * dt * 0.6, -dropAt(dt)];
+  const p0 = P(ctr), p1 = P(add(ctr, out));
+  c.save(); c.translate(p1[0], p1[1]); c.rotate(ch.spin * dt * dt * 1.6); c.translate(-p0[0], -p0[1]);
+  drawChunk(c, ch, darkAt(dt), true);
+  c.restore();
+  for (let i = 0; i < 3; i++) {
+    const a = lerp(ch.a0, ch.a1, (i + 0.5) / 3), q = P(add([CX + ch.rOut * Math.cos(a), CD + ch.rOut * Math.sin(a), 0], [out[0] * 1.3, out[1], -dropAt(dt) * (1.15 + 0.1 * i) - 30]));
+    c.beginPath(); c.arc(q[0], q[1], (3 + i) * q[2], 0, TAU); c.fillStyle = rgb(STONE.map(v => v * 0.7 * (1 - darkAt(dt)))); c.fill();
+  }
+}
+// the cracks: run in from the outer edge along the chunk seams, then round the inner edge
+function cracks(c, k, t) {
+  const p = sstep(T.crack[k], T.crack[k] + 0.9, t);
+  if (p <= 0) return;
+  c.save(); c.strokeStyle = 'rgba(8,8,10,0.92)'; c.lineCap = 'round'; c.lineJoin = 'round';
+  for (const ch of CHUNKS.filter(x => x.k === k)) {
+    if (t > ch.start) continue;
+    const r0 = ch.rOut, r1 = lerp(ch.rOut, ch.rIn, p), n = 7;
+    c.beginPath();
+    for (let i = 0; i <= n; i++) { const r = lerp(r0, r1, i / n), a = ch.a0 + (i > 0 ? 0.025 * nz1(r * 0.3 + ch.i) : 0), q = P([CX + r * Math.cos(a), CD + r * Math.sin(a), 0]); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }
+    c.lineWidth = 2.6 * P([CX, CD, 0])[2]; c.stroke();
+    const pa = sstep(0.45, 1, p);
+    if (pa > 0) {
+      c.beginPath(); arcPts(ch.rIn + 3, ch.a0, lerp(ch.a0, ch.a1, pa), 0, 10, 3, ch.i).forEach((q0, i) => { const q = P(q0); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); });
+      c.lineWidth = 2.2 * P([CX, CD, 0])[2]; c.stroke();
+    }
+  }
+  c.restore();
+}
+function pillarCrack(c, t) {
+  const p = sstep(T.pcrack0, T.pcrack1, t);
+  if (p <= 0 || t > T.tip) return;
+  c.save(); c.strokeStyle = 'rgba(8,8,10,0.95)'; c.lineCap = 'round'; c.lineJoin = 'round'; c.lineWidth = 3 * P([CX, CD, 0])[2];
+  c.beginPath();
+  const n = 14, R = RING[4];
+  for (let i = 0; i <= n * Math.min(1, p * 1.5); i++) { const d = lerp(R, -R, i / n), q = P([CX + 4 * nz1(d * 0.2), d, 0]); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }
+  const pd = sstep(0.66, 1, p);
+  if (pd > 0) for (let i = 1; i <= 8; i++) { const z = -320 * pd * i / 8, q = P([CX + 5 * nz1(z * 0.1), -R, z]); c.lineTo(q[0], q[1]); }
+  c.stroke(); c.restore();
+}
+
+// ---------------------------------------------------------------- drawing the figures
+function figState(fg, t) {
+  const fa = FALL_OF(fg.f);
+  if (!fa || t < fa.t) return { mode: 'stand' };
+  if (fa.pillar) return { mode: 'tip' };
+  const dt = t - fa.t;
+  if (dt > 1.6) return { mode: 'gone' };
+  return { mode: 'fall', dt, fa };
+}
+function drawFalling(c, fg, J, t, st) {
+  const { dt, fa } = st, ch = fa.chunk, am = (ch.a0 + ch.a1) / 2;
+  const foot = [J.P[0], J.P[1], 0], p0 = P(foot);
+  const out = [Math.cos(am) * ch.drift * dt, Math.sin(am) * ch.drift * dt * 0.6, -dropAt(dt)];
+  const p1 = P(add(foot, out)), spin = (fg.f % 2 ? 1 : -1) * (3.2 + (fg.f % 3) * 0.6);
+  const s = 1 - 0.3 * sstep(0, 1.3, dt);
+  const col = fg.col;
+  c.save(); c.translate(p1[0], p1[1] - 120 * p0[2]); c.rotate(spin * dt * sstep(0, 0.35, dt)); c.scale(s, s); c.translate(-p0[0], -p0[1] + 120 * p0[2]);
+  fg.col = mixc(col, [0, 0, 0], darkAt(dt));
+  drawFigure(c, fg, J);
+  fg.col = col; c.restore();
+}
+
+// ---------------------------------------------------------------- HUD
+function hud(t) {
+  captionAt(t, 'PICK A COLOR.', 0.25, 99, 44, 10, 112);
+  const y = 186, gap = 62, x0 = W / 2 - gap * 4.5;
+  COLORS.forEach(([, col], f) => {
+    const x = x0 + f * gap, fa = FALL_OF(f), tx = fa ? fa.t + 0.55 : 1e9;
+    const a = sstep(0.4 + f * 0.05, 0.7 + f * 0.05, t);
+    const pop = t > tx ? 1 + 0.45 * Math.exp(-(t - tx) / 0.09) * sstep(tx, tx + 0.03, t) : 1;
+    ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.scale(pop, pop);
+    if (t < tx) {
+      ctx.beginPath(); ctx.arc(0, 0, 15, 0, TAU); ctx.fillStyle = INK; ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, 12, 0, TAU); ctx.fillStyle = rgb(col); ctx.fill();
+    } else {
+      ctx.strokeStyle = rgb([120, 120, 124]); ctx.lineWidth = 5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-10, -10); ctx.lineTo(10, 10); ctx.moveTo(10, -10); ctx.lineTo(-10, 10); ctx.stroke();
+    }
+    ctx.restore();
+    if (f === WIN && t > T.cheer) {
+      const k = E.over(inv(T.cheer, T.cheer + 0.4, t));
+      ctx.save(); ctx.translate(x, y - 34 + 10 * (1 - k)); ctx.scale(k, k); ctx.globalAlpha = sstep(T.cheer, T.cheer + 0.1, t);
+      ctx.beginPath(); ctx.moveTo(-15, 8); ctx.lineTo(-17, -10); ctx.lineTo(-7, -1); ctx.lineTo(0, -14); ctx.lineTo(7, -1); ctx.lineTo(17, -10); ctx.lineTo(15, 8); ctx.closePath();
+      ctx.fillStyle = rgb(WARMC); ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.restore();
+      glowAt(x, y - 34, 50, WARMC, 0.25 * k);
+    }
+  });
+}
+function glowAt(x, y, r, col, a) {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+
+// ---------------------------------------------------------------- camera
+const shake = t => {
+  let a = 0;
+  if (t > T.rumble) a += 7 * Math.exp(-(t - T.rumble) / 0.7);
+  for (const f of F) if (t > f) a += 3.5 * Math.exp(-(t - f) / 0.6);
+  if (t > T.pcrack0) a += 3 * Math.exp(-(t - T.pcrack0) / 0.5);
+  if (t > T.tip) a += 11 * Math.exp(-(t - T.tip) / 0.45);
+  return a;
+};
+function setCam(t) {
+  cam.D0 = 2400; cam.h = 900;
+  const push = E.io(inv(22.4, 26.0, t));
+  cam.zoom = lerp(0.72, 1.12, push);
+  const zt = 150, k = cam.zoom * cam.D0 / (cam.D0 + CD), yT = lerp(650, 720, push);
+  cam.hy = yT - (cam.h - zt) * k;
+  cam.x = lerp(CX, CX - 40, push);
+  const s = shake(t);
+  cam.x += s * Math.sin(t * 53); cam.hy += s * 0.7 * Math.cos(t * 61);
+}
+
+// ---------------------------------------------------------------- drawing
+function draw(t) {
+  setCam(t);
+  // the abyss
+  let g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, rgb([20, 20, 23])); g.addColorStop(0.55, rgb([11, 11, 13])); g.addColorStop(1, rgb([3, 3, 4]));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // a soft light from above on the platform
+  softLayer(40, 'screen', c => {
+    const p = P([CX, CD, 0]);
+    const gg = c.createRadialGradient(p[0], p[1] - 260, 20, p[0], p[1] - 160, 560);
+    gg.addColorStop(0, 'rgba(120,120,128,0.32)'); gg.addColorStop(1, 'rgba(120,120,128,0)');
+    c.fillStyle = gg; c.fillRect(0, 0, W, H);
+  });
+
+  const poses = FIGS.map(fg => fg.pose(t)), states = FIGS.map(fg => figState(fg, t));
+  const behind = [], front = [];
+  for (const ch of CHUNKS) if (t > ch.start && t < ch.start + 1.5) (Math.sin((ch.a0 + ch.a1) / 2) > 0 ? behind : front).push({ d: Math.sin((ch.a0 + ch.a1) / 2), draw: () => fallingChunk(ctx, ch, t) });
+  FIGS.forEach((fg, i) => { const st = states[i]; if (st.mode === 'fall') (poses[i].P[1] > CD ? behind : front).push({ d: poses[i].P[1] - 1000, draw: () => drawFalling(ctx, fg, poses[i], t, st) }); });
+  behind.sort((a, b) => b.d - a.d).forEach(it => it.draw());
+
+  // the platform, inside out (each ring's front wall hides under the next ring's top)
+  const lp = PILLAR[0], rp = PILLAR[1];
+  drawChunk(ctx, lp);
+  const tipping = t >= T.tip;
+  if (!tipping) drawChunk(ctx, rp);
+  pillarCrack(ctx, t);
+  for (let k = 3; k >= 0; k--) {
+    for (const ch of CHUNKS) if (ch.k === k && t <= ch.start) {
+      // a shiver just before it goes
+      const sh = sstep(ch.start - 0.3, ch.start, t) * 2.2;
+      ctx.save(); ctx.translate(sh * Math.sin(t * 90 + ch.i), sh * Math.cos(t * 77 + ch.i)); drawChunk(ctx, ch); ctx.restore();
+    }
+    cracks(ctx, k, t);
+  }
+  // the broken half of the pillar, with the loser on it
+  const loser = FIGS[LOSER], li = LOSER;
+  if (tipping && t < T.tip + 2.2) {
+    ctx.save(); tipXform(ctx, t);
+    const dk = sstep(T.tip + 0.8, T.tip + 1.6, t);
+    drawChunk(ctx, rp, dk);
+    const pts = [[CX, RING[4], 0], [CX, -RING[4], 0], [CX, -RING[4], -400], [CX, RING[4], -400]];
+    poly(ctx, pts); ctx.fillStyle = rgb([40, 40, 44].map(v => v * (1 - dk))); ctx.fill();
+    const col = loser.col; loser.col = mixc(col, [0, 0, 0], dk);
+    drawFigure(ctx, loser, poses[li]); loser.col = col;
+    ctx.restore();
+  }
+  // the ones still standing, far first
+  const standing = FIGS.map((fg, i) => ({ fg, i })).filter(({ i, fg }) => states[i].mode === 'stand');
+  standing.forEach(({ i }) => contactShadow(ctx, poses[i], 0.6));
+  standing.sort((a, b) => poses[b.i].P[1] - poses[a.i].P[1]).forEach(({ fg, i }) => drawFigure(ctx, fg, poses[i]));
+  front.sort((a, b) => b.d - a.d).forEach(it => it.draw());
+
+  vignette(0.72);
+  hud(t);
+  captionAt(t, 'DID YOURS SURVIVE?', T.text0 + 0.15, T.text1, 40, 9, 1080);
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(fg => [fg, 0, FALL_OF(fg.f) ? FALL_OF(fg.f).t : T.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.end0, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) if (!FALL_OF(f.f) || c.t < FALL_OF(f.f).t) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T, F, falls: FALLS.map(x => ({ t: x.t, k: x.k, name: COLORS[x.f][0], pop: x.t + 0.55 })).sort((a, b) => a.t - b.t),
+    chunks: CHUNKS.map(c => ({ k: c.k, t: c.start })).sort((a, b) => a.t - b.t), winner: COLORS[WIN][0] }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>

@@ -779,8 +779,10 @@ function drawFigure(c, fig, J, extra = {}) {
 }
 function drawFigureParts(c, fig, J, extra) {
   const parts = [];
+  // optional per-figure colour (fig.col); far limbs a darker shade of it
+  const NEAR = fig.col || FIG_NEAR, FAR = fig.colFar || (fig.col ? mixc(fig.col, [34, 34, 38], 0.38) : FIG_FAR);
   const torsoD = (J.P[1] + J.N[1]) / 2;
-  const shadeFor = d => rgb(mixc(FIG_NEAR, FIG_FAR, sstep(1, 11, d - torsoD) * 0.95));
+  const shadeFor = d => rgb(mixc(NEAR, FAR, sstep(1, 11, d - torsoD) * 0.95));
   // the leg nearer the camera is drawn together with the torso as ONE shape, so the hip has no seam
   const legD = side => (J.hip[side][1] + J.knee[side][1] + J.ank[side][1]) / 3;
   // seen from the front (both legs about equally far away) both legs join the torso
@@ -797,17 +799,17 @@ function drawFigureParts(c, fig, J, extra) {
     const acol = shadeFor(ad + (J.sh[side][1] - J.N[1]) * 1.2);
     parts.push({ d: ad, draw: () => {
       strokeLimb(c, armPts, acol, P(J.N)[2]);
-      if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
+      if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
     } });
   }
-  parts.push({ d: torsoD, draw: () => strokeBody(c, [J.P, J.C, J.N, J.NT], bodyLegs.map(legPts), rgb(FIG_NEAR)) });
+  parts.push({ d: torsoD, draw: () => strokeBody(c, [J.P, J.C, J.N, J.NT], bodyLegs.map(legPts), rgb(NEAR)) });
   parts.push({ d: Math.min(torsoD - 0.2, J.Hc[1]), draw: () => {
     const [X, Y, k] = P(J.Hc), r = DIM.headR * FSCALE * k;
     c.beginPath(); c.arc(X, Y, r + OL() * k, 0, TAU); c.fillStyle = INK; c.fill();
-    c.beginPath(); c.arc(X, Y, r, 0, TAU); c.fillStyle = rgb(FIG_NEAR); c.fill();
+    c.beginPath(); c.arc(X, Y, r, 0, TAU); c.fillStyle = rgb(NEAR); c.fill();
   } });
   if (extra.mask) parts.push({ d: extra.mask.depth, draw: () => drawMask(c, extra.mask) });
-  if (extra.handOver) for (const side of extra.handOver) parts.push({ d: extra.mask.depth - 0.1, draw: () => dotJoint(c, J.hand[side], rgb(FIG_NEAR), DIM.limbW * 0.55) });
+  if (extra.handOver) for (const side of extra.handOver) parts.push({ d: extra.mask.depth - 0.1, draw: () => dotJoint(c, J.hand[side], rgb(NEAR), DIM.limbW * 0.55) });
   // props held by the figure, sorted in with its limbs: [{ d, draw }]
   if (extra.props) for (const p of extra.props) parts.push(p);
   parts.sort((a, b) => b.d - a.d);
