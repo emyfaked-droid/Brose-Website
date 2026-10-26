@@ -16,6 +16,11 @@ started from templates. **Never rewrite the engine or the look; only add a story
   e.g. `grep -n "cloth\|rope" *.html`).
 - Look at **max 4 stills per round**, combined into ONE contact sheet image (see Workflow). Never look at single frames one by one.
 - Don't paste long command output; pipe through `tail`.
+- **One stills round, then render.** Fix only real problems (foot sliding, figures overlapping, wrong timing). No polishing
+  rounds, no test clips unless the user asks. Render and mix exactly once at the end.
+- Reuse what exists: sounds in `sfx/` (check `ls sfx/` first), props and tricks from the template. Generate a new
+  stand-in sound only if nothing in `sfx/` fits.
+- Keep the scene small: few props, no extra decoration, no particle systems unless the story needs them.
 
 ## Workflow
 
@@ -38,7 +43,9 @@ posting text (below) to the commit message or the reply.
 
 ## Style (fixed)
 
-- Thin white stick figures, black outline, round head, no face, no clothes; far limbs grey. Children: `s: 0.6`.
+- **Minimal stick figures, always:** thin white lines with a black outline, a plain round head. Nothing else on the
+  body: no face, no hair, no clothes, no hands/fingers, no shoes, no muscles or extra shapes, no thicker bodies.
+  Far limbs grey. Children: `s: 0.6`. Props (phone, bag, cane) stay simple line shapes.
 - Dark, almost black set, soft directional light (pendant lamp / street lamp), vignette, glossy floor with reflection,
   film grain. Grayscale plus ONE accent colour (default warm yellow `[255,206,108]`), ideally as the payoff.
 - Labels on objects are fine and help (e.g. a sign "MOTIVATION", a bag "JOB 1"): monospace caps.
