@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stop Watching The Time</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   STOP WATCHING THE TIME: a couple at a small table, an hourglass between
+   them ("OUR WEEKEND"). She keeps glancing at it while he talks. He sees
+   it, takes her hand and they dance; the sand runs out and nobody notices.
+   The sand is the only colour; the lamp turns warm once they dance.
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds)
+const T = {
+  fadeIn: 0.5,
+  talk0: 2.0, talk1: 6.4,          // he talks and gestures; she glances at the hourglass
+  notice: 6.35,                    // he sees it
+  stand0: 6.75,                    // he gets up
+  pull0: 8.55,                     // he pulls her up by the hand
+  dance0: 11.3,                    // the dance (swaying, small steps, a twirl)
+  twirl0: 12.4, twirl1: 13.6,
+  warm0: 9.0, warm1: 11.0,         // the lamp turns warm
+  sand1: 15.5,                     // the last grain falls
+  text0: 4.0, text1: 7.5,          // SHE WAS SO AFRAID / IT WOULD END...
+  text2: 9.5, text3: 13.0,         // ...SHE FORGOT TO LIVE IT.
+  text4: 13.0, text5: 16.5,        // STOP WATCHING THE TIME.
+  end0: 17.0, end: 18.0,
+  stills: [3.4, 8.9, 13.0, 15.8],
+};
+
+// ---------------------------------------------------------------- set (x = left..right, d = depth, z = height)
+const WALL = 300;
+const TABLE = { x0: 304, x1: 416, d0: 70, d1: 150, z: 150 };
+const SEAT = 86;
+const LAMP = [360, 110, 540];
+const GLASS = [360, 128, TABLE.z];          // the hourglass stands on the table, a little toward the back
+const PF = -80, SIT_Z = SEAT + 7;
+const WARMC = [255, 206, 108], WARML = [255, 222, 176], COLD = [196, 202, 214], SAND = [246, 196, 92];
+const DANCE = { she: [236, -40], he: [298, -40] };    // in front, left of the table: the hourglass stays in view
+
+// ---------------------------------------------------------------- figures
+const SHE = new Fig('SHE', { x: 282, d: 110, yaw: 0, seed: 3.1 });
+const HE = new Fig('HE', { x: 438, d: 110, yaw: 180, seed: 5.7 });
+const FIGS = [SHE, HE];
+const DMID = (a, b) => lerp3(a, b, 0.5);
+const SLOW = { ...MOOD.walk, name: 'slow', L: 84, cad: 1.9, ta: 0.35, td: 0.4 };
+const BACKS = { ...MOOD.back, name: 'backslow', L: 40, cad: 2.2, ta: 0.35, td: 0.4 };
+
+function seated(F, lean, slump, head) {
+  const tr = F.tr;
+  tr.pf.v0 = PF; tr.pz.v0 = SIT_Z - H0; tr.lean.v0 = lean; tr.slump.v0 = slump; tr.head.v0 = head; tr.idle.v0 = 0.7;
+}
+const pole = (F, side, dz = -60) => (t, J) => add(add(J.sh[side], add(mul(J.Ft, -16), mul(J.Rt, (side === 'R' ? 1 : -1) * 44))), [0, 0, dz]);
+// the hand they hold: halfway between his right and her right shoulder, a little low
+const handPoint = t => { const a = SHE.pose(t, true), b = HE.pose(t, true); return add(DMID(a.sh.R, b.sh.R), [0, 0, -62]); };
+
+(function her() {
+  const F = SHE, tr = F.tr;
+  seated(F, 8, 0, 4);
+  tr.shDrop.v0 = -4;                                       // shoulders up, tense
+  // hands resting on the table edge
+  const rest = side => (t, J) => [TABLE.x0 + 10, 110 + (side === 'R' ? -14 : 14), TABLE.z + 2];
+  const rR = F.goal('R', rest('R'), pole(F, 'R')), rL = F.goal('L', rest('L'), pole(F, 'L'));
+  rR.v0 = 1; rL.v0 = 1;
+  // glances at the hourglass (down and a little to the side), back to him, again
+  const G = [2.25, 3.25, 4.1, 4.75, 5.35, 5.95];
+  for (const g of G) {
+    tr.head.to(g, g + 0.18, 24, E.io).to(g + 0.42, g + 0.62, 4, E.io);
+    tr.hyaw.to(g, g + 0.18, 22, E.io).to(g + 0.42, g + 0.62, 0, E.io);
+  }
+  tr.breath.to(2.0, 2.6, 0.6);
+  // he stands in front of her and offers his hand: she looks up at him, gives hers
+  tr.hyaw.to(7.7, 8.2, -38, E.io);
+  tr.head.to(7.7, 8.2, -6, E.io);
+  rR.to(8.25, 8.5, 0, E.io);
+  F.goal('R', t => handPoint(t), pole(F, 'R', -40)).to(8.25, 8.55, 1, E.io).to(T.dance0 - 0.45, T.dance0 - 0.15, 0, E.io);
+  rL.to(8.6, 8.9, 0, E.io);
+  // up out of the chair
+  const p = T.pull0;
+  tr.lean.to(p, p + 0.25, 30, E.io).to(p + 0.3, p + 0.85, 4, E.io);
+  tr.pf.to(p + 0.05, p + 0.7, 0, E.io);
+  tr.pz.to(p + 0.12, p + 0.75, 0, E.io);
+  tr.shDrop.to(p + 0.3, p + 1.2, 1, E.io);
+  tr.hyaw.to(p + 0.4, p + 0.9, 0, E.io);
+  tr.head.to(p + 0.4, p + 0.9, 2, E.io);
+  // follows him to the middle of the room
+  F.turn(9.1, 9.5, -104, { steps: 2, lift: 5 });
+  const w = F.walk(9.55, DANCE.she, SLOW, 'R');
+  F.turn(w + 0.02, w + 0.5, 0, { steps: 2, lift: 4 });
+})();
+
+(function him() {
+  const F = HE, tr = F.tr;
+  seated(F, 20, 6, 2);
+  // talking: hands move in front of him, the head nods along
+  const talk = side => (t, J) => {
+    const sg = side === 'R' ? 1 : -1, ph = sg * 1.1;
+    return add(add(add(J.N, mul(J.Ft, 40 + 8 * Math.sin(t * 2.6 + ph))), mul(J.Rt, sg * (16 + 10 * Math.sin(t * 1.7 + ph)))), [0, 0, -42 + 16 * Math.sin(t * 3.1 + ph)]);
+  };
+  const lap = side => (t, J) => add(lerp3(J.hip[side], J.knee[side], 0.62), [0, (side === 'R' ? 1 : -1) * 3, 9]);
+  for (const side of ['R', 'L']) {
+    const l = F.goal(side, lap(side), pole(F, side)); l.v0 = 1; l.to(T.stand0 + 0.1, T.stand0 + 0.4, 0, E.io);
+    F.goal(side, talk(side), pole(F, side, -40)).to(T.talk0 + (side === 'L' ? 0.15 : 0), T.talk0 + 0.5, 1, E.io).to(T.talk1 - 0.1, T.talk1 + 0.3, 0, E.io);
+  }
+  for (let k = 0; k < 6; k++) { const a = 2.2 + k * 0.72; tr.head.to(a, a + 0.25, 8, E.io).to(a + 0.3, a + 0.6, 0, E.io); }
+  tr.lean.to(T.talk0, T.talk0 + 0.5, 25, E.io);
+  // he sees her glance: stops, head tilts, then stands up
+  tr.headRoll.to(T.notice, T.notice + 0.4, -9, E.io).to(T.stand0 + 0.3, T.stand0 + 0.8, 0, E.io);
+  tr.head.to(T.notice, T.notice + 0.4, 6, E.io);
+  const s = T.stand0;
+  tr.lean.to(s, s + 0.25, 34, E.io).to(s + 0.3, s + 0.8, 3, E.io);
+  tr.slump.to(s, s + 0.6, 0, E.io);
+  tr.pf.to(s + 0.05, s + 0.65, 0, E.io);
+  tr.pz.to(s + 0.12, s + 0.72, 0, E.io);
+  // round the front of the table to her
+  F.turn(s + 0.85, s + 1.25, 264, { steps: 2, lift: 5 });
+  const a = F.walk(s + 1.27, [430, 32], SLOW, 'R');
+  F.turn(a + 0.02, a + 0.36, 182, { steps: 2, lift: 4 });
+  const b = F.walk(a + 0.38, [312, 30], SLOW, 'L');
+  F.turn(b + 0.02, b + 0.4, 145, { steps: 2, lift: 4 });
+  tr.head.to(b - 0.3, b + 0.2, 10, E.io);
+  // offers his hand, pulls her up, walks backwards to the middle, leading her
+  F.goal('R', t => handPoint(t), pole(F, 'R', -40)).to(8.2, 8.5, 1, E.io).to(T.dance0 - 0.45, T.dance0 - 0.15, 0, E.io);
+  tr.lean.to(T.pull0, T.pull0 + 0.3, -6, E.io).to(T.pull0 + 0.5, T.pull0 + 0.9, 3, E.io);
+  tr.head.to(T.pull0 + 0.3, T.pull0 + 0.8, 0, E.io);
+  F.turn(9.15, 9.5, 86, { steps: 2, lift: 4 });
+  const c = F.walk(9.55, DANCE.he, BACKS, 'R', { back: true });
+  F.turn(c + 0.02, c + 0.45, 180, { steps: 2, lift: 4 });
+})();
+
+// ---------------------------------------------------------------- the dance
+(function dance() {
+  const d0 = T.dance0;
+  // her hands on his shoulders, his on her waist
+  const onHim = side => (t, J) => { const H = HE.pose(t, true); return add(H.sh[side === 'L' ? 'R' : 'L'], [0, 0, 4]); };
+  const onHer = side => (t, J) => { const S = SHE.pose(t, true); return add(S.hip[side === 'L' ? 'R' : 'L'], [0, (side === 'L' ? -1 : 1) * 4, 22]); };
+  const sL = SHE.goal('L', onHim('L'), pole(SHE, 'L', -30)), sR = SHE.goal('R', onHim('R'), pole(SHE, 'R', -30));
+  const hL = HE.goal('L', onHer('L'), pole(HE, 'L')), hR = HE.goal('R', onHer('R'), pole(HE, 'R'));
+  sL.to(d0 - 0.3, d0 + 0.2, 1, E.io); sR.to(d0 - 0.25, d0 + 0.25, 1, E.io);
+  hL.to(d0 - 0.3, d0 + 0.2, 1, E.io); hR.to(d0 - 0.2, d0 + 0.3, 1, E.io);
+  // the twirl: she turns once under his raised arm (her right hand in his left)
+  const up = t => { const S = SHE.pose(t, true), H = HE.pose(t, true); return add(lerp3(S.N, H.N, 0.35), [0, -6, 104]); };
+  const a = T.twirl0, b = T.twirl1;
+  sR.to(a - 0.25, a, 0, E.io).to(b, b + 0.3, 1, E.io); hL.to(a - 0.25, a, 0, E.io).to(b, b + 0.3, 1, E.io);
+  sL.to(a - 0.15, a + 0.1, 0, E.io).to(b, b + 0.35, 1, E.io);
+  SHE.goal('R', up, pole(SHE, 'R', 30)).to(a - 0.25, a, 1, E.io).to(b, b + 0.3, 0, E.io);
+  HE.goal('L', up, pole(HE, 'L', 30)).to(a - 0.25, a, 1, E.io).to(b, b + 0.3, 0, E.io);
+  // slow sway with small steps (a few degrees each way), both together
+  let y = 0, twirled = false;
+  for (let t = d0 + 0.3; t < T.end - 0.6; t += 1.15) {
+    if (t > a - 0.9 && t < b + 0.1) {
+      if (!twirled) { SHE.turn(a, b, 360, { steps: 5, lift: 6, ease: E.io }); twirled = true; }
+      continue;
+    }
+    y = y > 0 ? -7 : 7;
+    SHE.turn(t, t + 0.7, (t > b ? 360 : 0) + y, { steps: 2, lift: 3, ease: E.io });
+    HE.turn(t + 0.05, t + 0.75, 180 + y, { steps: 2, lift: 3, ease: E.io });
+  }
+  for (const F of FIGS) {
+    F.tr.pl.to(d0, d0 + 0.8, 0, E.io);
+    F.tr.head.to(d0 - 0.2, d0 + 0.6, 6, E.io);
+    F.tr.breath.to(d0, d0 + 1, 1.2);
+  }
+  SHE.tr.headRoll.to(d0, d0 + 0.8, 7, E.io).to(a - 0.2, a + 0.1, 0, E.io).to(b + 0.2, b + 0.8, 8, E.io);
+  SHE.tr.shDrop.to(d0, d0 + 1, 3, E.io);
+  HE.tr.headRoll.to(d0, d0 + 0.8, -5, E.io);
+})();
+
+// ---------------------------------------------------------------- the hourglass
+const sandLeft = t => 1 - clamp(t / T.sand1);           // the share still in the top bulb
+const GH = 64, GW = 30, NECK = 3;                       // half height of the glass, bulb half width
+function drawGlass(c, t) {
+  const [gx, gd, gz] = GLASS, zc = gz + 14 + GH;      // centre of the glass (above the base)
+  const pz = z => P([gx, gd, z]), k = pz(zc)[2];
+  const X = (u, z) => { const p = P([gx + u, gd, z]); return [p[0], p[1]]; };
+  // bulb outline: half width at height z (from the neck)
+  const halfW = z => { const e = Math.abs(z - zc) / GH; return NECK + (GW - NECK) * Math.sin(Math.min(1, e) * PI * 0.5) ** 0.8; };
+  const bulb = (z0, z1) => { const pts = []; for (let i = 0; i <= 16; i++) { const z = lerp(z0, z1, i / 16); pts.push(X(halfW(z), z)); } for (let i = 16; i >= 0; i--) { const z = lerp(z0, z1, i / 16); pts.push(X(-halfW(z), z)); } return pts; };
+  const fillPts = (pts, col) => { c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath(); c.fillStyle = col; c.fill(); };
+  const left = sandLeft(t);
+  // sand in the top bulb: from the neck up to a level that sinks (a small dip in the middle while it runs)
+  if (left > 0.002) {
+    const hTop = (GH - 6) * Math.sqrt(left);
+    const pts = bulb(zc + 1, zc + hTop);
+    fillPts(pts, rgb(SAND));
+  }
+  // the pile in the bottom bulb grows
+  const done = 1 - left, hB = (GH - 10) * Math.sqrt(done) + 2;
+  {
+    const zb = zc - GH + 3, pts = [];
+    for (let i = 0; i <= 18; i++) { const u = lerp(-1, 1, i / 18), w = halfW(zb + hB * 0.3); pts.push(X(u * w * 0.98, zb + hB * (1 - u * u * 0.55))); }
+    for (let i = 18; i >= 0; i--) { const u = lerp(-1, 1, i / 18); pts.push(X(u * halfW(zb) * 0.98, zb)); }
+    fillPts(pts, rgb(SAND));
+  }
+  // the falling stream (and a few grains at the very end)
+  if (t < T.sand1) {
+    const a = X(0, zc), b = X(0, zc - GH + 3 + hB);
+    c.strokeStyle = rgb(SAND); c.lineWidth = 2.2 * k; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  } else if (t < T.sand1 + 0.4) {
+    const u = (t - T.sand1) / 0.4, p = X(0.5, lerp(zc, zc - GH + 3 + hB, u * u));
+    c.beginPath(); c.arc(p[0], p[1], 1.6 * k, 0, TAU); c.fillStyle = rgb(SAND); c.fill();
+  }
+  // the glass: thin lines, a faint sheen
+  const outline = [...bulb(zc, zc + GH), ...bulb(zc - GH, zc).reverse()];
+  c.save(); c.lineJoin = 'round';
+  c.beginPath(); for (const s of [1, -1]) { for (let i = 0; i <= 32; i++) { const z = lerp(zc - GH, zc + GH, i / 32), p = X(s * halfW(z), z); i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]); } }
+  c.strokeStyle = INK; c.lineWidth = 5.5 * k; c.stroke(); c.strokeStyle = 'rgba(232,234,240,0.9)'; c.lineWidth = 2.2 * k; c.stroke();
+  // base and cap plates, two posts
+  for (const [z0, z1] of [[gz, gz + 14], [zc + GH, zc + GH + 10]]) {
+    const a = X(-GW - 12, z1), b = X(GW + 12, z0);
+    c.fillStyle = INK; c.fillRect(a[0] - 2, a[1] - 2, b[0] - a[0] + 4, b[1] - a[1] + 4);
+    c.fillStyle = '#2a2b30'; c.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  }
+  for (const s of [-1, 1]) { const a = X(s * (GW + 6), zc + GH), b = X(s * (GW + 6), gz + 14); c.strokeStyle = INK; c.lineWidth = 5 * k; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke(); c.strokeStyle = '#8a8c92'; c.lineWidth = 2.4 * k; c.stroke(); }
+  // the label on the base
+  const lb = X(0, gz + 7);
+  c.font = `800 ${Math.round(9.5 * k)}px "JetBrains Mono", "DejaVu Sans Mono", monospace`; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillStyle = 'rgba(232,230,224,0.92)'; c.fillText('OUR WEEKEND', lb[0], lb[1] + 0.5);
+  c.restore();
+  return { x: P([gx, gd, zc])[0], y: P([gx, gd, zc])[1], k };
+}
+
+// ---------------------------------------------------------------- table and chairs
+const wood = (k, warm) => ({ front: rgb(mixc([60, 61, 66], [74, 62, 50], warm).map(v => v * k)), top: rgb(mixc([84, 85, 92], [104, 88, 70], warm).map(v => v * k)), side: rgb(mixc([48, 49, 54], [60, 50, 40], warm).map(v => v * k)), edge: 'rgba(0,0,0,0.35)' });
+function drawTable(c, warm) {
+  const { x0, x1, d0, d1, z } = TABLE;
+  for (const [lx, ld] of [[x0 + 6, d1 - 10], [x1 - 14, d1 - 10], [x0 + 6, d0 + 2], [x1 - 14, d0 + 2]]) box(c, { x0: lx, x1: lx + 8, d0: ld, d1: ld + 8, z0: 0, z1: z - 8 }, wood(ld > d0 + 10 ? 0.7 : 1, warm));
+  box(c, { x0: x0 - 6, x1: x1 + 6, d0: d0 - 4, d1: d1 + 4, z0: z - 8, z1: z }, wood(1.1, warm));
+}
+function drawChair(c, x0, back, warm) {
+  const x1 = x0 + 62, d0 = 82, d1 = 138;
+  for (const [lx, ld] of [[x0 + 4, d1 - 8], [x1 - 10, d1 - 8], [x0 + 4, d0 + 2], [x1 - 10, d0 + 2]]) box(c, { x0: lx, x1: lx + 6, d0: ld, d1: ld + 6, z0: 0, z1: SEAT - 6 }, wood(0.8, warm));
+  box(c, { x0, x1, d0, d1, z0: SEAT - 6, z1: SEAT }, wood(1.05, warm));
+  const bx = back < 0 ? x0 : x1 - 7;
+  box(c, { x0: bx, x1: bx + 7, d0, d1, z0: SEAT, z1: SEAT + 120 }, wood(0.95, warm));
+}
+
+// ---------------------------------------------------------------- drawing
+function draw(t) {
+  const warm = sstep(T.warm0, T.warm1, t);
+  const lamp = mixc(COLD, WARMC, warm);
+  cam.x = 360; cam.zoom = lerp(1.22, 1.3, sstep(T.dance0 - 1, T.end, t)); cam.hy = lerp(650, 620, sstep(T.dance0 - 1, T.end, t)); cam.h = 270;
+  const poses = FIGS.map(f => f.pose(t));
+
+  const floorY = P([0, WALL, 0])[1];
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb(mixc([9, 10, 13], [14, 11, 9], warm))); g.addColorStop(1, rgb(mixc([27, 29, 35], [36, 30, 25], warm)));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb(mixc([36, 38, 44], [46, 39, 32], warm))); g.addColorStop(1, rgb([12, 13, 16]));
+  ctx.fillStyle = g; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, floorY - 2, W, 4);
+  // light on the wall and a pool on the floor (it widens toward the dance)
+  const lp = P(LAMP), fp = P([LAMP[0], lerp(90, 30, warm), 0]);
+  g = ctx.createRadialGradient(lp[0], floorY - 80, 10, lp[0], floorY - 80, 560);
+  g.addColorStop(0, rgb(lamp, lerp(0.18, 0.26, warm))); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  ctx.save(); ctx.translate(fp[0], fp[1]); ctx.scale(1, 0.22);
+  const R = lerp(380, 470, warm);
+  g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+  g.addColorStop(0, rgb(lamp, lerp(0.26, 0.36, warm))); g.addColorStop(0.5, rgb(lamp, 0.09)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fill(); ctx.restore();
+
+  const items = c => {
+    const list = [
+      { d: TABLE.d1 + 2, draw: () => drawTable(c, warm) },
+      { d: 139, draw: () => drawChair(c, 168, -1, warm) },
+      { d: 139.5, draw: () => drawChair(c, 490, 1, warm) },
+      { d: GLASS[1] - 1, draw: () => { if (c === ctx) glassAt = drawGlass(c, t); else drawGlass(c, t); } },
+      ...FIGS.map((f, i) => ({ d: poses[i].P[1], draw: () => drawFigure(c, f, poses[i]) })),
+    ];
+    list.sort((a, b) => b.d - a.d).forEach(it => it.draw());
+  };
+  let glassAt = null;
+  reflection(items, floorY, 0.28);
+  poses.forEach(J => contactShadow(ctx, J, 0.55));
+  items(ctx);
+
+  // the sand glows a little (the only colour); it fades once it has run out
+  if (glassAt) {
+    const left = sandLeft(t);
+    glowAt(glassAt.x, glassAt.y + 30 * glassAt.k, 70 * glassAt.k, SAND, 0.18 * (t < T.sand1 ? 1 : 1 - sstep(T.sand1, T.sand1 + 1.2, t)) + 0.04);
+  }
+  // the lamp
+  ctx.save();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], 0); ctx.lineTo(lp[0], lp[1] - 46); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lp[0] - 12, lp[1] - 48); ctx.lineTo(lp[0] + 12, lp[1] - 48); ctx.lineTo(lp[0] + 52, lp[1]); ctx.lineTo(lp[0] - 52, lp[1]); ctx.closePath();
+  ctx.fillStyle = '#121214'; ctx.fill(); ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 52, 7, 0, 0, TAU); ctx.fillStyle = rgb(mixc([170, 176, 186], WARMC, warm)); ctx.fill();
+  ctx.restore();
+  glowAt(lp[0], lp[1] + 6, 190, lamp, lerp(0.42, 0.62, warm));
+
+  vignette(lerp(0.78, 0.68, warm));
+  captionAt(t, 'SHE WAS SO AFRAID', T.text0, T.text1, 34, 7, 186);
+  captionAt(t, 'IT WOULD END…', T.text0 + 0.15, T.text1, 34, 7, 240);
+  captionAt(t, '…SHE FORGOT TO LIVE IT.', T.text2, T.text3, 32, 6, 213);
+  captionAt(t, 'STOP WATCHING THE TIME.', T.text4 + 0.2, T.text5, 34, 7, 213);
+}
+function glowAt(x, y, r, col, a) {
+  if (a <= 0.002) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgb(col, a)); g.addColorStop(0.3, rgb(col, a * 0.35)); g.addColorStop(1, rgb(col, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(f => [f, 0, T.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.end0, T.end, t));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
