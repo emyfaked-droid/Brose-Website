@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>did-you-notice</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   TEMPLATE for a new film. `npm run new -- <name>` copies this to <name>.html
+   and sounds/<name>.js. Replace the story, set and figures; keep the
+   "checks, render, cues" block at the bottom as it is (the scripts need it).
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds)
+const T = {
+  hook0: 0, hook1: 2.5,          // "WATCH CAREFULLY." visible from frame 0
+  rise0: 0.15, rise1: 0.75,      // the father half stands up and takes the ladle
+  servM: 1.25, servK1: 2.1, servK2: 2.9,   // food lands on mother / kid 1 / kid 2
+  scrape0: 3.1, scrape1: 3.6,    // he scrapes the empty pot for himself
+  servD: 3.9,                    // almost nothing lands on his plate
+  sit0: 4.0, sit1: 4.6,          // he sits down again
+  laugh0: 5.9, laugh1: 7.7,      // the family laughs
+  empty: 6.0,                    // the little one's plate is empty, it looks up
+  push0: 6.4, push1: 7.3,        // he slides his own plate over (quietly)
+  fake0: 8.0, fake1: 10.9,       // he laughs along and "eats" with an empty fork
+  zoom0: 11.0, zoom1: 13.0,
+  text0: 11.1, text1: 15.0,      // "DID YOU NOTICE WHO DIDN'T EAT?"
+  line2: 13.0,                   // "SOME PARENTS STAY HUNGRY SO YOU DON'T HAVE TO."
+  end: 15.0,
+  stills: [1.2, 3.3, 6.9, 9.9, 14.0],
+};
+
+// ---------------------------------------------------------------- set (x = left..right 0..720, d = depth, z = height)
+const WALL = 270;
+const LAMP = [360, 60, 470];                         // warm pendant lamp over the table
+const WARMC = [255, 206, 108], COLD = [226, 232, 246];
+const TOP = 145, TB = { x0: 232, x1: 488, d0: 0, d1: 120 };   // table: 0.75 m high, 1.4 m long
+const SEAT = 85;
+const POT = { x: 362, d: 55, r: 30, h: 38 };
+const FOODC = [214, 196, 160];
+
+// plates: rest positions (world) and how they move
+const PL = {
+  M:  { rest: [270, 54, TOP + 1], fill: T.servM, eat: [] },
+  K1: { rest: [305, 98, TOP + 1], fill: T.servK1, eat: [] },
+  K2: { rest: [412, 104, TOP + 1], fill: T.servK2, eat: [] },
+  D:  { rest: [452, 52, TOP + 1], fill: T.servD, amt: 0.22, eat: [] },
+};
+const key = (list, t) => {             // keyframes [[t, [x,d,z]], ...] -> eased position
+  if (t <= list[0][0]) return list[0][1];
+  for (let i = 1; i < list.length; i++) if (t <= list[i][0]) {
+    const [ta, a] = list[i - 1], [tb, b] = list[i];
+    return lerp3(a, b, E.io(inv(ta, tb, t)));
+  }
+  return list[list.length - 1][1];
+};
+const MPLATE = [[0, PL.M.rest], [0.55, PL.M.rest], [0.95, [312, 50, 168]], [1.35, [312, 50, 168]], [1.75, PL.M.rest]];
+const K1PLATE = [[0, PL.K1.rest], [1.25, PL.K1.rest], [1.6, [328, 86, 164]], [2.15, [328, 86, 164]], [2.45, PL.K1.rest]];
+const DPLATE = [[0, PL.D.rest], [T.push0, PL.D.rest], [T.push1, [446, 74, TOP + 1]]];
+PL.M.pos = t => key(MPLATE, t); PL.K1.pos = t => key(K1PLATE, t); PL.K2.pos = () => PL.K2.rest; PL.D.pos = t => key(DPLATE, t);
+
+// the ladle: tip keyframes; the hand holds the handle (tip + HOFF)
+const HOFF = [44, 0, 48];
+const LREST = [366, 56, 152];
+const LADLE = [[0, LREST], [0.6, LREST], [0.85, [360, 52, 160]], [1.1, [314, 50, 186]], [1.28, [314, 50, 178]],
+  [1.5, [362, 55, 160]], [1.7, [358, 55, 152]], [1.95, [330, 86, 184]], [2.12, [330, 86, 176]],
+  [2.35, [362, 55, 158]], [2.5, [360, 55, 152]], [2.75, [412, 102, 172]], [2.92, [412, 102, 164]],
+  [3.1, [362, 55, 150]], [3.6, [362, 55, 148]], [3.8, [452, 52, 168]], [3.93, [452, 52, 162]], [4.15, LREST]];
+const ladleTip = t => {
+  let p = key(LADLE, t);
+  const sc = inv(T.scrape0, T.scrape1, t);            // scraping: small circles at the bottom of the pot
+  if (sc > 0 && sc < 1) { const a = sc * TAU * 2.2, k = Math.sin(PI * sc); p = add(p, [14 * Math.cos(a) * k, 9 * Math.sin(a) * k, -4 * k]); }
+  return p;
+};
+T.scrapeHits = [3.15, 3.38, 3.58];
+
+// ---------------------------------------------------------------- figures
+// yaw 0 = facing right, 180 = left, -90 = toward the camera. Everyone sits from frame 0.
+const MOM = new Fig('MOM', { x: 225, d: 62, yaw: 0, seed: 1.3 });
+const K1 = new Fig('K1', { x: 305, d: 115, yaw: -90, seed: 2.9, s: 0.7 });
+const K2 = new Fig('K2', { x: 412, d: 118, yaw: -90, seed: 4.4, s: 0.6 });
+const DAD = new Fig('DAD', { x: 495, d: 58, yaw: 180, seed: 3.7 });
+const FIGS = [MOM, K1, K2, DAD];
+
+function sitAdult(F) { const tr = F.tr; tr.pf.v0 = -80; tr.pz.v0 = SEAT + 7 - H0; tr.lean.v0 = 12; tr.slump.v0 = 4; tr.head.v0 = 8; }
+function sitKid(F, pelZ) {
+  const tr = F.tr, s = F.s; tr.pf.v0 = -50; tr.pz.v0 = pelZ / s - H0; tr.lean.v0 = 8; tr.head.v0 = 6;
+  const [x, d] = F.worldRoot(0);
+  for (const sd of ['L', 'R']) F.footGoal(sd, () => ({ ank: F.toSkel([x + (sd === 'L' ? 8 : -8) * s, d - 10 * s, pelZ - 72 * s]), pitch: -10, yaw: -90, kyaw: -90 })).v0 = 1;
+}
+sitAdult(MOM); sitAdult(DAD); sitKid(K1, 132); sitKid(K2, 136);   // on cushions
+
+// bites: fork from the plate to the mouth and back
+const bite = (list, t) => { let b = 0; for (const t0 of list) b = Math.max(b, sstep(t0, t0 + 0.3, t) * (1 - sstep(t0 + 0.45, t0 + 0.8, t))); return b; };
+const mouth = J => add(add(J.Hc, mul(J.Ft, 20)), [0, 0, -22]);
+function eater(F, side, plate, bites, pole) {
+  plate.eat = bites;
+  const g = F.goal(side, (t, J) => {
+    const p = plate.pos(t), rest = F.toSkel(add(p, [F === MOM ? -14 : F === DAD ? 14 : (side === 'R' ? -6 : 6), F.s < 1 ? -14 : 0, 12]));
+    return lerp3(rest, mouth(J), bite(bites, t));
+  }, pole || ((t, J) => add(add(J.sh[side], mul(J.Rt, (side === 'R' ? 1 : -1) * 25)), [0, 0, -80])));
+  return g;
+}
+const MOM_B = [4.35, 5.4, 7.0, 8.1, 9.3, 10.6, 11.6, 12.9, 14.1];
+const K1_B = [4.55, 5.25, 6.75, 7.9, 9.0, 10.2, 11.9, 13.3];
+const K2_B = [4.2, 4.75, 5.25, 7.75, 8.6, 9.5, 10.4, 11.3, 12.4, 13.6];
+const DAD_FAKE = [8.45, 9.75];
+T.bites = [...MOM_B, ...K1_B, ...K2_B].sort((x, y) => x - y);   // the sound puts a fork tink on each
+
+// mother: right (far) hand lifts her plate to the pot, left hand eats
+(function () {
+  const tr = MOM.tr;
+  tr.lean.to(0.45, 0.95, 30).to(1.4, 1.9, 12);
+  const hold = MOM.goal('R', (t, J) => MOM.toSkel(add(PL.M.pos(t), [-18, 6, 3])));
+  hold.to(0.35, 0.6, 1).to(1.7, 1.95, 0);
+  eater(MOM, 'L', PL.M, MOM_B).to(1.95, 2.4, 1);
+  tr.laugh.to(T.laugh0, T.laugh0 + 0.2, 1, E.out2).to(T.laugh1 - 0.4, T.laugh1, 0.25).to(8.9, 9.1, 0.8).to(10.2, 10.6, 0.2);
+  tr.head.to(T.laugh0, T.laugh0 + 0.4, -8).to(T.laugh1 - 0.3, T.laugh1 + 0.2, 8);
+  tr.hyaw.to(T.laugh0, T.laugh0 + 0.4, -12).to(7.6, 8.0, 0);
+})();
+// kid 1: lifts its plate with both hands, then eats
+(function () {
+  const tr = K1.tr;
+  for (const sd of ['L', 'R']) K1.goal(sd, (t, J) => K1.toSkel(add(PL.K1.pos(t), [sd === 'R' ? -17 : 17, -2, 3]))).to(1.05, 1.3, 1).to(2.4, 2.65, 0);
+  eater(K1, 'R', PL.K1, K1_B).to(2.65, 3.0, 1);
+  tr.laugh.to(T.laugh0 + 0.08, T.laugh0 + 0.3, 1, E.out2).to(T.laugh1 - 0.3, T.laugh1 + 0.1, 0.2).to(9.0, 9.2, 0.7).to(10.2, 10.6, 0.15);
+  tr.head.to(T.laugh0, T.laugh0 + 0.4, -12).to(T.laugh1 - 0.3, T.laugh1 + 0.2, 6);
+  tr.hyaw.to(0.4, 0.8, 30).to(3.2, 3.6, 0).to(T.laugh0, T.laugh0 + 0.4, 25).to(7.6, 8.0, 0);
+})();
+// kid 2 (the little one): eats fast, plate empty, looks up, gets the father's plate
+(function () {
+  const tr = K2.tr;
+  eater(K2, 'R', PL.K2, K2_B).to(3.2, 3.6, 1);
+  tr.head.to(T.empty, T.empty + 0.4, -10).to(7.4, 7.8, 8);
+  tr.hyaw.to(T.empty + 0.1, T.empty + 0.5, -20).to(7.3, 7.6, 0);
+  tr.laugh.to(8.9, 9.1, 0.5).to(10.0, 10.4, 0);
+})();
+// the father
+(function () {
+  const tr = DAD.tr, F = DAD;
+  // half stands up, leans over the table, sits down again
+  tr.pf.to(T.rise0, T.rise1, -32).to(T.sit0, T.sit1, -80);
+  tr.pz.to(T.rise0, T.rise1, -30, E.io).to(T.sit0, T.sit1, SEAT + 7 - H0, E.io);
+  tr.lean.to(T.rise0, T.rise1, 50).to(T.sit0, T.sit1, 12).to(T.push0 - 0.15, T.push0 + 0.2, 24).to(T.push1, T.push1 + 0.4, 12);
+  tr.head.to(T.rise0, T.rise1, 22).to(T.sit0, T.sit1, 8);
+  const elb = (t, J) => add(J.sh.R, [0, -40, -60]);
+  const hold = F.goal('R', (t, J) => F.toSkel(add(ladleTip(t), HOFF)), elb);
+  hold.to(0.2, 0.6, 1).to(4.15, 4.45, 0);
+  // fork in the right hand from 4.7; two "bites" with nothing on it
+  const forkHand = F.goal('R', (t, J) => lerp3(F.toSkel([476, 44, TOP + 14]), mouth(J), bite(DAD_FAKE, t)), elb);
+  forkHand.to(4.45, 4.75, 1);
+  // left (far) hand slides his plate over to the little one while everybody laughs
+  F.goal('L', (t, J) => F.toSkel(add(PL.D.pos(t), [18, 4, 3]))).to(T.push0 - 0.2, T.push0, 1).to(T.push1, T.push1 + 0.3, 0);
+  tr.laugh.to(T.laugh0 + 0.05, T.laugh0 + 0.3, 0.6, E.out2).to(T.laugh1 - 0.3, T.laugh1, 0.2)
+    .to(T.fake0, T.fake0 + 0.25, 1, E.out2).to(T.fake1 - 0.4, T.fake1, 0.15);
+  tr.head.to(T.fake0, T.fake0 + 0.4, -6).to(T.fake1 - 0.3, T.fake1 + 0.3, 10);
+  tr.hyaw.to(T.fake1, T.fake1 + 0.6, 14);              // at the end he just watches the little one eat
+})();
+T.forkOn = 4.6;
+
+// ---------------------------------------------------------------- drawing helpers
+function quad(c, pts, fill, stroke, lw = 2) {
+  c.beginPath(); pts.forEach((p, i) => { const q = P(p); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }); c.closePath();
+  if (fill) { c.fillStyle = fill; c.fill(); }
+  if (stroke) { c.strokeStyle = stroke; c.lineWidth = lw; c.stroke(); }
+}
+function line3(c, a, b, col, lw) { const p = P(a), q = P(b); c.beginPath(); c.moveTo(p[0], p[1]); c.lineTo(q[0], q[1]); c.strokeStyle = col; c.lineWidth = lw * p[2]; c.lineCap = 'round'; c.stroke(); }
+function ellipse3(c, p, rx, rd, fill, stroke, lw = 2) {
+  const a = P(p), b = P([p[0], p[1] - rd, p[2]]), e = P([p[0], p[1] + rd, p[2]]);
+  c.beginPath(); c.ellipse(a[0], a[1], rx * a[2], Math.max(1, Math.abs(b[1] - e[1]) / 2), 0, 0, TAU);
+  if (fill) { c.fillStyle = fill; c.fill(); }
+  if (stroke) { c.strokeStyle = stroke; c.lineWidth = lw; c.stroke(); }
+}
+function chairSide(c, x, back, d) {          // profile chair: seat at knee height, back on the outside
+  const col = '#1b1c20', ed = '#34363c';
+  quad(c, [[x - 40, d - 22, SEAT], [x + 40, d - 22, SEAT], [x + 40, d + 22, SEAT], [x - 40, d + 22, SEAT]], '#24252a', ed);
+  for (const lx of [x - 36, x + 36]) line3(c, [lx, d - 18, SEAT], [lx, d - 18, 0], col, 7);
+  const bx = back < 0 ? x - 40 : x + 40;
+  line3(c, [bx, d - 18, 0], [bx, d - 18, 178], '#2a2b31', 8);
+  line3(c, [bx, d - 18, 178], [bx, d + 18, 178], '#2a2b31', 6);
+}
+function chairFront(c, x, d) {               // chair seen from the front, behind a child
+  line3(c, [x - 30, d + 22, 0], [x - 30, d + 22, 175], '#26272c', 7);
+  line3(c, [x + 30, d + 22, 0], [x + 30, d + 22, 175], '#26272c', 7);
+  line3(c, [x - 30, d + 22, 170], [x + 30, d + 22, 170], '#2c2d33', 9);
+  line3(c, [x - 30, d + 22, 140], [x + 30, d + 22, 140], '#2c2d33', 5);
+}
+function foodAmt(pl, t) {
+  if (pl === PL.D) return t < T.servD ? 0 : (pl.amt) * sstep(T.servD - 0.05, T.servD + 0.15, t);
+  let a = sstep(pl.fill - 0.08, pl.fill + 0.15, t);
+  const n = pl.eat.length;
+  pl.eat.forEach((b, i) => { a -= (1 / n) * sstep(b, b + 0.3, t) * (pl === PL.K2 && i < 3 ? n / 3 : 1); });
+  return Math.max(0, a);
+}
+function plate(c, pl, t, lampC, extra = 0) {
+  const p = pl.pos(t);
+  ellipse3(c, p, 23, 23, '#cfd0d3', '#55575c', 1.5);
+  ellipse3(c, add(p, [0, 0, 0.5]), 15, 15, '#bfc1c5');
+  let a = foodAmt(pl, t) + extra;
+  if (a > 0.01) {
+    const r = 6 + 9 * Math.sqrt(Math.min(a, 1));
+    ellipse3(c, add(p, [0, 0, 1 + 3 * a]), r, r, rgb(mixc(FOODC, lampC, 0.25)));
+    ellipse3(c, add(p, [-2, -2, 2 + 4 * a]), r * 0.5, r * 0.5, rgb(mixc([236, 222, 190], lampC, 0.3), 0.8));
+  }
+}
+function fork(c, F, J, side, loaded) {
+  const h = J.hand[side], e = J.el[side], dir = norm(sub(h, e));
+  const tip = add(h, mul(dir, 24 * F.s + 4));
+  line3(c, h, tip, '#d8d9dc', 2.6);
+  if (loaded > 0.05) { const q = P(tip); c.beginPath(); c.arc(q[0], q[1], 3.2 * q[2], 0, TAU); c.fillStyle = rgb(FOODC, loaded); c.fill(); }
+}
+function pot(c, t, lampC) {
+  const { x, d, r, h } = POT;
+  const g = c.createLinearGradient(P([x - r, d, 0])[0], 0, P([x + r, d, 0])[0], 0);
+  g.addColorStop(0, '#1d1e22'); g.addColorStop(0.35, rgb(mixc([70, 72, 78], lampC, 0.35))); g.addColorStop(1, '#141518');
+  const a = P([x - r, d, TOP + h]), b = P([x + r, d, TOP]);
+  const top = P([x, d, TOP + h]), bot = P([x, d, TOP]);
+  c.beginPath(); c.moveTo(a[0], top[1]); c.lineTo(a[0], bot[1]);
+  c.ellipse(bot[0], bot[1], r * bot[2], 6, 0, PI, 0, true); c.lineTo(b[0], top[1]); c.closePath();
+  c.fillStyle = g; c.fill(); c.strokeStyle = '#3a3c42'; c.lineWidth = 1.5; c.stroke();
+  ellipse3(c, [x, d, TOP + h], r, 14, '#0e0f11', '#5a5c62', 2);
+  // what is left in the pot
+  const left = 1 - 0.3 * sstep(0.8, 0.95, t) - 0.3 * sstep(1.65, 1.8, t) - 0.3 * sstep(2.45, 2.6, t) - 0.1 * sstep(3.1, 3.6, t);
+  if (left > 0.02) ellipse3(c, [x, d, TOP + h - 3 - 14 * (1 - left)], (r - 3) * (0.6 + 0.4 * left), 11 * (0.6 + 0.4 * left), rgb(mixc(FOODC, lampC, 0.3), 0.55 + 0.4 * left));
+  for (const sg of [-1, 1]) line3(c, [x + sg * r, d, TOP + h - 6], [x + sg * (r + 8), d, TOP + h - 8], '#2c2d32', 4);
+}
+function ladle(c, t, Jd) {
+  const held = sstep(0.45, 0.6, t) * (1 - sstep(4.1, 4.2, t));
+  let tip = ladleTip(t), hand = add(tip, HOFF);
+  if (held > 0.5) { hand = Jd.hand.R; tip = sub(hand, HOFF); }
+  line3(c, hand, tip, '#b9bbc0', 3.2);
+  ellipse3(c, add(tip, [0, 0, -3]), 8, 7, '#9ea0a6', '#3a3c42', 1.2);
+}
+
+// ---------------------------------------------------------------- drawing
+function draw(t) {
+  const lamp = WARMC;
+  const z = E.io2(inv(T.zoom0, T.end, t)) * 0.6 + E.io(inv(T.zoom0, T.zoom1, t)) * 0.4;
+  cam.x = 360 + 80 * z; cam.zoom = 1.32 + 0.26 * z; cam.hy = 675 - 30 * z; cam.h = 215;
+  const poses = FIGS.map(f => f.pose(t));
+  const Jd = poses[3];
+
+  const floorY = P([0, WALL, 0])[1];
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb([8, 8, 10])); g.addColorStop(1, rgb([26, 25, 27]));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb([34, 33, 34])); g.addColorStop(1, rgb([10, 10, 12]));
+  ctx.fillStyle = g; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, floorY - 2, W, 4);
+  const lp = P(LAMP), fp = P([LAMP[0], 60, 0]), tp = P([LAMP[0], 60, TOP]);
+  g = ctx.createRadialGradient(lp[0], floorY - 120, 10, lp[0], floorY - 120, 520);
+  g.addColorStop(0, rgb(lamp, 0.2)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+  ctx.save(); ctx.translate(fp[0], fp[1]); ctx.scale(1, 0.2);
+  g = ctx.createRadialGradient(0, 0, 0, 0, 0, 420);
+  g.addColorStop(0, rgb(lamp, 0.24)); g.addColorStop(0.5, rgb(lamp, 0.07)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 420, 0, TAU); ctx.fill(); ctx.restore();
+
+  const drawKids = c => { chairFront(c, 305, 150); chairFront(c, 412, 150); drawFigure(c, K1, poses[1]); drawFigure(c, K2, poses[2]); };
+  const drawTable = c => {
+    // legs, top and the cloth that hangs over the front
+    for (const lx of [TB.x0 + 10, TB.x1 - 10]) line3(c, [lx, TB.d1 - 8, 0], [lx, TB.d1 - 8, TOP], '#1a1b1e', 8);
+    quad(c, [[TB.x0, TB.d0, TOP], [TB.x1, TB.d0, TOP], [TB.x1, TB.d1, TOP], [TB.x0, TB.d1, TOP]], '#2a2a2c', '#3c3d41');
+    const cg = c.createLinearGradient(0, P([0, 0, TOP])[1], 0, P([0, 0, 40])[1]);
+    cg.addColorStop(0, rgb(mixc([60, 58, 56], lamp, 0.25))); cg.addColorStop(1, '#17171a');
+    quad(c, [[TB.x0 - 4, TB.d0, TOP], [TB.x1 + 4, TB.d0, TOP], [TB.x1 + 4, TB.d0, 40], [TB.x0 - 4, TB.d0, 40]], cg, '#2e2f33', 1.5);
+    for (const lx of [TB.x0 + 10, TB.x1 - 10]) line3(c, [lx, TB.d0 + 6, 40], [lx, TB.d0 + 6, 0], '#1a1b1e', 8);
+  };
+  const drawAdults = c => { chairSide(c, 145, -1, 62); chairSide(c, 575, 1, 58); drawFigure(c, MOM, poses[0]); drawFigure(c, DAD, poses[3]); };
+
+  reflection(c => { drawKids(c); drawTable(c); drawAdults(c); }, floorY, 0.24);
+  poses.forEach((J, i) => contactShadow(ctx, J, 0.4, FIGS[i].s));
+
+  // back to front: kids (behind the table), table, things on it, the parents at the ends
+  drawKids(ctx);
+  fork(ctx, K1, poses[1], 'R', bite(K1_B, t) * (foodAmt(PL.K1, t) > 0 ? 1 : 0));
+  fork(ctx, K2, poses[2], 'R', bite(K2_B, t));
+  drawTable(ctx);
+  // warm light pool on the table top
+  ctx.save(); ctx.translate(tp[0], tp[1]); ctx.scale(1, 0.22);
+  g = ctx.createRadialGradient(0, 0, 0, 0, 0, 240);
+  g.addColorStop(0, rgb(lamp, 0.34)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 240, 0, TAU); ctx.fill(); ctx.restore();
+  plate(ctx, PL.K2, t, lamp); plate(ctx, PL.K1, t, lamp);
+  pot(ctx, t, lamp);
+  plate(ctx, PL.M, t, lamp); plate(ctx, PL.D, t, lamp);
+  if (t < T.forkOn) line3(ctx, [466, 40, TOP + 1], [486, 40, TOP + 1], '#c9cacd', 2.4);   // his fork, still on the table
+  drawAdults(ctx);
+  ladle(ctx, t, Jd);
+  fork(ctx, MOM, poses[0], 'L', bite(MOM_B, t));
+  if (t >= T.forkOn) fork(ctx, DAD, Jd, 'R', 0);                 // nothing on it
+
+  // the lamp
+  ctx.save();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(lp[0], 0); ctx.lineTo(lp[0], lp[1] - 46); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lp[0] - 12, lp[1] - 48); ctx.lineTo(lp[0] + 12, lp[1] - 48); ctx.lineTo(lp[0] + 56, lp[1]); ctx.lineTo(lp[0] - 56, lp[1]); ctx.closePath();
+  ctx.fillStyle = '#121214'; ctx.fill(); ctx.strokeStyle = '#2b2b30'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lp[0], lp[1], 56, 7, 0, 0, TAU); ctx.fillStyle = rgb(lamp); ctx.fill();
+  ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  g = ctx.createRadialGradient(lp[0], lp[1] + 6, 2, lp[0], lp[1] + 6, 200);
+  g.addColorStop(0, rgb(lamp, 0.7)); g.addColorStop(0.2, rgb(lamp, 0.22)); g.addColorStop(1, rgb(lamp, 0));
+  ctx.fillStyle = g; ctx.fillRect(lp[0] - 230, lp[1] - 210, 460, 440); ctx.restore();
+
+  vignette(0.75 + 0.1 * z);
+  if (t < T.hook1) captionAt(t + 1, 'WATCH CAREFULLY.', 0, T.hook1 + 1, 42, 11);
+  captionAt(t, 'DID YOU NOTICE', T.text0, T.text1 + 1, 42, 11, 170);
+  captionAt(t, "WHO DIDN'T EAT?", T.text0 + 0.15, T.text1 + 1, 42, 11, 226, WARMC);
+  captionAt(t, 'SOME PARENTS STAY HUNGRY', T.line2, T.text1 + 1, 25, 6, 1090);
+  captionAt(t, "SO YOU DON'T HAVE TO.", T.line2 + 0.2, T.text1 + 1, 25, 6, 1130);
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(f => [f, 0, T.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  // no fade at either end: frame 0 is the hook, and the last frame cuts straight back to it (seamless loop)
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
