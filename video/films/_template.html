@@ -24,7 +24,7 @@
 
 // ---------------------------------------------------------------- story (all times in seconds)
 const T = {
-  fadeIn: 0.5,
+  hook0: 0, hook1: 2.5,        // hook text, visible from frame 0 (no fade-in: frame 0 is the thumbnail)
   walk0: 0.8,                 // A starts walking
   text0: 4.0, text1: 7.5,     // caption on / off
   end: 8.5,
@@ -89,6 +89,7 @@ function draw(t) {
   ctx.fillStyle = g; ctx.fillRect(lp[0] - 220, lp[1] - 200, 440, 420); ctx.restore();
 
   vignette(0.75);
+  if (t < T.hook1) captionAt(t + 1, 'WATCH CAREFULLY.', 0, T.hook1 + 1, 42, 11);   // t + 1: already fully visible at t = 0
   captionAt(t, 'YOUR TEXT HERE.', T.text0, T.text1, 42, 11);
 }
 
@@ -105,8 +106,7 @@ function render(t) {
   if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
   draw(Math.min(t, T.end - 1e-4));
   grain(t, 0.06);
-  const fade = Math.max(1 - sstep(0, T.fadeIn, t), sstep(T.text1, T.end, t));
-  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+  // no fade at either end: frame 0 is the hook, and the last frame cuts straight back to it (seamless loop)
 }
 function getCues() {
   const steps = [];

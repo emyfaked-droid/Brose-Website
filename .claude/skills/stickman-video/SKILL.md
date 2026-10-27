@@ -51,7 +51,17 @@ posting text (below) to the commit message or the reply.
   film grain. Grayscale plus ONE accent colour (default warm yellow `[255,206,108]`), ideally as the payoff.
 - Labels on objects are fine and help (e.g. a sign "MOTIVATION", a bag "JOB 1"): monospace caps.
 - Caption: `captionAt(t, 'TEXT.', t0, t1, 42, 11)`: bold monospace caps, top centre, fades. Max ~2 short lines per film.
-- Length 12–20 s, 720×1280, 30 fps. Fade in at the start, fade to black at the end.
+- Length 12–18 s, 720×1280, 30 fps. No fade-in at the start (see Hook); end on a frame that loops back to the start.
+
+## Hook, retention, loop (decides if the video goes viral)
+
+- **Frame 0 is the thumbnail and the hook:** NO fade-in from black. The first frame already shows the figures, the
+  setting and the hook text (e.g. "WATCH CAREFULLY.", "SHE NEVER SAID IT."). Something must move within 0.3 s.
+- **Tension in the first 2 s:** a question, a conflict or something odd the viewer wants explained.
+- **Something changes every 2–3 s** (action, cut, light, text). No slow establishing shots, no empty seconds.
+- **Length 12–18 s.** The payoff comes in the last 3 s, then the caption question / call to action.
+- **Loop:** the last frame matches the first frame (same framing and set), cut hard to the end, no fade to black,
+  so the video replays seamlessly and rewatches count.
 
 ## Proportions and depth (very important)
 
