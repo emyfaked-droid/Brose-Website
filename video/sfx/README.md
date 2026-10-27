@@ -75,3 +75,11 @@ laid from the start of the run (3.5 s): running breaths, a gasp at 2.75 s (tripp
 "cold winter wind snow", "night ambience crickets", "footsteps on concrete street", "footsteps puddle", "footsteps snow",
 "heavy breathing after running", "neon light flicker turn off". The three footstep files are cut into single steps, so use
 recordings of separate steps with small gaps.
+
+## Real recordings from ElevenLabs (Oct 2026)
+
+These `.mp3` files were generated with ElevenLabs Sound Effects and replace the synthetic `.wav` stand-ins of the same
+name (the mixer prefers `.mp3`): `footsteps_wood`, `footsteps_street`, `footsteps_snow`, `door_close`, `keys`,
+`glass_break`, `laughter`, `phone_alarm`, `phone_scroll`, `night_crickets`, `winter_wind`, `whoosh_soft`.
+To add more: generate in the ElevenLabs flow "Stickman SFX Library" and save as `sfx/<name>.mp3`.
+Footstep files must contain single steps with short pauses (the mixer cuts them apart by onset).
