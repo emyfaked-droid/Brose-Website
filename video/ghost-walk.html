@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ghost-walk</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   TEMPLATE for a new film. `npm run new -- <name>` copies this to <name>.html
+   and sounds/<name>.js. Replace the story, set and figures; keep the
+   "checks, render, cues" block at the bottom as it is (the scripts need it).
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds)
+const T = {
+  hook0: 0, hook1: 6.3,       // "MY HALLOWEEN ENTRANCE:" visible from frame 0
+  walk0: 0.3,                 // the dramatic slow walk toward the camera
+  trip: 6.0,                  // back foot lands on the sheet: freeze
+  tip0: 6.45, land: 7.15,     // falls like a plank, lands flat on the belly
+  arm0: 8.4, arm1: 9.6,       // an arm comes out and raises a shaky thumb
+  boo: 10.5,                  // "BOO." in the accent colour
+  end: 13.0,
+  stills: [0.0, 3.4, 6.85, 11.0],
+};
+
+// ---------------------------------------------------------------- set (x = left..right 0..720, d = depth, z = height)
+const WALL = 640;                         // back wall of the corridor (depth), door in the middle
+const DOOR = { x0: 275, x1: 445, h: 395 };
+const XL = 130, XR = 590;                 // corridor side walls
+const WARMC = [255, 206, 108], COLD = [214, 224, 246];
+
+// ---------------------------------------------------------------- figures
+// the figure under the sheet: only its pose is used (the sheet hides it); yaw -90 = toward the camera
+const A = new Fig('A', { x: 360, d: 610, yaw: -90, seed: 2.1 });
+T.walkEnd = A.walk(T.walk0, [360, -80], { ...MOOD.heavy, L: 96 }, 'R');
+A.tr.lean.to(T.trip, T.trip + 0.12, -3, E.out).to(T.trip + 0.2, T.tip0, 1);   // the tug: a tiny jolt back, then frozen
+const FIGS = [A];
+
+// light behind the door: flickers (deterministic), steady during the freeze, calm after the fall
+function flicker(t) {
+  let f = 0.88 + 0.07 * Math.sin(t * 23.1) * Math.sin(t * 7.3);
+  for (const [c, w] of [[1.35, 0.07], [2.9, 0.12], [3.05, 0.06], [4.6, 0.1], [5.35, 0.08]]) f -= 0.55 * Math.exp(-(((t - c) / w) ** 2));
+  return clamp(f, 0.2, 1);
+}
+
+// ---------------------------------------------------------------- the sheet
+// a bell of rings (height z, radius sideways rx, radius in depth rd), hung between the feet, pelvis and head
+const RINGS = [[352, 6, 6], [344, 20, 18], [330, 31, 28], [312, 36, 33], [292, 38, 34], [276, 52, 40], [248, 62, 46],
+  [190, 70, 54], [120, 80, 62], [55, 90, 72], [12, 96, 82], [0, 100, 90]];
+const NA = 20;
+function sheetFrame(t) {
+  const J = A.pose(Math.min(t, T.tip0));
+  const feet = lerp3(J.ank.L, J.ank.R, 0.5), base = [feet[0], feet[1], 0];
+  const top = add(J.Hc, [0, 0, 18]);
+  const centre = z => z < J.P[2] ? lerp3(base, J.P, z / J.P[2]) : lerp3(J.P, top, (z - J.P[2]) / (top[2] - J.P[2]));
+  const moving = sstep(0.2, 0.8, t) * (1 - sstep(T.trip - 0.4, T.trip, t));
+  const pts = [], folds = [[], [], []];
+  RINGS.forEach(([z, rx, rd], ri) => {
+    const zz = z * (top[2] / 352), c = centre(zz), low = clamp(1 - zz / 200);
+    for (let i = 0; i < NA; i++) {
+      const a = i / NA * TAU, ripple = low * (5 + 4 * moving) * Math.sin(a * 3 + t * (2.2 + 3 * moving) + ri);
+      const back = Math.sin(a) > 0 ? 1 + low * 0.9 * (1 - sstep(T.tip0, T.land, t)) : 1;     // the sheet drags behind on the floor
+      pts.push([c[0] + Math.cos(a) * (rx + ripple), c[1] + Math.sin(a) * (rd + ripple * 0.6) * back, zz]);
+    }
+    if (ri >= 5) [-0.55, 0, 0.55].forEach((o, k) => { const a = -PI / 2 + o; folds[k].push([c[0] + Math.cos(a) * rx * 0.95, c[1] + Math.sin(a) * rd, zz]); });
+  });
+  const eyes = [-1, 1].map(s => add(J.Hc, [s * 13, -30, 2]));
+  return { J, pts, folds, eyes, base };
+}
+// the plank fall: rotate everything about a pivot at the toes, toward the camera (-d); then squash into a heap
+const FU = [Math.sin(10 * D2R), -Math.cos(10 * D2R)];   // fall direction (x, d)
+const PIVOT = (() => { const J = A.pose(T.tip0); const f = lerp3(J.ank.L, J.ank.R, 0.5); return [f[0], f[1] - 40, 0]; })();
+function fallAngle(t) {
+  const wob = 4 * sstep(T.tip0 - 0.15, T.tip0, t);
+  const th = wob + (90 - wob) * E.in2(inv(T.tip0, T.land, t));
+  const bounce = t > T.land ? -5 * Math.exp(-(t - T.land) * 9) * Math.sin((t - T.land) * 26) : 0;
+  return (th + bounce) * D2R;
+}
+function heapK(t) { return E.out(inv(T.land - 0.03, T.land + 0.35, t)); }
+function place(p, t) {
+  const th = fallAngle(t), h = heapK(t), slide = 95 * E.io(inv(T.tip0 + 0.25, T.land + 0.2, t));
+  const dx = p[0] - PIVOT[0], dd = p[1] - PIVOT[1], z = p[2];
+  // it topples toward the camera and a little to the right, so the fall reads from the front
+  const a = dx * FU[0] + dd * FU[1], b = dx * FU[1] - dd * FU[0];
+  const a2 = a * Math.cos(th) + z * Math.sin(th);
+  let Z = Math.max(0, -a * Math.sin(th) + z * Math.cos(th));
+  // heap: flatter, a little wider, with lumps
+  const lump = 1 + 0.25 * Math.sin(a2 * 0.045 + b * 0.03) + 0.15 * Math.sin(a2 * 0.11 - b * 0.07);
+  Z = lerp(Z, Math.min(Z, 60) * 0.5 * lump + 4, h);
+  const D = a2 + slide;
+  return [PIVOT[0] + D * FU[0] + b * FU[1] * (1 + 0.15 * h), PIVOT[1] + D * FU[1] - b * FU[0] * (1 + 0.15 * h), Z];
+}
+// a point in the fall frame: a = along the fall (toward the camera), b = sideways (negative = right)
+const FP = (a, b, z) => [PIVOT[0] + a * FU[0] + b * FU[1], PIVOT[1] + a * FU[1] - b * FU[0], z];
+function hull(pp) {
+  const p = pp.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const q of p) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+  for (const q of p.slice().reverse()) { while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+function drawSheet(c, t, S, light, full = true) {
+  const tf = t > T.tip0 - 0.15 ? p => place(p, t) : p => p;
+  const pp = S.pts.map(p => P(tf(p)));
+  const hp = hull(pp), k = P(tf(S.base))[2];
+  const path = () => { c.beginPath(); hp.forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.closePath(); };
+  let y0 = Infinity, y1 = -Infinity; for (const q of hp) { y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); }
+  c.save(); c.lineJoin = 'round';
+  path(); c.strokeStyle = INK; c.lineWidth = 2 * DIM.outline * k + 2; c.stroke();
+  const g = c.createLinearGradient(0, y0, 0, y1);
+  g.addColorStop(0, rgb(mixc([150, 152, 160], [236, 236, 240], light))); g.addColorStop(1, rgb(mixc([92, 94, 102], [182, 184, 192], light)));
+  path(); c.fillStyle = g; c.fill();
+  if (full) {
+    // folds
+    c.lineCap = 'round'; c.strokeStyle = 'rgba(40,42,50,0.28)'; c.lineWidth = 2.2 * k;
+    for (const f of S.folds) { c.beginPath(); f.map(p => P(tf(p))).forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1])); c.stroke(); }
+    // rim light from the door behind
+    c.clip(); path(); c.strokeStyle = rgb([235, 240, 255], 0.35 * light); c.lineWidth = 6 * k; c.stroke();
+    // two black eye holes (until the face turns to the floor)
+    const th = fallAngle(t);
+    if (th < 55 * D2R) for (const e of S.eyes) {
+      const [X, Y, ke] = P(tf(e));
+      c.beginPath(); c.ellipse(X, Y, 6.5 * ke, 10 * ke * Math.max(0.2, Math.cos(th * 1.4)), 0, 0, TAU); c.fillStyle = INK; c.fill();
+    }
+  }
+  c.restore();
+}
+
+// the parts of the figure that stick out after the fall: shins at the back, one arm with a thumb
+function drawLimbs(c, t) {
+  const h = heapK(t); if (h <= 0.05) return;
+  for (const s of [-1, 1]) strokeLimb(c, [FP(150, s * 14, 9), FP(-10, s * 15, 10), FP(-20, s * 16, 24 * h)], rgb(FIG_NEAR), P(PIVOT)[2]);
+}
+function drawArm(c, t) {
+  const u = E.out2(inv(T.arm0, T.arm1, t)); if (u <= 0) return;
+  const shake = 2.6 * sstep(T.arm0 + 0.4, T.arm1, t) * (Math.sin(t * 47) + 0.6 * Math.sin(t * 71));
+  const sh = FP(268, -58, 14);
+  const el = add(FP(276, -92, lerp(10, 58, u)), [shake * 0.3, 0, 0]);
+  const hd = add(FP(284, -98, lerp(12, 128, u)), [shake, 0, 0]);
+  const k = P(sh)[2];
+  strokeLimb(c, [sh, el, hd], rgb(FIG_NEAR), k);
+  const th = E.out(inv(T.arm1 - 0.3, T.arm1 + 0.2, t));   // the thumb pops up
+  if (th > 0) strokeLimb(c, [add(hd, [-2, 0, 4]), add(hd, [-3, 0, 4 + 20 * th])], rgb(FIG_NEAR), k * 0.7);
+}
+
+// ---------------------------------------------------------------- drawing
+function draw(t) {
+  const fl = flicker(t), light = 0.55 + 0.45 * fl;
+  // low camera that slowly backs away while the ghost comes closer
+  const back = E.io(inv(T.walk0, T.trip, t));
+  const up = E.io(inv(T.tip0 + 0.1, T.land + 0.5, t));     // after the fall the camera rises a little to see the heap
+  cam.x = 360; cam.zoom = lerp(1.08, 0.95, back); cam.hy = lerp(600, 520, up); cam.h = lerp(125, 260, up);
+  const S = sheetFrame(t);
+
+  const floorY = P([0, WALL, 0])[1];
+  ctx.fillStyle = rgb([8, 9, 12]); ctx.fillRect(0, 0, W, H);
+  // back wall
+  const wl = P([XL, WALL, 0]), wr = P([XR, WALL, 0]), wt = P([XL, WALL, 560]);
+  let g = ctx.createLinearGradient(0, wt[1], 0, floorY);
+  g.addColorStop(0, rgb([10, 11, 14])); g.addColorStop(1, rgb([24, 26, 32]));
+  ctx.fillStyle = g; ctx.fillRect(wl[0], wt[1], wr[0] - wl[0], floorY - wt[1]);
+  // floor
+  const quad = (pts, fill) => { ctx.beginPath(); pts.map(P).forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); };
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb([30, 32, 38])); g.addColorStop(1, rgb([10, 11, 14]));
+  quad([[XL, WALL, 0], [XR, WALL, 0], [XR + 40, -820, 0], [XL - 40, -820, 0]], g);
+  // side walls
+  for (const X of [XL, XR]) {
+    g = ctx.createLinearGradient(P([X, -400, 0])[0], 0, P([X, WALL, 0])[0], 0);
+    g.addColorStop(0, rgb([4, 4, 6])); g.addColorStop(1, rgb([16, 17, 21]));
+    quad([[X, WALL, 0], [X, WALL, 560], [X, -820, 560], [X, -820, 0]], g);
+  }
+  // door: open, bright cold light behind it
+  const d0 = P([DOOR.x0, WALL, 0]), d1 = P([DOOR.x1, WALL, DOOR.h]);
+  g = ctx.createLinearGradient(0, d1[1], 0, d0[1]);
+  g.addColorStop(0, rgb(COLD, 0.55 * fl)); g.addColorStop(1, rgb(COLD, 0.95 * fl));
+  ctx.fillStyle = g; ctx.fillRect(d0[0], d1[1], d1[0] - d0[0], d0[1] - d1[1]);
+  ctx.strokeStyle = '#050506'; ctx.lineWidth = 6 * d0[2]; ctx.strokeRect(d0[0], d1[1], d1[0] - d0[0], d0[1] - d1[1]);
+  // light cone through the door onto the floor and into the air
+  softLayer(40, 'screen', c => {
+    c.beginPath();
+    [[DOOR.x0, WALL, 0], [DOOR.x1, WALL, 0], [XR + 30, -300, 0], [XL - 30, -300, 0]].map(P).forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]));
+    c.closePath(); const gg = c.createLinearGradient(0, floorY, 0, H);
+    gg.addColorStop(0, rgb(COLD, 0.42 * fl)); gg.addColorStop(1, rgb(COLD, 0));
+    c.fillStyle = gg; c.fill();
+    c.beginPath();
+    [[DOOR.x0, WALL, DOOR.h], [DOOR.x1, WALL, DOOR.h], [XR, -200, 520], [XL, -200, 520]].map(P).forEach((q, i) => i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]));
+    c.closePath(); c.fillStyle = rgb(COLD, 0.07 * fl); c.fill();
+    const dc = P([360, WALL, 200]); const rg = c.createRadialGradient(dc[0], dc[1], 10, dc[0], dc[1], 330);
+    rg.addColorStop(0, rgb(COLD, 0.35 * fl)); rg.addColorStop(1, rgb(COLD, 0));
+    c.fillStyle = rg; c.fillRect(0, 0, W, H);
+  });
+
+  // glossy floor, shadow, the ghost
+  reflection(c => drawSheet(c, t, S, light, false), floorY, 0.22);
+  if (t < T.tip0) contactShadow(ctx, S.J, 0.5, 1.6);
+  drawLimbs(ctx, t);
+  drawSheet(ctx, t, S, light);
+  drawArm(ctx, t);
+
+  // ground fog drifting across the floor (in front of the hem)
+  softLayer(36, 'screen', c => {
+    for (let i = 0; i < 7; i++) {
+      const dd = WALL - 40 - i * 150, xx = 360 + 220 * Math.sin(t * 0.25 + i * 1.7);
+      const [X, Y, k] = P([xx, dd, 0]);
+      const rg = c.createRadialGradient(X, Y, 0, X, Y, 260 * k);
+      rg.addColorStop(0, rgb([180, 188, 205], 0.22)); rg.addColorStop(1, rgb([180, 188, 205], 0));
+      c.save(); c.translate(X, Y); c.scale(1.8, 0.32); c.translate(-X, -Y); c.fillStyle = rg; c.fillRect(X - 300 * k, Y - 300 * k, 600 * k, 600 * k); c.restore();
+    }
+  });
+
+  vignette(0.8);
+  if (t < T.hook1) {
+    captionAt(t + 1, 'MY HALLOWEEN', 0, T.hook1 + 1, 42, 11, 170);   // t + 1: already fully visible at t = 0
+    captionAt(t + 1, 'ENTRANCE:', 0, T.hook1 + 1, 42, 11, 228);
+  }
+  captionAt(t, 'BOO.', T.boo, T.end + 1, 30, 9, 300, WARMC);
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(f => [f, 0, T.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  // no fade at either end: frame 0 is the hook, and the last frame cuts straight back to it (seamless loop)
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
