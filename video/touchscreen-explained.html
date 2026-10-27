@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>touchscreen-explained</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   TEMPLATE for a new film. `npm run new -- <name>` copies this to <name>.html
+   and sounds/<name>.js. Replace the story, set and figures; keep the
+   "checks, render, cues" block at the bottom as it is (the scripts need it).
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds; scenes follow the voice-over)
+// Explainer: why a touchscreen ignores gloves. The voice (sfx/voice_touchscreen.mp3) starts at 0.0 and sets every time.
+const T = {
+  s1: 0.0, s2: 2.43, s3: 6.04, s4: 9.12, s5: 11.40, s6: 15.60, lock: 19.77, s7: 22.28, s8: 23.67, s9: 27.99,
+  end: 30.4,
+  taps: [0.25, 0.75, 1.2, 1.62],          // annoyed taps with the mittens
+  touch: 11.4, lift: 22.3,               // the bare finger on the glass
+  gTouch: 24.2, gLift: 27.15,             // the mitten on the glass
+  bite: 28.75, drop: 29.05,               // pulls the mitten off with the teeth
+  stills: [4.6, 10.0, 14.2, 22.9, 29.6],
+};
+// subtitles: 2-4 words at a time, timed to the pauses in the voice
+const SUBS = [
+  [0.00, 'WHY DOESN’T'], [0.62, 'YOUR PHONE WORK'], [1.30, 'WITH GLOVES?'],
+  [2.43, 'UNDER THE GLASS,'], [3.40, 'THERE’S AN INVISIBLE'], [4.45, 'GRID OF TINY WIRES.'],
+  [6.04, 'AND IT’S CHARGED'], [6.85, 'WITH ELECTRICITY.'], [7.97, 'ALL THE TIME.'],
+  [9.12, 'YOUR FINGER'], [9.85, 'CONDUCTS ELECTRICITY.'],
+  [11.40, 'SO WHEN YOU'], [12.05, 'TOUCH THE SCREEN,'], [12.90, 'IT PULLS AWAY'], [13.79, 'A TINY BIT'], [14.40, 'OF THAT CHARGE.'],
+  [15.60, 'YOUR PHONE SCANS'], [16.50, 'THE WHOLE GRID'], [17.20, 'MORE THAN A HUNDRED'], [18.00, 'TIMES'], [18.71, 'EVERY SECOND…'],
+  [19.77, 'AND FINDS EXACTLY'], [20.75, 'WHERE THE CHARGE'], [21.87, 'DROPPED.'],
+  [22.28, 'THAT’S YOUR TOUCH.'],
+  [23.67, 'GLOVES DON’T'], [24.17, 'CONDUCT ELECTRICITY.'], [25.73, 'SO THE GRID'], [26.50, 'NEVER EVEN FEELS YOU.'],
+  [27.99, 'FOLLOW FOR MORE'], [28.85, 'THINGS YOU USE'], [29.50, 'EVERY DAY.'],
+];
+const SUB_END = [[1.93, 2.43], [5.71, 6.04], [8.69, 9.12], [11.06, 11.40], [15.22, 15.60], [21.93, 22.28], [23.28, 23.67], [27.57, 27.99], [30.07, 30.5]];
+
+// ---------------------------------------------------------------- set
+const WALL = 260;
+const BLUE = [90, 196, 255], BLUE2 = [170, 228, 255];
+const PH = { c: [392, 14, 200], w: 46, h: 84 };              // a (big) phone, screen facing us
+const NC = 6, NR = 11;                                        // grid lines: columns / rows
+const TU = 3 / (NC + 1), TV = 7 / (NR + 1);                   // the crossing that gets touched
+const scr = (u, v) => [PH.c[0] + (u - 0.5) * (PH.w - 6), PH.c[1] - 1.5, PH.c[2] + (0.5 - v) * (PH.h - 10)];
+const TOUCH_W = scr(TU, TV);
+
+// ---------------------------------------------------------------- the figure (facing us, phone in the left hand)
+const F = new Fig('F', { x: 330, d: 40, yaw: 270, seed: 1.9 });
+const midPole = (side, fn, down = 60, out = 18) => (t, J) => add(lerp3(J.sh[side], fn(t, J), 0.5), add(mul(J.Rt, (side === 'R' ? 1 : -1) * out), [0, 0, -down]));
+(function () {
+  const tr = F.tr;
+  tr.head.v0 = 14;
+  const hold = (t, J) => [PH.c[0] + 6, PH.c[1] + 8, PH.c[2] - 18];          // from behind the phone
+  F.goal('L', hold, midPole('L', hold, 50, 30)).v0 = 1;
+  // annoyed taps with the mitten
+  const tap = (t, J) => { let k = 0; for (const t0 of T.taps) k = Math.max(k, sstep(t0 - 0.12, t0, t) * (1 - sstep(t0 + 0.04, t0 + 0.2, t))); return add(TOUCH_W, [-4, -4 - 16 * (1 - k), 6]); };
+  F.goal('R', tap, midPole('R', tap, 40, 40)).to(0, 0.15, 1).to(1.85, 2.2, 0);
+  tr.hyaw.to(1.75, 1.9, -14).to(1.9, 2.05, 12).to(2.05, 2.25, 0);       // head shake
+  tr.shDrop.to(1.8, 1.95, -6, E.out2).to(2.05, 2.35, 0);
+  // the bare finger: raised beside the face ("conductor"), then onto the glass
+  const raise = (t, J) => add(J.sh.R, add(mul(J.Rt, 52), add(mul(J.Ft, 30), [0, 0, 40 + 4 * Math.sin(t * 9)])));
+  F.goal('R', raise, midPole('R', raise, 50, 30)).to(9.5, 9.9, 1, E.out2).to(10.4, 10.9, 0, E.io);
+  const press = (t, J) => add(TOUCH_W, [-2, -3 - 30 * (1 - sstep(T.touch - 0.5, T.touch, t)) - 60 * sstep(T.lift, T.lift + 0.4, t), 2 + 70 * sstep(T.lift, T.lift + 0.4, t)]);
+  F.goal('R', press, midPole('R', press, 40, 40)).to(10.4, 10.9, 1, E.io).to(T.lift + 0.3, T.lift + 0.5, 0);
+  // the mitten on the glass: nothing happens
+  const gpress = (t, J) => add(TOUCH_W, [-3, -5 - 60 * (1 - sstep(T.gTouch - 0.45, T.gTouch, t)) - 60 * sstep(T.gLift, T.gLift + 0.4, t), 6 + 60 * (1 - sstep(T.gTouch - 0.45, T.gTouch, t)) + 60 * sstep(T.gLift, T.gLift + 0.4, t)]);
+  F.goal('R', gpress, midPole('R', gpress, 40, 40)).to(23.5, 23.8, 1).to(T.gLift + 0.3, 27.6, 0);
+  // pulls the right mitten off with the teeth, then waves
+  const mouth = (t, J) => add(J.Hc, add(mul(J.Ft, 26), [0, 0, -14 - 26 * sstep(T.bite, T.bite + 0.25, t)]));
+  F.goal('R', mouth, midPole('R', mouth, 60, 40)).to(28.2, 28.55, 1, E.io).to(T.bite + 0.05, T.bite + 0.35, 0, E.io);
+  tr.head.to(28.3, 28.6, 2).to(T.bite, T.bite + 0.2, -10, E.out2).to(T.bite + 0.25, T.bite + 0.6, 6);
+  const wave = (t, J) => add(J.sh.R, add(mul(J.Rt, 66 + 18 * Math.sin((t - 29.2) * 11)), add(mul(J.Ft, 16), [0, 0, 44])));
+  F.goal('R', wave, midPole('R', wave, 30, 60)).to(29.05, 29.35, 1, E.out2);
+  tr.bounce.to(29.1, 29.4, 0.3);
+})();
+const FIGS = [F];
+
+// ---------------------------------------------------------------- the 2D camera: from the room into the phone screen and back
+const zoomKeys = [[0, 0], [T.s2, 0], [T.s2 + 0.85, 1], [T.s4, 1], [T.s4 + 0.75, 0], [10.4, 0], [11.3, 1], [27.6, 1], [28.4, 0]];
+function zoomAt(t) {
+  for (let i = 1; i < zoomKeys.length; i++) if (t <= zoomKeys[i][0]) { const [ta, a] = zoomKeys[i - 1], [tb, b] = zoomKeys[i]; return lerp(a, b, E.io(inv(ta, tb, t))); }
+  return 0;
+}
+const BR = { cx: 360, cy: 650, w: 517 };
+function screenRect() {          // the phone screen in base screen space
+  const a = P(scr(0, 0)), b = P(scr(1, 1));
+  return { x: a[0], y: a[1], w: b[0] - a[0], h: b[1] - a[1] };
+}
+
+// ---------------------------------------------------------------- the screen layers (grid, charge, finger dent, scan, app)
+const overPhone = t => t < 2.3 || (t > 10.5 && t < 27.9);
+const mitt = { L: t => (t < T.s4 + 0.05 || t > 23.3) ? 1 : 0, R: t => (t < T.s4 + 0.05 || (t > 23.3 && t < T.bite + 0.15)) ? 1 : 0 };
+const gridDraw = t => sstep(T.s2 + 0.5, T.s3 - 0.3, t);            // lines are drawn one by one
+const charged = t => sstep(T.s3, T.s3 + 0.6, t) * (1 - sstep(27.8, 28.3, t));
+const glassClear = t => sstep(T.s2 + 0.2, T.s2 + 0.9, t) * (1 - sstep(T.s4 + 0.2, T.s4 + 0.7, t)) + sstep(10.6, 11.2, t) * (1 - sstep(27.6, 28.2, t));
+const dentAmt = t => sstep(T.touch, T.touch + 1.2, t) * (1 - sstep(T.lift, T.lift + 0.5, t));
+const scanOn = t => sstep(T.s6, T.s6 + 0.2, t) * (1 - sstep(T.lock - 0.1, T.lock + 0.2, t)) + sstep(T.gTouch - 0.2, T.gTouch + 0.1, t) * (1 - sstep(27.2, 27.6, t));
+const appAmt = t => E.over(inv(T.s7, T.s7 + 0.45, t)) * (1 - E.io(inv(T.s8 - 0.1, T.s8 + 0.25, t)));
+
+function drawScreen(c, t, S) {
+  const R = screenRect(), lw = 1 / S;
+  const X = u => R.x + u * R.w, Y = v => R.y + v * R.h;
+  const touch = [X(TU), Y(TV)];
+  c.save(); c.beginPath(); c.rect(R.x, R.y, R.w, R.h); c.clip();
+  // the glass: dark, turns see-through when we look inside
+  const gc = glassClear(t);
+  const g = c.createLinearGradient(R.x, R.y, R.x + R.w, R.y + R.h);
+  g.addColorStop(0, rgb(mixc([30, 34, 44], [8, 12, 22], gc))); g.addColorStop(1, rgb(mixc([14, 16, 22], [4, 6, 12], gc)));
+  c.fillStyle = g; c.fillRect(R.x, R.y, R.w, R.h);
+  // grid of wires, drawn line by line
+  const gd = gridDraw(t), ch = charged(t), dent = dentAmt(t);
+  const lines = [];
+  for (let j = 0; j < NR; j++) lines.push({ a: [0, (j + 1) / (NR + 1)], b: [1, (j + 1) / (NR + 1)], k: j });
+  for (let i = 0; i < NC; i++) lines.push({ a: [(i + 1) / (NC + 1), 0], b: [(i + 1) / (NC + 1), 1], k: NR + i });
+  const NL = lines.length;
+  const pulse = 0.75 + 0.25 * Math.sin(t * 4.2);
+  for (const L of lines) {
+    const p = clamp(gd * NL - L.k);
+    if (p <= 0) continue;
+    const ax = X(L.a[0]), ay = Y(L.a[1]), bx = X(lerp(L.a[0], L.b[0], p)), by = Y(lerp(L.a[1], L.b[1], p));
+    c.strokeStyle = rgb(mixc([120, 126, 140], BLUE, ch), (0.55 + 0.35 * ch * pulse) * gc);
+    c.lineWidth = (1.6 + 0.8 * ch) * lw; c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
+  }
+  // glow on the charged grid; darker around the touched crossing (the dent)
+  if (ch > 0) {
+    c.save(); c.globalCompositeOperation = 'lighter';
+    const gg = c.createRadialGradient(R.x + R.w / 2, R.y + R.h / 2, 0, R.x + R.w / 2, R.y + R.h / 2, R.h * 0.7);
+    gg.addColorStop(0, rgb(BLUE, 0.12 * ch * pulse * gc)); gg.addColorStop(1, rgb(BLUE, 0)); c.fillStyle = gg; c.fillRect(R.x, R.y, R.w, R.h);
+    c.restore();
+    // charge dots flowing along every line
+    for (const L of lines) {
+      const horiz = L.a[1] === L.b[1], n = horiz ? 6 : 10;
+      for (let k = 0; k < n; k++) {
+        let u = ((k / n) + t * (horiz ? 0.12 : 0.07) * (L.k % 2 ? 1 : -1) + 10) % 1;
+        let px = horiz ? X(u) : X(L.a[0]), py = horiz ? Y(L.a[1]) : Y(u);
+        const dd = Math.hypot(px - touch[0], (py - touch[1]) * 0.8) / R.w;
+        const pull = dent * Math.exp(-((dd / 0.22) ** 2));
+        const ph = (t * 1.3 + k * 0.37) % 1;
+        px = lerp(px, touch[0], pull * ph); py = lerp(py, touch[1], pull * ph);
+        const a = ch * gc * (1 - pull * ph) * (0.8 + 0.2 * pulse);
+        if (a < 0.02) continue;
+        c.beginPath(); c.arc(px, py, 2.4 * lw * 1.3, 0, TAU); c.fillStyle = rgb(BLUE2, a); c.fill();
+      }
+    }
+    if (dent > 0) {
+      const dg = c.createRadialGradient(touch[0], touch[1], 0, touch[0], touch[1], R.w * 0.3);
+      dg.addColorStop(0, `rgba(0,0,0,${0.75 * dent})`); dg.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = dg; c.fillRect(R.x, R.y, R.w, R.h);
+    }
+  }
+  // scan bar: row by row, again and again
+  const sc = scanOn(t);
+  if (sc > 0) {
+    const v = ((t - T.s6) * 3.1) % 1, y = Y(v);
+    const sg = c.createLinearGradient(0, y - R.h * 0.06, 0, y + R.h * 0.01);
+    sg.addColorStop(0, rgb(BLUE2, 0)); sg.addColorStop(0.85, rgb(BLUE2, 0.35 * sc)); sg.addColorStop(1, rgb([255, 255, 255], 0.9 * sc));
+    c.fillStyle = sg; c.fillRect(R.x, y - R.h * 0.06, R.w, R.h * 0.07);
+  }
+  // crosshair: locks on the dark crossing (finger) / searches and finds nothing (mitten)
+  const lockA = sstep(T.lock - 0.6, T.lock - 0.2, t) * (1 - sstep(T.s7 - 0.1, T.s7 + 0.2, t));
+  const searchA = sstep(T.gTouch + 0.3, T.gTouch + 0.6, t) * (1 - sstep(27.3, 27.6, t));
+  const cross = (x, y, col, a, s = 1) => {
+    c.save(); c.strokeStyle = rgb(col, a); c.lineWidth = 2.2 * lw;
+    const r = R.w * 0.07 * s;
+    c.beginPath(); c.arc(x, y, r, 0, TAU); c.moveTo(x - r * 1.8, y); c.lineTo(x - r * 0.5, y); c.moveTo(x + r * 0.5, y); c.lineTo(x + r * 1.8, y);
+    c.moveTo(x, y - r * 1.8); c.lineTo(x, y - r * 0.5); c.moveTo(x, y + r * 0.5); c.lineTo(x, y + r * 1.8); c.stroke(); c.restore();
+  };
+  if (lockA > 0) {
+    const e = E.out2(inv(T.lock - 0.6, T.lock, t));
+    const x = lerp(X(0.8), touch[0], e), y = lerp(Y(0.2), touch[1], e);
+    cross(x, y, t >= T.lock ? [255, 255, 255] : BLUE2, lockA, 1 + 0.6 * (1 - e) + 0.15 * Math.exp(-(t - T.lock) * 8) * (t > T.lock));
+  }
+  if (searchA > 0) {
+    const u = 0.5 + 0.32 * Math.sin(t * 2.3) * Math.cos(t * 0.9), v = 0.5 + 0.35 * Math.sin(t * 1.7 + 1);
+    cross(X(u), Y(v), [150, 160, 176], searchA * (0.6 + 0.4 * Math.sin(t * 9)), 1.2);
+  }
+  // the app opens where you touched
+  const ap = appAmt(t);
+  if (ap > 0.01) {
+    const w = R.w * 0.78 * ap, h = R.h * 0.6 * ap, x = lerp(touch[0], R.x + R.w * 0.11, ap) , y = lerp(touch[1], R.y + R.h * 0.2, ap);
+    c.save(); c.globalAlpha = clamp(ap * 1.5);
+    c.beginPath(); c.roundRect(x, y, Math.max(w, 0.1), Math.max(h, 0.1), R.w * 0.05); c.fillStyle = '#1b2a3a'; c.fill();
+    c.strokeStyle = rgb(BLUE, 0.9); c.lineWidth = 2 * lw; c.stroke();
+    c.fillStyle = rgb(BLUE, 0.85); c.fillRect(x, y + h * 0.02, w, h * 0.13);
+    c.fillStyle = 'rgba(220,232,245,0.5)';
+    for (let k = 0; k < 4; k++) c.fillRect(x + w * 0.1, y + h * (0.28 + k * 0.16), w * (0.8 - 0.15 * (k % 2)), h * 0.06);
+    c.restore();
+  }
+  // glass reflection on top
+  const rg = c.createLinearGradient(R.x, R.y, R.x + R.w, R.y + R.h * 0.6);
+  rg.addColorStop(0, `rgba(255,255,255,${0.10 * (1 - 0.6 * gc)})`); rg.addColorStop(0.45, 'rgba(255,255,255,0)'); c.fillStyle = rg; c.fillRect(R.x, R.y, R.w, R.h);
+  c.restore();
+  return { touch };
+}
+function drawPhoneBody(c, t, S) {
+  const a = P([PH.c[0] - PH.w / 2, PH.c[1], PH.c[2] + PH.h / 2]), b = P([PH.c[0] + PH.w / 2, PH.c[1], PH.c[2] - PH.h / 2]);
+  c.beginPath(); c.roundRect(a[0], a[1], b[0] - a[0], b[1] - a[1], (b[0] - a[0]) * 0.14);
+  c.fillStyle = '#121317'; c.fill(); c.strokeStyle = '#555861'; c.lineWidth = 2.2 / Math.sqrt(S); c.stroke();
+  drawScreen(c, t, S);
+}
+function drawMitt(c, J, side, a) {
+  if (a <= 0) return;
+  const h = J.hand[side], e = J.el[side], dir = norm(sub(h, e));
+  const p = add(h, mul(dir, 5)), q = P(p), r = 11 * q[2];
+  c.save(); c.globalAlpha = a;
+  c.beginPath(); c.ellipse(q[0], q[1], r * 1.05, r * 1.25, Math.atan2(P(h)[1] - P(e)[1], P(h)[0] - P(e)[0]) + PI / 2, 0, TAU);
+  c.fillStyle = '#8a8d95'; c.fill(); c.strokeStyle = INK; c.lineWidth = DIM.outline * q[2]; c.stroke();
+  c.restore();
+}
+
+// ---------------------------------------------------------------- drawing
+function label(txt, t0, t1, t, col = [236, 238, 242]) { captionAt(t, txt, t0, t1, 40, 9, 118, col); }
+function draw(t) {
+  cam.x = 372; cam.zoom = 1.9; cam.hy = 560; cam.h = 230;
+  const J = F.pose(t);
+  const R0 = screenRect(), S1 = BR.w / R0.w, z = zoomAt(t), S = Math.pow(S1, z);
+  const k = S1 > 1.001 ? (S - 1) / (S1 - 1) : 0;
+  const scx = R0.x + R0.w / 2, scy = R0.y + R0.h / 2;
+  const tx = lerp(scx, BR.cx, k) - scx * S, ty = lerp(scy, BR.cy, k) - scy * S;
+
+  ctx.fillStyle = '#07080b'; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.setTransform(S, 0, 0, S, tx, ty);
+  const floorY = P([0, WALL, 0])[1];
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb([8, 9, 13])); g.addColorStop(1, rgb([24, 27, 34]));
+  ctx.fillStyle = g; ctx.fillRect(-400, -400, W + 800, floorY + 400);
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb([32, 35, 42])); g.addColorStop(1, rgb([10, 11, 14]));
+  ctx.fillStyle = g; ctx.fillRect(-400, floorY, W + 800, H - floorY + 400);
+  // cold glow behind the figure
+  const fp = P([360, WALL, 260]);
+  g = ctx.createRadialGradient(fp[0], fp[1], 10, fp[0], fp[1], 420);
+  g.addColorStop(0, rgb([120, 150, 190], 0.16)); g.addColorStop(1, rgb([120, 150, 190], 0));
+  ctx.fillStyle = g; ctx.fillRect(-400, -400, W + 800, H + 800);
+
+  const props = [
+    { d: -40, draw: () => {
+      drawPhoneBody(ctx, t, S);
+      // the tapping arm goes over the phone (the holding arm stays behind it)
+      if (overPhone(t)) strokeLimb(ctx, [J.sh.R, J.el.R, J.hand.R], rgb(FIG_NEAR), P(J.N)[2]);
+    } },
+    { d: -30, draw: () => drawMitt(ctx, J, 'L', mitt.L(t)) },          // behind the phone, like the hand holding it
+    { d: -50, draw: () => drawMitt(ctx, J, 'R', mitt.R(t)) },
+  ];
+  reflection(c => drawFigure(c, F, J), floorY, 0.22);
+  contactShadow(ctx, J, 0.5, 1);
+  drawFigure(ctx, F, J, { props });
+  // the mitten stays in the teeth, then drops to the floor
+  if (t > T.bite + 0.15 && t < T.end) {
+    const m0 = add(J.Hc, add(mul(J.Ft, 24), [0, 0, -18]));
+    const u = inv(T.drop, T.drop + 0.4, t), p = [m0[0] + 6 * u, m0[1] - 10 * u, lerp(m0[2], 6, u * u)];
+    const q = P(p), r = 11 * q[2];
+    ctx.beginPath(); ctx.ellipse(q[0], q[1], r * 1.05, r * 1.25, 0.4 + 2.2 * u, 0, TAU); ctx.fillStyle = '#8a8d95'; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = DIM.outline * q[2]; ctx.stroke();
+  }
+  // "?" over the head
+  const qa = sstep(0.0, 0.01, t + 1) * (1 - sstep(2.1, 2.45, t));
+  if (qa > 0) { const hp = P(add(J.Hc, [10, 0, 52])); captionAt(t + 1, '?', 0, 3.45, 46, 0, hp[1] + 0 * qa, [236, 238, 242]); }
+  // a little spark at the raised fingertip
+  const sp = sstep(9.6, 9.9, t) * (1 - sstep(10.4, 10.8, t));
+  if (sp > 0) { const hp = P(J.hand.R); ctx.save(); ctx.globalCompositeOperation = 'lighter'; const sg = ctx.createRadialGradient(hp[0], hp[1], 0, hp[0], hp[1], 30); sg.addColorStop(0, rgb(BLUE2, 0.9 * sp)); sg.addColorStop(1, rgb(BLUE, 0)); ctx.fillStyle = sg; ctx.fillRect(hp[0] - 30, hp[1] - 30, 60, 60); ctx.restore(); }
+  ctx.restore();
+
+  vignette(0.6);
+  // labels (top) and subtitles (bottom)
+  const lq = (t < 2.43) ? 1 : 0;
+  if (lq) captionAt(t + 1, 'WHY?', 0, T.s2 + 1, 56, 14, 118);
+  label('INVISIBLE GRID', T.s2 + 0.3, T.s3, t);
+  label('ALWAYS CHARGED', T.s3, T.s4, t, BLUE2);
+  label('CONDUCTOR', T.s4 + 0.4, T.s6, t);
+  label('120× / SECOND', T.s6, T.lock + 0.3, t, BLUE2);
+  if (t >= T.lock && t < T.s7) captionAt(t, 'X: 312  Y: 845', T.lock, T.s7, 34, 6, 118);
+  label('TOUCH ✓', T.s7, T.s8, t, BLUE2);
+  label('NO CONTACT', T.s8 + 0.5, T.s9, t, [170, 176, 188]);
+  if (t >= T.s9) captionAt(t, 'FOLLOW FOR MORE', T.s9, T.end + 1, 44, 10, 118);
+  let cur = null;
+  for (const s of SUBS) if (t >= s[0]) cur = s;
+  const gap = SUB_END.find(([a, b]) => t >= a && t < b);
+  if (cur && !gap) {
+    const a = sstep(cur[0], cur[0] + 0.08, t);
+    ctx.save(); ctx.font = '800 30px "JetBrains Mono", "DejaVu Sans Mono", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const w = ctx.measureText(cur[1]).width + 30;
+    ctx.fillStyle = `rgba(0,0,0,${0.55 * a})`; ctx.beginPath(); ctx.roundRect(360 - w / 2, 1172, w, 50, 10); ctx.fill();
+    ctx.fillStyle = `rgba(250,250,250,${a})`; ctx.fillText(cur[1], 360, 1198); ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(f => [f, 0, T.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  // no fade at either end: frame 0 is the hook, and the last frame cuts straight back to it (seamless loop)
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
