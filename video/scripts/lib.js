@@ -2,14 +2,24 @@
 const path = require('path');
 const { chromium } = require('playwright');
 
+const fs = require('fs');
 const ROOT = path.resolve(__dirname, '..');
-const FILM = process.env.FILM || 'index';          // which film page to use (index = Ask Twice)
-const PAGE = 'file://' + path.join(ROOT, FILM + '.html') + '?render';
+const FILM = process.env.FILM || (process.env.DAY ? 'stick-to-strong' : 'index');   // index = Ask Twice; DAY alone = the daily series
+// series films live in films/<name>.html and read one day's data from days/<name>/day-XX.json (DAY=1)
+const SERIES = fs.existsSync(path.join(ROOT, 'films', FILM + '.html'));
+const DAY = SERIES ? parseInt(process.env.DAY || '1', 10) : null;
+const DAYFILE = SERIES ? path.join(ROOT, 'days', FILM, `day-${String(DAY).padStart(2, '0')}.json`) : null;
+const TAG = FILM === 'index' ? 'video' : SERIES ? `${FILM}-day-${String(DAY).padStart(2, '0')}` : FILM;
+const PAGE = 'file://' + path.join(ROOT, SERIES ? 'films' : '', FILM + '.html') + '?render' + (SERIES ? `&day=${DAY}` : '');
 
 async function openPage(extraQuery = '', sharedBrowser = null) {
   const browser = sharedBrowser || await chromium.launch({ args: ['--force-color-profile=srgb', '--disable-gpu-vsync'] });
   const page = await browser.newPage({ viewport: { width: 720, height: 1280 }, deviceScaleFactor: 1 });
   page.on('pageerror', e => { console.error('page error:', e.message); process.exitCode = 1; });
+  if (SERIES) {   // hand the day's JSON to the page (file:// pages may not fetch local files)
+    if (!fs.existsSync(DAYFILE)) throw new Error(`missing ${path.relative(ROOT, DAYFILE)}`);
+    await page.addInitScript(d => { window.DAY_DATA = d; }, JSON.parse(fs.readFileSync(DAYFILE, 'utf8')));
+  }
   page.on('console', m => { if (m.type() === 'error') console.error('console:', m.text()); });
   await page.goto(PAGE + extraQuery);
   await page.evaluate(() => document.fonts.ready);
@@ -24,4 +34,4 @@ async function frame(page, t) {
   return Buffer.from(b64, 'base64');
 }
 
-module.exports = { ROOT, FILM, openPage, frame };
+module.exports = { ROOT, FILM, TAG, SERIES, DAY, openPage, frame };

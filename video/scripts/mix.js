@@ -12,8 +12,10 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const TL = require('../sound-timeline');
 const { TARGET_LUFS, CEILING_DBTP } = TL;
-const FILM = process.env.FILM || 'index';                      // index = Ask Twice
-const TAG = FILM === 'index' ? 'video' : FILM;
+const FILM = process.env.FILM || (process.env.DAY ? 'stick-to-strong' : 'index');   // index = Ask Twice; DAY alone = the daily series
+// series films (films/<name>.html) are mixed per day: DAY=1 -> build/<name>-day-01.mp4 -> out/<name>-day-01.mp4
+const SERIES = fs.existsSync(path.join(__dirname, '..', 'films', FILM + '.html'));
+const TAG = FILM === 'index' ? 'video' : SERIES ? `${FILM}-day-${String(parseInt(process.env.DAY || '1', 10)).padStart(2, '0')}` : FILM;
 // a film's sound timeline lives in sound-timeline.js (the first six films) or in sounds/<film>.js (new films)
 const { FILES, timeline } = FILM === 'index' ? TL : (TL.films[FILM] || require(path.join(__dirname, '..', 'sounds', FILM + '.js')));
 
@@ -22,7 +24,7 @@ const args = process.argv.slice(2);
 const opt = (name, def) => { const i = args.indexOf('--' + name); return i >= 0 ? args[i + 1] : def; };
 const SFX = path.resolve(ROOT, opt('sfx', 'sfx'));
 const VIDEO = path.resolve(ROOT, opt('video', `build/${TAG}.mp4`));
-const OUT = path.resolve(ROOT, opt('out', FILM === 'index' ? 'out/ask-twice.mp4' : `out/${FILM}.mp4`));
+const OUT = path.resolve(ROOT, opt('out', FILM === 'index' ? 'out/ask-twice.mp4' : `out/${TAG}.mp4`));
 const BUILD = path.join(ROOT, 'build');
 const SR = 48000;
 
@@ -111,7 +113,7 @@ function loudness(file) {
 }
 
 (function main() {
-  const cuesFile = path.join(BUILD, FILM === 'index' ? 'cues.json' : `${FILM}-cues.json`);
+  const cuesFile = path.join(BUILD, FILM === 'index' ? 'cues.json' : `${TAG}-cues.json`);
   if (!fs.existsSync(cuesFile)) { console.error('build/cues.json missing: run `node scripts/render.js` first'); process.exit(1); }
   const cues = JSON.parse(fs.readFileSync(cuesFile, 'utf8'));
   const S = cues.story, DUR = cues.duration;

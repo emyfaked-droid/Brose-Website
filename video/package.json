@@ -36,7 +36,12 @@
     "mot:stills": "FILM=motivation node scripts/stills.js",
     "mot:render": "FILM=motivation node scripts/render.js",
     "mot:mix": "FILM=motivation node scripts/mix.js",
-    "mot:build": "npm run mot:check && npm run mot:render && npm run mot:mix"
+    "mot:build": "npm run mot:check && npm run mot:render && npm run mot:mix",
+    "sts:check": "FILM=stick-to-strong node scripts/check.js && FILM=stick-to-strong node scripts/popcheck.js",
+    "sts:stills": "FILM=stick-to-strong node scripts/stills.js",
+    "sts:render": "FILM=stick-to-strong node scripts/render.js",
+    "sts:mix": "FILM=stick-to-strong node scripts/mix.js",
+    "sts:build": "npm run sts:check && npm run sts:render && npm run sts:mix"
   },
   "dependencies": {
     "playwright": "^1.50.0"

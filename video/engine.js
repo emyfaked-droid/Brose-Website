@@ -196,6 +196,7 @@ class Fig {
     this.plants = { L: [mkPlant(-Infinity, foot(-1), o.yaw)], R: [mkPlant(-Infinity, foot(1), o.yaw)] };
     this.cues = [];
     this.cup = o.cup || null;   // which hand holds a cup
+    this.bulk = o.bulk || 0;    // 0..1 muscle mass (stick-to-strong only; 0 = the plain stick figure)
   }
   // where the root (point on the floor under the pelvis) is
   rootAt(t) {
@@ -772,6 +773,37 @@ function drawMask(c, m) {
   c.restore();
 }
 
+// bulk (0..1): soft filled muscle shapes on chest/shoulders, upper arms and thighs, drawn as ONE outlined shape
+// with the limbs (outlines first, then fills, so there are no seams). Only used when fig.bulk > 0.
+function strokeShapeF(c, segs, col) {
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  for (const pass of [0, 1]) for (const sg of segs) {
+    const pp = sg.pts.map(P), k = pp[0][2];
+    c.beginPath(); c.moveTo(pp[0][0], pp[0][1]);
+    for (let i = 1; i < pp.length; i++) c.lineTo(pp[i][0], pp[i][1]);
+    c.strokeStyle = pass ? col : INK; c.lineWidth = (sg.w * FSCALE + (pass ? 0 : 2 * OL())) * k; c.stroke();
+  }
+}
+const BULK = {
+  limb: pts => ({ pts, w: DIM.limbW }),
+  arm: (J, side, B) => [BULK.limb([J.N, J.sh[side], J.el[side], J.hand[side]]),
+    { pts: [lerp3(J.sh[side], J.el[side], 0.12), lerp3(J.sh[side], J.el[side], 0.7)], w: DIM.limbW + 17 * B },
+    { pts: [lerp3(J.el[side], J.hand[side], 0.08), lerp3(J.el[side], J.hand[side], 0.45)], w: DIM.limbW + 6 * B }],
+  leg: (J, side, B) => [BULK.limb([J.P, J.hip[side], J.knee[side], J.ank[side], J.toe[side]]),
+    { pts: [lerp3(J.hip[side], J.knee[side], 0.1), lerp3(J.hip[side], J.knee[side], 0.72)], w: DIM.limbW + 24 * B },
+    { pts: [lerp3(J.knee[side], J.ank[side], 0.15), lerp3(J.knee[side], J.ank[side], 0.42)], w: DIM.limbW + 8 * B }],
+  torso: (J, B) => {
+    const Q = sub(mul(J.C, 2), mul(add(J.P, J.N), 0.5)), curve = [];
+    for (let i = 0; i <= 8; i++) { const u = i / 8; curve.push(add(add(mul(J.P, (1 - u) ** 2), mul(Q, 2 * u * (1 - u))), mul(J.N, u * u))); }
+    curve.push(J.NT);
+    const wide = s => add(J.N, mul(sub(J.sh[s], J.N), 1 + 0.9 * B));
+    return [{ pts: curve, w: DIM.limbW },
+      { pts: [lerp3(J.N, J.C, 0.18), lerp3(J.N, J.C, 0.95)], w: DIM.limbW + 40 * B },      // chest
+      { pts: [J.C, lerp3(J.C, J.P, 0.55)], w: DIM.limbW + 18 * B },                          // waist (narrower)
+      { pts: [wide('L'), wide('R')], w: DIM.limbW + 20 * B }];                              // shoulders
+  },
+};
+
 // draw one figure, depth-sorted part by part (far limbs first and slightly grey)
 function drawFigure(c, fig, J, extra = {}) {
   FSCALE = fig.s;
@@ -788,22 +820,24 @@ function drawFigureParts(c, fig, J, extra) {
   const frontal = Math.abs(legD('L') - legD('R')) < 6;
   const legPts = side => [J.P, J.hip[side], J.knee[side], J.ank[side], J.toe[side]];
   const bodyLegs = frontal ? ['L', 'R'] : [nearLeg];
-  const bodyArms = [];
+  const bodyArms = [], bodyArmSides = [], B = fig.bulk || 0;
   for (const side of ['L', 'R']) {
     const ld = legD(side);
     // the back leg always goes behind the body, so its outline never cuts across the hip
-    if (!bodyLegs.includes(side)) parts.push({ d: Math.max(ld, torsoD + 0.05), draw: () => strokeLimb(c, legPts(side), shadeFor(ld + (J.hip[side][1] - J.P[1]) * 1.2), P(J.P)[2]) });
+    if (!bodyLegs.includes(side)) parts.push({ d: Math.max(ld, torsoD + 0.05), draw: () => B ? strokeShapeF(c, BULK.leg(J, side, B), shadeFor(ld + (J.hip[side][1] - J.P[1]) * 1.2)) : strokeLimb(c, legPts(side), shadeFor(ld + (J.hip[side][1] - J.P[1]) * 1.2), P(J.P)[2]) });
     const armPts = [J.N, J.sh[side], J.el[side], J.hand[side]];
     const ad = (J.sh[side][1] + J.el[side][1] + J.hand[side][1]) / 3 - 0.5;
     const acol = shadeFor(ad + (J.sh[side][1] - J.N[1]) * 1.2);
     // an arm in front of the body is drawn together with the torso as ONE shape (no outline at the shoulder)
-    if (ad < torsoD) { bodyArms.push(armPts); if (fig.cup === side) parts.push({ d: ad, draw: () => { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], rgb(FIG_NEAR), DIM.limbW * 0.5); } }); continue; }
+    if (ad < torsoD) { bodyArms.push(armPts); bodyArmSides.push(side); if (fig.cup === side) parts.push({ d: ad, draw: () => { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], rgb(FIG_NEAR), DIM.limbW * 0.5); } }); continue; }
     parts.push({ d: ad, draw: () => {
-      strokeLimb(c, armPts, acol, P(J.N)[2]);
+      if (B) strokeShapeF(c, BULK.arm(J, side, B), acol); else strokeLimb(c, armPts, acol, P(J.N)[2]);
       if (fig.cup === side) { drawCup(c, add(J.hand[side], [0, -1, 6]), FIG_NEAR); dotJoint(c, J.hand[side], acol, DIM.limbW * 0.5); }
     } });
   }
-  parts.push({ d: torsoD, draw: () => strokeBody(c, [J.P, J.C, J.N, J.NT], [...bodyLegs.map(legPts), ...bodyArms], rgb(FIG_NEAR)) });
+  parts.push({ d: torsoD, draw: () => B
+    ? strokeShapeF(c, [...BULK.torso(J, B), ...bodyLegs.flatMap(s => BULK.leg(J, s, B)), ...bodyArmSides.flatMap(s => BULK.arm(J, s, B))], rgb(FIG_NEAR))
+    : strokeBody(c, [J.P, J.C, J.N, J.NT], [...bodyLegs.map(legPts), ...bodyArms], rgb(FIG_NEAR)) });
   parts.push({ d: Math.min(torsoD - 0.2, J.Hc[1]), draw: () => {
     const [X, Y, k] = P(J.Hc), r = DIM.headR * FSCALE * k;
     c.beginPath(); c.arc(X, Y, r + OL() * k, 0, TAU); c.fillStyle = INK; c.fill();

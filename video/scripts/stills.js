@@ -2,7 +2,7 @@
 // usage: node scripts/stills.js [t1 t2 ...]
 const fs = require('fs');
 const path = require('path');
-const { ROOT, FILM, openPage, frame } = require('./lib');
+const { ROOT, FILM, TAG, openPage, frame } = require('./lib');
 
 (async () => {
   const { browser, page } = await openPage();
@@ -14,7 +14,7 @@ const { ROOT, FILM, openPage, frame } = require('./lib');
       T.cut1 + 0.05, T.hWalk + 1.2, T.sitHit, T.maskGrab + 0.5, T.slump1 + 0.3,
       T.morn + 0.6, T.stand0 + 0.5, T.pick, T.straight0 + 0.25, T.mWalk + 0.5, T.end - 0.9];
   }
-  const dir = path.join(ROOT, 'build', FILM === 'index' ? 'stills' : `stills-${FILM}`);
+  const dir = path.join(ROOT, 'build', FILM === 'index' ? 'stills' : `stills-${TAG}`);
   fs.mkdirSync(dir, { recursive: true });
   for (const t of times) {
     const f = path.join(dir, `t${t.toFixed(2).padStart(6, '0')}.png`);
