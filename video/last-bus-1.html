@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>last-bus-1</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   TEMPLATE for a new film. `npm run new -- <name>` copies this to <name>.html
+   and sounds/<name>.js. Replace the story, set and figures; keep the
+   "checks, render, cues" block at the bottom as it is (the scripts need it).
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds; the voice track sets them)
+const T = {
+  brake: 6.19, stopped: 7.6, go0: 11.0, go1: 12.8,         // the bus brakes at the stop, waits, drives on
+  whisper: 10.25, whisper1: 12.9,                           // the driver turns his head and whispers
+  zoom0: 13.87, zoom1: 19.6,                                // slow push-in on the window next to A
+  ghosts: 17.88,                                            // grey figures appear in the reflection, 0.2 s apart
+  turn: 20.99,                                              // A turns around
+  empty: 22.71,                                             // hard cut: the seats behind A are empty, the neon flickers
+  driver: 23.78,                                            // close-up: the driver's hands shake
+  back0: 25.98, back1: 27.6,                                // A turns forward again and sinks in
+  touch0: 30.85, touch1: 32.7,                              // a grey hand lands on A's shoulder
+  freeze: 34.39, cta: 37.28,                                // the picture almost stops; the two options; "comment 1 or 2"
+  end: 39.2,
+  stills: [0.0, 19.4, 22.9, 32.9],
+};
+// spoken word groups (bottom subtitles), timed to the pauses in sfx/voice_lastbus1.mp3
+const SUBS = [
+  [0.00, 1.77, '1:03 AM.'],
+  [2.62, 3.45, "YOU'RE THE ONLY"], [3.45, 4.35, 'PASSENGER ON'], [4.35, 5.52, 'THE LAST BUS HOME.'],
+  [6.19, 7.40, 'AT THE NEXT STOP...'], [7.70, 8.45, 'THE DRIVER'], [8.45, 9.78, "DOESN'T OPEN THE DOORS."],
+  [10.25, 11.60, 'HE JUST WHISPERS...'],
+  [13.87, 15.20, 'IN THE DARK WINDOW,'], [15.32, 16.45, 'YOU SEE THE REFLECTION'], [16.45, 17.28, 'OF THE BUS.'],
+  [17.88, 19.55, 'EVERY SEAT BEHIND YOU...'], [19.71, 20.25, 'IS FULL.'],
+  [20.99, 21.80, 'YOU TURN AROUND.'],
+  [22.71, 23.14, 'EMPTY.'],
+  [23.78, 24.60, "THE DRIVER'S HANDS"], [24.60, 25.41, 'ARE SHAKING.'],
+  [25.98, 26.95, 'TWO MORE STOPS.'], [27.32, 28.20, 'WHATEVER YOU DO...'], [28.49, 29.25, "DON'T LET THEM KNOW"], [29.25, 30.02, 'YOU CAN SEE THEM.'],
+  [30.85, 32.40, 'THEN... SOMETHING COLD'], [32.40, 33.78, 'TOUCHES YOUR SHOULDER.'],
+  [34.39, 35.45, 'DO YOU TURN AROUND...'], [35.69, 36.77, 'OR CLOSE YOUR EYES?'],
+  [37.28, 38.30, 'COMMENT ONE...'], [38.45, 39.20, 'OR TWO.'],
+];
+
+// ---------------------------------------------------------------- set (x = front..rear of the bus, d = depth, z = height)
+const WALL = 110;                         // the window side of the bus (glass plane)
+const CEIL = 470, NEAR = -200;            // ceiling height; the cut edge of the cross-section (toward the camera)
+const SEAT_Z = 88, BACK_Z = 166;          // seat height, top of the backrest
+const FD = 55;                            // depth of the seated figures
+const SEATS = [345, 495, 645, 795, 945];  // feet x of each passenger seat (A sits on the first)
+const PF = -86, SIT_Z = SEAT_Z + 5;       // seated pelvis: 86 behind the feet, on the cushion
+const PANES = [                           // glass in the window wall: x0, x1, z0, z1
+  [-5, 165, 175, 410], [188, 252, 34, 402], [262, 328, 34, 402], [345, 705, 175, 410], [725, 1085, 175, 410],
+];
+const POLES = [178, 476, 776];            // grab poles (at the backrests)
+const RDX = 75, RDZ = 55;                 // the reflection sits a little behind and above (camera below the glass)
+const ACC = [255, 206, 108], NEON = [214, 228, 255];
+const grey = (v, a = 1) => rgb([v, v, v], a);
+const sgn = side => side === 'R' ? 1 : -1;
+
+// bus speed (world px/s) and the distance travelled, so lamps and the stop sign move with it
+const V = 340, DT = 1 / 240;
+const speed = t => V * Math.max(1 - sstep(T.brake, T.stopped, t), sstep(T.go0, T.go1, t));
+const DIST = [0];
+for (let i = 1; i * DT <= T.end + 1; i++) DIST.push(DIST[i - 1] + speed((i - 0.5) * DT) * DT);
+const dist = t => { const f = clamp(t / DT, 0, DIST.length - 1.001), i = Math.floor(f); return lerp(DIST[i], DIST[i + 1], f - i); };
+const S_STOP = dist(T.go0 - 0.1);
+const LSP = 560, LAMP_D = 300, SIGN_D = 210;
+const SIGN_X = 230 - S_STOP;                          // the stop sign ends up outside the front door
+const LAMP_PH = ((150 - S_STOP) % LSP + LSP) % LSP;   // one lamp stands at the stop
+
+// neon: a faint constant shimmer, two tiny stutters, one hard flicker at the cut to the empty seats
+const FLICK = [[3.30, 3.36, 0.55], [12.95, 13.02, 0.6], [22.71, 22.78, 0.1], [22.78, 22.88, 0.95], [22.88, 22.96, 0.25], [22.96, 23.08, 0.8]];
+function neonI(t) {
+  for (const [a, b, v] of FLICK) if (t >= a && t < b) return v;
+  return 1 - 0.035 * (0.5 + 0.5 * Math.sin(TAU * 6.1 * t)) * (0.5 + 0.5 * Math.sin(TAU * 0.37 * t + 1));
+}
+
+// ---------------------------------------------------------------- figures
+function seated(F, o = {}) {
+  const tr = F.tr;
+  tr.pf.v0 = PF; tr.pz.v0 = SIT_Z - H0;
+  tr.lean.v0 = o.lean ?? 14; tr.slump.v0 = o.slump ?? 6; tr.head.v0 = o.head ?? 12; tr.shDrop.v0 = o.shDrop ?? 3;
+  tr.idle.v0 = o.idle ?? 0.5; tr.breath.v0 = o.breath ?? 1.0;
+  return F;
+}
+// hands resting on the knees, elbows a little out
+const onKnee = side => (t, J) => add(J.knee[side], add(mul(J.Ft, 4), [0, 0, 7]));
+const elbowOut = side => (t, J) => add(J.knee[side], add(add(mul(J.Rt, sgn(side) * 22), mul(J.Ft, -24)), [0, 0, 50]));
+function handsOnKnees(F) { for (const side of ['L', 'R']) F.goal(side, onKnee(side), elbowOut(side)).v0 = 1; }
+
+// A, the passenger: faces the front (left)
+const A = seated(new Fig('A', { x: SEATS[0], d: FD, yaw: 180, seed: 1.3 }), { lean: 12, slump: 7, head: 16 });
+handsOnKnees(A);
+{ // turning around, the hand nearer the back grabs the top of the backrest
+  const side = A.pose(0).sh.L[1] < A.pose(0).sh.R[1] ? 'L' : 'R';
+  A.goal(side, () => [SEATS[0] + 122, FD - 14, BACK_Z + 8], (t, J) => add(J.sh[side], [40, -30, -20]))
+    .to(T.turn + 0.04, T.turn + 0.3, 1, E.out2).to(T.back0 + 0.2, T.back0 + 1.0, 0, E.io);
+}
+(function story() {
+  const tr = A.tr;
+  // the bus brakes: the body swings forward and back, the head comes up
+  tr.lean.to(T.brake, T.brake + 0.7, 21, E.io).to(T.stopped - 0.2, T.stopped + 0.6, 10, E.io);
+  tr.head.to(T.brake + 0.15, T.brake + 0.8, -3, E.io);
+  tr.slump.to(T.brake + 0.15, T.brake + 0.8, 3, E.io);
+  tr.shDrop.to(T.whisper, T.whisper + 0.5, -2, E.io);                        // tense
+  // looks at the dark window beside him
+  tr.hyaw.to(T.zoom0 + 0.3, T.zoom0 + 1.2, 34, E.io);
+  tr.head.to(T.zoom0 + 0.3, T.zoom0 + 1.2, 4, E.io);
+  tr.breath.to(T.ghosts, T.ghosts + 0.6, 1.6, E.io);
+  // turns around, fast, with a little shoulder jerk
+  tr.hyaw.to(T.turn, T.turn + 0.24, 82, E.out2);
+  tr.twist.to(T.turn, T.turn + 0.26, 34, E.out2);
+  tr.roll.to(T.turn, T.turn + 0.26, -5, E.out2);
+  tr.shDrop.to(T.turn, T.turn + 0.1, -7, E.out2).to(T.turn + 0.1, T.turn + 0.45, -2, E.io);
+  tr.head.to(T.turn, T.turn + 0.26, 2, E.out2);
+  tr.lean.to(T.turn, T.turn + 0.26, 2, E.out2);
+  tr.twist.to(T.turn + 0.26, T.turn + 0.5, 46, E.io);
+  tr.lean.to(T.back0, T.back1, 12, E.io);
+  // slowly back to the front, sinking in
+  tr.hyaw.to(T.back0, T.back1, 0, E.io);
+  tr.twist.to(T.back0, T.back1, 0, E.io);
+  tr.roll.to(T.back0, T.back1, 0, E.io);
+  tr.slump.to(T.back0 + 0.4, T.back1 + 0.6, 16, E.io);
+  tr.head.to(T.back0 + 0.4, T.back1 + 0.6, 30, E.io);
+  tr.shDrop.to(T.back0 + 0.4, T.back1 + 0.6, 7, E.io);
+  tr.lean.to(T.back0 + 0.4, T.back1 + 0.6, 18, E.io);
+  // the touch: everything stops, only the breathing goes on
+  tr.idle.to(T.touch0, T.touch0 + 0.3, 0, E.io);
+  tr.shDrop.to(T.touch0 + 0.9, T.touch0 + 1.4, 4, E.io);
+  tr.breath.to(T.touch0 + 0.6, T.touch0 + 1.4, 1.9, E.io);
+})();
+
+// B, the driver: half turned away from us, hands on the wheel
+const BYAW = 150, BF = [72, 82];
+const fwdB = [Math.cos(BYAW * D2R), Math.sin(BYAW * D2R)], rgtB = [fwdB[1], -fwdB[0]];
+const B = seated(new Fig('B', { x: BF[0], d: BF[1], yaw: BYAW, seed: 2.6 }), { lean: 16, slump: 5, head: 4, shDrop: 2 });
+const BPEL = [BF[0] + fwdB[0] * PF, BF[1] + fwdB[1] * PF];
+const WHEEL = [BPEL[0] + fwdB[0] * 84, BPEL[1] + fwdB[1] * 84, 138];
+const WU = [rgtB[0], rgtB[1], 0], WV = norm([-fwdB[0] * 0.8, -fwdB[1] * 0.8, 0.6]);
+const shake = t => sstep(T.driver - 0.2, T.driver + 0.3, t) * (1 - sstep(T.back0 + 0.6, T.back0 + 1.2, t));
+for (const side of ['L', 'R']) {
+  const s = sgn(side) * 0.82;
+  B.goal(side, t => {
+    const k = shake(t), tr = [Math.sin(TAU * 13 * t + s * 3) * 2.2, Math.sin(TAU * 17 * t + s) * 1.6, Math.sin(TAU * 11 * t + s * 2) * 2.4];
+    return add(add(WHEEL, add(mul(WU, s * 31), mul(WV, 14))), mul(tr, k));
+  }, (t, J) => add(J.sh[side], [-fwdB[0] * 10 + rgtB[0] * sgn(side) * 30, -fwdB[1] * 10 + rgtB[1] * sgn(side) * 30, -50])).v0 = 1;
+}
+(function driver() {
+  const tr = B.tr;
+  tr.lean.to(T.brake, T.brake + 0.7, 22, E.io).to(T.stopped - 0.2, T.stopped + 0.6, 16, E.io);
+  // the whisper: only his head turns a little to the side (toward us, never to A)
+  tr.hyaw.to(T.whisper, T.whisper + 0.6, -32, E.io).to(T.whisper1, T.whisper1 + 0.7, 0, E.io);
+  tr.head.to(T.whisper, T.whisper + 0.6, 12, E.io).to(T.whisper1, T.whisper1 + 0.7, 4, E.io);
+  tr.shDrop.to(T.driver - 0.3, T.driver + 0.3, -3, E.io);
+})();
+
+// the ones behind A: seated grey figures, completely still (only ever seen in the window)
+const GHOSTS = SEATS.slice(1).map((x, i) => {
+  const G = seated(new Fig('G' + i, { x, d: FD, yaw: 180, seed: 4 + i }), { lean: 6, slump: 2, head: 6, idle: 0, breath: 0, shDrop: 0 });
+  handsOnKnees(G);
+  return G;
+});
+// the one right behind A reaches over the backrest to A's shoulder
+const G1 = GHOSTS[0];
+const nearSide = J => J.sh.L[1] < J.sh.R[1] ? 'L' : 'R';
+const TOUCH_SIDE = nearSide(G1.pose(0));
+G1.tr.lean.to(T.touch0 - 0.4, T.touch0 + 0.6, 34, E.io);
+G1.goals[TOUCH_SIDE].length = 0;                     // drop the knee goal on that side
+G1.goal(TOUCH_SIDE, (t, J) => {
+  const JA = A.pose(t), sh = JA.sh[nearSide(JA)];
+  const rest = add(J.sh[TOUCH_SIDE], [-10, -6, -95]);
+  const k = E.io(inv(T.touch0, T.touch1, t));
+  return lerp3(add(rest, mul(J.Ft, 10)), add(sh, [6, -4, 9]), k);
+}, (t, J) => add(J.sh[TOUCH_SIDE], [-40, -20, 30])).v0 = 1;
+const ghostA = (t, i) => {
+  const on = sstep(T.ghosts + i * 0.2, T.ghosts + i * 0.2 + 0.12, t) * (1 - sstep(T.turn + 0.02, T.turn + 0.14, t));
+  const back = 0.55 * sstep(T.back1, T.back1 + 2.5, t);   // later they are there again, fainter
+  return Math.max(on, back);
+};
+const FIGS = [A, B, ...GHOSTS];
+
+// ---------------------------------------------------------------- camera: wide, slow push-in on the window, cuts
+function shot(t) {
+  const wide = { x: 372, zoom: 1.0, hy: 636 };
+  if (t < T.zoom0) return wide;
+  if (t < T.empty) {
+    const k = E.io(inv(T.zoom0, T.zoom1, t));
+    return { x: lerp(372, 525, k), zoom: lerp(1.0, 1.72, k), hy: lerp(636, 668, k) };
+  }
+  if (t < T.driver) return { x: lerp(700, 690, inv(T.empty, T.driver, t)), zoom: 1.5, hy: 640 };
+  if (t < T.back0) { const k = inv(T.driver, T.back0, t); return { x: WHEEL[0] + 40, zoom: lerp(2.3, 2.45, k), hy: 470 }; }
+  const k = E.io(inv(T.back0, T.freeze, t));
+  return { x: lerp(470, 480, k), zoom: lerp(1.42, 1.62, k), hy: lerp(640, 652, k) };
+}
+
+// ---------------------------------------------------------------- drawing helpers
+let REFL = false;                                    // drawing the reflection in the glass
+const Q = p => REFL ? P([p[0] + RDX, 2 * WALL - p[1], p[2] + RDZ]) : P(p);
+function polyQ(c, pts) { c.beginPath(); pts.forEach((p, i) => { const q = Q(p); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }); c.closePath(); }
+function boxQ(c, b, col) {
+  const { x0, x1, d0, d1, z0, z1 } = b, df = REFL ? d1 : d0;
+  const cx = REFL ? cam.x - RDX : cam.x;
+  const sx = cx < x0 ? x0 : cx > x1 ? x1 : null;
+  if (sx !== null) { polyQ(c, [[sx, d0, z0], [sx, d1, z0], [sx, d1, z1], [sx, d0, z1]]); c.fillStyle = col.side; c.fill(); }
+  if (z1 < cam.h + (REFL ? RDZ : 0)) { polyQ(c, [[x0, d0, z1], [x1, d0, z1], [x1, d1, z1], [x0, d1, z1]]); c.fillStyle = col.top; c.fill(); }
+  polyQ(c, [[x0, df, z0], [x1, df, z0], [x1, df, z1], [x0, df, z1]]); c.fillStyle = col.front; c.fill();
+  c.lineWidth = 1.2; c.strokeStyle = col.edge || 'rgba(255,255,255,0.05)'; c.stroke();
+}
+// a pose moved into the glass (for the figures in the reflection)
+function mirrorJ(J) {
+  const m = v => {
+    if (Array.isArray(v) && v.length === 3 && typeof v[0] === 'number') return [v[0] + RDX, 2 * WALL - v[1], v[2] + RDZ];
+    if (v && typeof v === 'object' && !Array.isArray(v)) { const o = {}; for (const k in v) o[k] = m(v[k]); return o; }
+    return v;
+  };
+  return m(J);
+}
+const SEATC = { front: rgb([40, 44, 56]), top: rgb([62, 67, 82]), side: rgb([30, 33, 42]), edge: 'rgba(200,215,255,0.08)' };
+const SEATC_R = { front: rgb([58, 64, 80]), top: rgb([80, 88, 106]), side: rgb([44, 49, 62]), edge: 'rgba(200,215,255,0.1)' };
+function drawSeat(c, fx, col) {
+  boxQ(c, { x0: fx + 72, x1: fx + 98, d0: 40, d1: 70, z0: 0, z1: 66 }, { front: rgb([16, 17, 22]), top: rgb([22, 24, 30]), side: rgb([14, 15, 19]) });
+  boxQ(c, { x0: fx + 40, x1: fx + 122, d0: 18, d1: 92, z0: 66, z1: SEAT_Z }, col);
+  boxQ(c, { x0: fx + 112, x1: fx + 134, d0: 18, d1: 92, z0: SEAT_Z, z1: BACK_Z }, col);
+  boxQ(c, { x0: fx + 112, x1: fx + 132, d0: 30, d1: 36, z0: BACK_Z, z1: BACK_Z + 6 }, { front: grey(120), top: grey(150), side: grey(90) });
+}
+function drawDriverSeat(c, col) {
+  const x = BPEL[0];
+  boxQ(c, { x0: x - 4, x1: x + 22, d0: 30, d1: 66, z0: 0, z1: 62 }, { front: rgb([16, 17, 22]), top: rgb([22, 24, 30]), side: rgb([14, 15, 19]) });
+  boxQ(c, { x0: x - 32, x1: x + 40, d0: 6, d1: 70, z0: 62, z1: SEAT_Z - 4 }, col);
+  boxQ(c, { x0: x + 34, x1: x + 50, d0: 6, d1: 70, z0: SEAT_Z - 4, z1: 238 }, col);
+}
+function drawWheel(c, col) {
+  // column down into the dashboard, then the rim (a tilted circle)
+  const base = [WHEEL[0] - 36, WHEEL[1] - 6, 92];
+  const a = Q(base), b = Q(WHEEL);
+  c.lineCap = 'round';
+  c.strokeStyle = INK; c.lineWidth = 9 * b[2]; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  c.strokeStyle = col; c.lineWidth = 5 * b[2]; c.stroke();
+  c.beginPath();
+  for (let i = 0; i <= 40; i++) {
+    const an = i / 40 * TAU, q = Q(add(WHEEL, add(mul(WU, Math.cos(an) * 34), mul(WV, Math.sin(an) * 34))));
+    i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]);
+  }
+  c.strokeStyle = INK; c.lineWidth = 9 * b[2]; c.stroke(); c.strokeStyle = col; c.lineWidth = 5 * b[2]; c.stroke();
+}
+function drawDash(c) {
+  boxQ(c, { x0: -160, x1: WHEEL[0] - 30, d0: -40, d1: 104, z0: 0, z1: 100 }, { front: rgb([20, 22, 28]), top: rgb([34, 37, 46]), side: rgb([16, 18, 23]) });
+}
+function drawPole(c, x, a = 1) {
+  const p0 = Q([x, 10, 0]), p1 = Q([x, 10, CEIL]);
+  c.lineCap = 'butt';
+  c.strokeStyle = `rgba(6,6,8,${a})`; c.lineWidth = 9 * p0[2]; c.beginPath(); c.moveTo(p0[0], p0[1]); c.lineTo(p1[0], p1[1]); c.stroke();
+  const g = c.createLinearGradient(p0[0] - 3 * p0[2], 0, p0[0] + 3 * p0[2], 0);
+  g.addColorStop(0, grey(90, a)); g.addColorStop(0.4, grey(205, a)); g.addColorStop(1, grey(70, a));
+  c.strokeStyle = g; c.lineWidth = 5.5 * p0[2]; c.stroke();
+}
+function drawTube(c, I) {
+  const a = Q([-40, 70, CEIL - 6]), b = Q([1100, 70, CEIL - 6]);
+  c.lineCap = 'round';
+  c.strokeStyle = rgb([30, 32, 40]); c.lineWidth = 16 * a[2]; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  c.strokeStyle = rgb(mixc([60, 64, 76], [236, 244, 255], I)); c.lineWidth = 8 * a[2]; c.stroke();
+}
+// the interior that the glass reflects (everything but A)
+function drawReflected(c, t, poses) {
+  REFL = true;
+  drawTube(c, neonI(t));
+  drawDash(c);
+  drawDriverSeat(c, SEATC_R);
+  SEATS.forEach(fx => drawSeat(c, fx, SEATC_R));
+  REFL = false;
+  drawFigure(c, B, mirrorJ(poses[1]));
+  REFL = true;
+  drawWheel(c, grey(150));
+  REFL = false;
+  GHOSTS.forEach((G, i) => {
+    const a = ghostA(t, i);
+    if (a <= 0.01) return;
+    c.save(); c.globalAlpha = a; c.filter = 'brightness(0.42) contrast(0.75)';
+    drawFigure(c, G, mirrorJ(poses[2 + i]));
+    c.restore();
+  });
+  REFL = true;
+  POLES.forEach(x => drawPole(c, x));
+  REFL = false;
+}
+const rcv = document.createElement('canvas'); rcv.width = W; rcv.height = H;
+const rctx = rcv.getContext('2d');
+function panePath(c, z0off = 0) {
+  c.beginPath();
+  for (const [x0, x1, z0, z1] of PANES) {
+    const a = P([x0, WALL, z1]), b = P([x1, WALL, z0 + z0off]);
+    c.rect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  }
+}
+// what is outside: night, far lights, passing street lamps, the stop sign
+function drawOutside(t) {
+  const top = P([0, WALL, 420])[1], bot = P([0, WALL, 20])[1];
+  let g = ctx.createLinearGradient(0, top, 0, bot);
+  g.addColorStop(0, rgb([7, 9, 16])); g.addColorStop(1, rgb([14, 17, 27]));
+  ctx.fillStyle = g; ctx.fillRect(-50, top - 300, W + 100, bot - top + 600);
+  const s = dist(t);
+  // far city lights (slow)
+  const rnd = mulberry32(77);
+  for (let i = 0; i < 46; i++) {
+    const bx = rnd() * 2600, z = 150 + rnd() * 140, warm = rnd() < 0.3;
+    const x = ((bx + s * 0.18) % 2600) - 700;
+    const p = P([x, 1600, z]);
+    ctx.fillStyle = warm ? rgb(ACC, 0.35) : rgb([150, 170, 210], 0.22);
+    ctx.fillRect(p[0], p[1], 2.2, 2.2);
+  }
+  // street lamps: post, glowing head, light cone
+  for (let i = -2; i < 5; i++) {
+    const x = LAMP_PH + i * LSP + (s % LSP);
+    const base = P([x, LAMP_D, 0]), head = P([x, LAMP_D, 560]);
+    ctx.strokeStyle = rgb([24, 26, 32]); ctx.lineWidth = 9 * base[2];
+    ctx.beginPath(); ctx.moveTo(base[0], base[1]); ctx.lineTo(head[0], head[1]); ctx.stroke();
+    g = ctx.createRadialGradient(head[0], head[1], 0, head[0], head[1], 260 * head[2]);
+    g.addColorStop(0, rgb(ACC, 0.55)); g.addColorStop(0.3, rgb(ACC, 0.16)); g.addColorStop(1, rgb(ACC, 0));
+    ctx.fillStyle = g; ctx.fillRect(head[0] - 300, head[1] - 300, 600, 600);
+    ctx.fillStyle = rgb(ACC, 0.10);
+    ctx.beginPath(); ctx.moveTo(head[0] - 8, head[1]); ctx.lineTo(head[0] + 8, head[1]);
+    ctx.lineTo(base[0] + 130 * base[2], base[1]); ctx.lineTo(base[0] - 130 * base[2], base[1]); ctx.closePath(); ctx.fill();
+  }
+  // the stop sign
+  const sx = SIGN_X + s;
+  const pb = P([sx, SIGN_D, 0]), pt = P([sx, SIGN_D, 440]);
+  if (pt[0] > -200 && pt[0] < W + 200) {
+    ctx.strokeStyle = rgb([40, 42, 48]); ctx.lineWidth = 6 * pb[2];
+    ctx.beginPath(); ctx.moveTo(pb[0], pb[1]); ctx.lineTo(pt[0], pt[1]); ctx.stroke();
+    const a = P([sx - 46, SIGN_D, 440]), b = P([sx + 46, SIGN_D, 352]);
+    ctx.fillStyle = rgb([150, 154, 160]); ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+    ctx.fillStyle = rgb([20, 22, 26]);
+    ctx.font = `800 ${Math.round(17 * a[2])}px "JetBrains Mono", "DejaVu Sans Mono", monospace`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('BUS', (a[0] + b[0]) / 2, a[1] + (b[1] - a[1]) * 0.32);
+    ctx.fillText('STOP', (a[0] + b[0]) / 2, a[1] + (b[1] - a[1]) * 0.7);
+    ctx.textAlign = 'left';
+  }
+}
+// screen x of the lamps (for the light sweeping through the bus)
+const lampXs = t => { const s = dist(t), r = []; for (let i = -2; i < 5; i++) r.push(P([LAMP_PH + i * LSP + (s % LSP), LAMP_D, 300])[0]); return r; };
+
+function reflAlpha(t) {
+  let a = 0.22 + 0.1 * sstep(T.zoom0 + 0.5, T.zoom1 - 1.5, t);
+  if (t >= T.empty) a = 0.22;
+  return a;
+}
+
+// ---------------------------------------------------------------- the frame
+function scene(t) {
+  const sh = shot(t);
+  cam.x = sh.x; cam.zoom = sh.zoom; cam.hy = sh.hy; cam.h = 270;
+  const I = neonI(t);
+  const poses = FIGS.map(f => f.pose(t));
+
+  // the window wall
+  const wTop = P([0, WALL, CEIL]), wBot = P([0, WALL, 0]);
+  let g = ctx.createLinearGradient(0, wTop[1], 0, wBot[1]);
+  g.addColorStop(0, rgb([34, 38, 48])); g.addColorStop(0.5, rgb([26, 29, 37])); g.addColorStop(1, rgb([18, 20, 26]));
+  ctx.fillStyle = g; ctx.fillRect(-60, wTop[1], W + 120, wBot[1] - wTop[1]);
+  // glass: outside, then the reflection of the inside
+  ctx.save(); panePath(ctx); ctx.clip();
+  drawOutside(t);
+  rctx.setTransform(1, 0, 0, 1, 0, 0); rctx.clearRect(0, 0, W, H);
+  drawReflected(rctx, t, poses);
+  rctx.globalCompositeOperation = 'source-atop'; rctx.fillStyle = 'rgba(110,150,255,0.35)'; rctx.fillRect(0, 0, W, H);
+  rctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = reflAlpha(t); ctx.filter = 'blur(0.8px)'; ctx.drawImage(rcv, 0, 0); ctx.filter = 'none'; ctx.globalAlpha = 1;
+  // glass sheen
+  g = ctx.createLinearGradient(0, wTop[1], W, wBot[1]);
+  g.addColorStop(0, 'rgba(160,190,255,0.05)'); g.addColorStop(0.5, 'rgba(160,190,255,0)'); g.addColorStop(1, 'rgba(160,190,255,0.04)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  // frames around the panes, the door seam
+  ctx.strokeStyle = rgb([10, 11, 14]); ctx.lineWidth = 7 * wTop[2];
+  for (const [x0, x1, z0, z1] of PANES) {
+    const a = P([x0, WALL, z1]), b = P([x1, WALL, z0]);
+    ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  }
+  // ceiling and floor
+  const cA = P([-400, WALL, CEIL]), cB = P([-400, NEAR, CEIL]);
+  g = ctx.createLinearGradient(0, cB[1], 0, cA[1]);
+  g.addColorStop(0, rgb([18, 20, 26])); g.addColorStop(1, rgb([44, 48, 60]));
+  ctx.fillStyle = g; poly(ctx, [[-600, WALL, CEIL], [1600, WALL, CEIL], [1600, NEAR, CEIL], [-600, NEAR, CEIL]]); ctx.fill();
+  const fA = P([0, WALL, 0]), fB = P([0, NEAR, 0]);
+  g = ctx.createLinearGradient(0, fA[1], 0, fB[1]);
+  g.addColorStop(0, rgb([30, 33, 41])); g.addColorStop(1, rgb([13, 14, 18]));
+  ctx.fillStyle = g; poly(ctx, [[-600, WALL, 0], [1600, WALL, 0], [1600, NEAR, 0], [-600, NEAR, 0]]); ctx.fill();
+  // the cut edge of the bus body (cross-section)
+  ctx.fillStyle = rgb([22, 24, 30]);
+  poly(ctx, [[-600, NEAR, CEIL], [1600, NEAR, CEIL], [1600, NEAR, CEIL + 34], [-600, NEAR, CEIL + 34]]); ctx.fill();
+  poly(ctx, [[-600, NEAR, -40], [1600, NEAR, -40], [1600, NEAR, 0], [-600, NEAR, 0]]); ctx.fill();
+  // neon light on the ceiling, the wall and the floor
+  const tp = P([400, 70, CEIL - 6]);
+  g = ctx.createRadialGradient(tp[0], tp[1] + 60, 10, tp[0], tp[1] + 60, 700);
+  g.addColorStop(0, rgb(NEON, 0.16 * I)); g.addColorStop(1, rgb(NEON, 0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // glossy floor
+  const floorY = fA[1];
+  reflection(c => FIGS.slice(0, 2).forEach((f, i) => drawFigure(c, f, poses[i])), floorY, 0.18);
+
+  // dashboard, seats, figures (all at about the same depth: left to right is enough here)
+  drawDash(ctx);
+  drawDriverSeat(ctx, SEATC);
+  SEATS.forEach(fx => drawSeat(ctx, fx, SEATC));
+  poses.slice(0, 2).forEach((J, i) => contactShadow(ctx, J, 0.5, 1));
+  drawFigure(ctx, B, poses[1]);
+  drawWheel(ctx, grey(170));
+  drawFigure(ctx, A, poses[0]);
+  // the hand from the dark behind A
+  const ta = sstep(T.touch0 - 0.1, T.touch0 + 0.5, t);
+  if (ta > 0.01) {
+    const J = poses[2], side = TOUCH_SIDE, sh = J.sh[side];
+    ctx.save(); ctx.globalAlpha = ta;
+    strokeLimb(ctx, [sh, J.el[side], J.hand[side]], grey(128), P(J.el[side])[2]);
+    dotJoint(ctx, J.hand[side], grey(128), DIM.limbW * 0.5);
+    ctx.restore();
+    const ps = P(sh);
+    g = ctx.createRadialGradient(ps[0], ps[1], 0, ps[0], ps[1], 120 * ps[2]);
+    g.addColorStop(0, `rgba(2,2,4,${0.97 * ta})`); g.addColorStop(0.45, `rgba(2,2,4,${0.8 * ta})`); g.addColorStop(1, 'rgba(2,2,4,0)');
+    ctx.fillStyle = g; ctx.fillRect(ps[0] - 140 * ps[2], ps[1] - 140 * ps[2], 280 * ps[2], 280 * ps[2]);
+  }
+  POLES.forEach(x => drawPole(ctx, x));
+  drawTube(ctx, I);
+
+  // the light of each passing lamp sweeps through the bus
+  const lx = lampXs(t);
+  softLayer(30, 'screen', c => {
+    for (const x of lx) {
+      const gg = c.createLinearGradient(x - 120, 0, x + 120, 0);
+      gg.addColorStop(0, rgb(ACC, 0)); gg.addColorStop(0.5, rgb(ACC, 0.2)); gg.addColorStop(1, rgb(ACC, 0));
+      c.fillStyle = gg; c.fillRect(x - 120, wTop[1], 240, fB[1] - wTop[1]);
+    }
+  });
+  // neon glow
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const ta2 = P([-40, 70, CEIL - 6]), tb2 = P([1100, 70, CEIL - 6]);
+  g = ctx.createLinearGradient(0, ta2[1] - 40 * ta2[2], 0, ta2[1] + 80 * ta2[2]);
+  g.addColorStop(0, rgb(NEON, 0)); g.addColorStop(0.35, rgb(NEON, 0.22 * I)); g.addColorStop(1, rgb(NEON, 0));
+  ctx.fillStyle = g; ctx.fillRect(ta2[0], ta2[1] - 40 * ta2[2], tb2[0] - ta2[0], 120 * ta2[2]);
+  ctx.restore();
+  // the tube dims the whole bus when it flickers
+  if (I < 0.99) { ctx.fillStyle = `rgba(0,0,0,${(1 - I) * 0.62})`; ctx.fillRect(-100, -100, W + 200, H + 200); }
+}
+
+function draw(t) {
+  // the end: the picture almost stops
+  const ts = t < T.freeze ? t : T.freeze + (t - T.freeze) * 0.06;
+  // bus sway: 1-2 px up and down while it drives, a small nose-down tilt when it brakes
+  const mv = speed(ts) / V;
+  const dy = (1.1 * Math.sin(TAU * 1.7 * ts) + 0.5 * Math.sin(TAU * 4.3 * ts + 1)) * (0.25 + 0.75 * mv);
+  const tilt = -1.6 * sstep(T.brake, T.brake + 0.9, ts) * (1 - sstep(T.stopped - 0.2, T.stopped + 0.7, ts))
+    + 0.5 * Math.sin(PI * inv(T.stopped - 0.2, T.stopped + 1.2, ts)) * (ts < T.stopped + 1.2 ? 1 : 0);
+  ctx.save();
+  ctx.translate(W / 2, H * 0.62 + dy); ctx.rotate(tilt * D2R); ctx.translate(-W / 2, -H * 0.62);
+  ctx.scale(1.006, 1.006);
+  scene(ts);
+  ctx.restore();
+  vignette(0.8);
+  const dark = 0.5 * sstep(T.freeze, T.freeze + 0.9, t);
+  if (dark > 0) { ctx.fillStyle = `rgba(0,0,0,${dark})`; ctx.fillRect(0, 0, W, H); }
+  texts(t);
+}
+
+// ---------------------------------------------------------------- text
+const MONO = '"JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", monospace';
+function spaced(text, x, y, size, sp, col, a, weight = 800, accentIdx = -1, shadow = 14) {
+  ctx.save();
+  ctx.font = `${weight} ${size}px ${MONO}`; ctx.textBaseline = 'middle';
+  const cw = ctx.measureText('M').width, total = text.length * cw + (text.length - 1) * sp;
+  let cx = x - total / 2;
+  ctx.shadowColor = 'rgba(0,0,0,0.9)'; ctx.shadowBlur = shadow; ctx.shadowOffsetY = 2;
+  [...text].forEach((ch, i) => { ctx.fillStyle = rgb(i === accentIdx ? ACC : col, a); ctx.fillText(ch, cx, y); cx += cw + sp; });
+  ctx.restore();
+}
+function texts(t) {
+  // hook: the time and the series title, fully there on frame 0
+  const ha = 1 - sstep(5.0, 5.5, t);
+  if (ha > 0) {
+    spaced('1:03 AM', W / 2, 250, 92, 10, [246, 244, 238], ha);
+    spaced('LAST BUS · PART 1', W / 2, 336, 26, 7, [200, 204, 214], ha, 700);
+  }
+  // the whisper, small, near the driver
+  const wa = sstep(11.69, 11.85, t) * (1 - sstep(12.7, 13.0, t));
+  if (wa > 0) spaced("DON'T TURN AROUND.", W / 2, 360, 30, 6, [250, 250, 250], wa, 700);
+  // bottom subtitles
+  for (const [a, b, s] of SUBS) {
+    if (t < a || t >= b) continue;
+    const al = sstep(a, a + 0.06, t) * (1 - sstep(b - 0.06, b, t));
+    spaced(s, W / 2, 1085, s.length > 20 ? 30 : 34, 3, [252, 252, 250], al, 800, -1, 8);
+  }
+  // the question
+  const o1 = sstep(T.freeze, T.freeze + 0.25, t), o2 = sstep(T.freeze + 0.15, T.freeze + 0.4, t);
+  if (o1 > 0) spaced('1 · TURN AROUND', W / 2, 560, 40, 6, [250, 250, 250], o1, 800, 0);
+  if (o2 > 0) spaced('2 · CLOSE YOUR EYES', W / 2, 640, 40, 6, [250, 250, 250], o2, 800, 0);
+  const c = sstep(T.cta, T.cta + 0.25, t);
+  if (c > 0) spaced('COMMENT 1 OR 2', W / 2, 730, 26, 6, [220, 222, 228], c, 700);
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(f => [f, 0, T.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  // no fade at either end: frame 0 is the hook, and the last frame cuts straight back to it (seamless loop)
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
