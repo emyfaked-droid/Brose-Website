@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>noise-cancel-explained</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   TEMPLATE for a new film. `npm run new -- <name>` copies this to <name>.html
+   and sounds/<name>.js. Replace the story, set and figures; keep the
+   "checks, render, cues" block at the bottom as it is (the scripts need it).
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds; scenes follow the voice-over)
+// Explainer: how noise-cancelling headphones delete sound. Voice: sfx/voice_noisecancel.mp3 from 0.0.
+const T = {
+  s2: 2.55, s3: 6.43, s4: 10.03, s5: 13.39, s6: 16.86, s7: 19.83, s8: 22.19,
+  up: 13.95, down: 15.95, crash: 18.2, cancel: 18.95,
+  end: 24.6,
+  stills: [8.2, 11.8],
+};
+const SUBS = [
+  [0.00, 'HOW DO HEADPHONES'], [1.05, 'DELETE SOUND?'],
+  [2.55, 'EVERY SOUND'], [3.25, 'IS A WAVE.'], [4.42, 'AIR PUSHED'], [4.82, 'UP AND DOWN.'],
+  [6.43, 'TINY MICROPHONES'], [7.20, 'ON YOUR HEADPHONES'], [8.06, 'LISTEN TO THE NOISE'], [8.96, 'AROUND YOU.'],
+  [10.03, 'THEN'], [10.57, 'A CHIP CREATES'], [11.55, 'THE EXACT'], [12.16, 'OPPOSITE WAVE.'],
+  [13.39, 'WHERE THE NOISE'], [13.95, 'GOES UP…'], [14.92, 'THE ANTI-NOISE'], [15.75, 'GOES DOWN.'],
+  [16.86, 'THEY CRASH'], [17.45, 'INTO EACH OTHER…'], [18.46, 'AND CANCEL OUT.'],
+  [19.83, 'TWO SOUNDS.'], [20.83, 'ZERO NOISE.'],
+  [22.19, 'FOLLOW FOR MORE'], [23.00, 'THINGS YOU USE'], [23.60, 'EVERY DAY.'],
+];
+const SUB_END = [[1.91, 2.55], [5.98, 6.43], [9.63, 10.03], [12.99, 13.39], [16.46, 16.86], [19.40, 19.83], [21.78, 22.19], [24.25, 25]];
+
+// ---------------------------------------------------------------- set
+const WALL = 300;
+const BLUE = [92, 190, 255], BLUE2 = [176, 228, 255], WHITE = [238, 240, 244];
+
+// ---------------------------------------------------------------- the figure: on a noisy street, holding the head (over the headphones)
+const F = new Fig('F', { x: 360, d: 40, yaw: 270, seed: 2.2 });
+const midPole = (side, fn, down = 60, out = 18) => (t, J) => add(lerp3(J.sh[side], fn(t, J), 0.5), add(mul(J.Rt, (side === 'R' ? 1 : -1) * out), [0, 0, -down]));
+(function () {
+  const tr = F.tr;
+  tr.head.v0 = 10; tr.slump.v0 = 8; tr.shDrop.v0 = -4;
+  // hands pressed on the ear cups, head rocking: tortured
+  const ear = side => (t, J) => add(J.Hc, add(mul(J.Rt, (side === 'R' ? 1 : -1) * 34), [0, 0, -4]));
+  for (const sd of ['L', 'R']) { const g = F.goal(sd, ear(sd), midPole(sd, ear(sd), 20, 70)); g.v0 = 1; g.to(T.s7 + 0.3, T.s7 + 0.9, 0, E.io); }
+  tr.headRoll.v0 = 0;
+  for (let k = 0; k < 6; k++) tr.headRoll.to(k * 0.42, k * 0.42 + 0.4, k % 2 ? -7 : 7, E.io);
+  tr.headRoll.to(2.6, 2.9, 0);
+  // the noise is gone: shoulders drop, head back a little, slow breath
+  tr.shDrop.to(T.s7 + 0.4, T.s7 + 1.1, 9, E.io); tr.slump.to(T.s7 + 0.4, T.s7 + 1.1, 0, E.io);
+  tr.head.to(T.s7 + 0.5, T.s7 + 1.2, -12, E.io); tr.breath.to(T.s7, T.s7 + 1, 2.4);
+  tr.headRoll.to(T.s7 + 0.5, T.s7 + 1.2, 4, E.io);
+  // waves at the camera
+  tr.head.to(T.s8 - 0.1, T.s8 + 0.3, 2, E.io); tr.headRoll.to(T.s8, T.s8 + 0.3, 0);
+  const wave = (t, J) => add(J.sh.R, add(mul(J.Rt, 66 + 18 * Math.sin((t - T.s8) * 11)), add(mul(J.Ft, 16), [0, 0, 44])));
+  F.goal('R', wave, midPole('R', wave, 30, 60)).to(T.s8 + 0.05, T.s8 + 0.4, 1, E.out2);
+  tr.bounce.to(T.s8 + 0.1, T.s8 + 0.4, 0.3);
+})();
+const FIGS = [F];
+
+// chaotic noise around the figure: short jagged waves, each with the time it is cancelled
+const NOISE = [];
+(function () {
+  const r = mulberry32(91);
+  const spots = [[150, 300, -0.4], [560, 330, 0.3], [110, 560, 0.1], [610, 560, -0.2], [180, 760, 0.35], [560, 790, -0.35], [360, 230, 0], [80, 410, 0.6], [640, 420, -0.6]];
+  spots.forEach(([x, y, rot], i) => NOISE.push({ x, y, rot, len: 120 + 60 * r(), seed: r() * 100, off: 19.95 + i * 0.13 }));
+})();
+
+// ---------------------------------------------------------------- helpers
+const DG = document.createElement('canvas'); DG.width = W; DG.height = H;
+const dctx = DG.getContext('2d');
+function mono(c, txt, x, y, size, col, align = 'center', weight = 800) {
+  c.save(); c.font = `${weight} ${size}px "JetBrains Mono", "DejaVu Sans Mono", monospace`; c.textAlign = align; c.textBaseline = 'middle'; c.fillStyle = col; c.fillText(txt, x, y); c.restore();
+}
+function strokeWave(c, fn, x0, x1, col, lw, glow = 0) {
+  c.save(); c.beginPath();
+  for (let x = x0; x <= x1; x += 3) { const y = fn(x); x === x0 ? c.moveTo(x, y) : c.lineTo(x, y); }
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  if (glow) { c.shadowColor = rgb(col, 0.9); c.shadowBlur = glow; }
+  c.strokeStyle = rgb(col); c.lineWidth = lw; c.stroke(); c.restore();
+}
+function arrow(c, x, y0, y1, col, a) {
+  if (a <= 0) return;
+  const dir = Math.sign(y1 - y0);
+  c.save(); c.globalAlpha = a; c.strokeStyle = rgb(col); c.fillStyle = rgb(col); c.lineWidth = 6; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(x, y0); c.lineTo(x, y1 - dir * 14); c.stroke();
+  c.beginPath(); c.moveTo(x, y1); c.lineTo(x - 15, y1 - dir * 22); c.lineTo(x + 15, y1 - dir * 22); c.closePath(); c.fill(); c.restore();
+}
+
+// ---------------------------------------------------------------- layer 1: the street
+function drawStreet(t) {
+  cam.x = 360; cam.zoom = 1.5; cam.hy = 560; cam.h = 230;
+  const J = F.pose(t);
+  const floorY = P([0, WALL, 0])[1];
+  let g = ctx.createLinearGradient(0, 0, 0, floorY);
+  g.addColorStop(0, rgb([7, 8, 12])); g.addColorStop(1, rgb([24, 26, 33]));
+  ctx.fillStyle = g; ctx.fillRect(-600, -600, W + 1200, floorY + 600);
+  // city silhouette and a street lamp far back
+  ctx.fillStyle = '#0f1116'; const r = mulberry32(7); let bx = -200;
+  while (bx < W + 200) { const bw = 40 + r() * 70, bh = 120 + r() * 260; ctx.fillRect(bx, floorY - bh, bw, bh); bx += bw + 6; }
+  g = ctx.createLinearGradient(0, floorY, 0, H);
+  g.addColorStop(0, rgb([30, 32, 38])); g.addColorStop(1, rgb([10, 11, 14]));
+  ctx.fillStyle = g; ctx.fillRect(-600, floorY, W + 1200, H - floorY + 600);
+  ctx.strokeStyle = 'rgba(200,204,212,0.18)'; ctx.lineWidth = 4; ctx.setLineDash([46, 40]);
+  ctx.beginPath(); ctx.moveTo(-600, P([0, 120, 0])[1]); ctx.lineTo(W + 600, P([0, 120, 0])[1]); ctx.stroke(); ctx.setLineDash([]);
+  const lp = P([140, WALL - 20, 600]);
+  g = ctx.createRadialGradient(lp[0], lp[1], 4, lp[0], lp[1], 380); g.addColorStop(0, 'rgba(200,210,230,0.16)'); g.addColorStop(1, 'rgba(200,210,230,0)');
+  ctx.fillStyle = g; ctx.fillRect(-600, -600, W + 1200, H + 1200);
+  reflection(c => drawFigure(c, F, J), floorY, 0.22);
+  contactShadow(ctx, J, 0.5, 1);
+  drawFigure(ctx, F, J);
+  // over-ear headphones: a band over the head, two cups
+  const hc = P(J.Hc), k = hc[2], rr = DIM.headR * k;
+  const cupL = P(add(J.Hc, mul(J.Rt, -27))), cupR = P(add(J.Hc, mul(J.Rt, 27)));
+  ctx.save(); ctx.lineCap = 'round';
+  ctx.strokeStyle = INK; ctx.lineWidth = 11 * k; ctx.beginPath(); ctx.ellipse(hc[0], hc[1] - 2 * k, rr + 6 * k, rr + 8 * k, 0, PI * 1.06, PI * 1.94); ctx.stroke();
+  ctx.strokeStyle = '#6b6e76'; ctx.lineWidth = 6 * k; ctx.stroke();
+  for (const cp of [cupL, cupR]) { ctx.beginPath(); ctx.ellipse(cp[0], cp[1], 9 * k, 15 * k, 0, 0, TAU); ctx.fillStyle = '#585b63'; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 3.2 * k; ctx.stroke(); }
+  ctx.restore();
+  // the noise: jagged white waves all around, cancelled one by one
+  for (const n of NOISE) {
+    const a = 1 - sstep(n.off, n.off + 0.25, t);
+    if (a <= 0) continue;
+    const f = Math.floor(t * 12);
+    ctx.save(); ctx.translate(n.x, n.y); ctx.rotate(n.rot); ctx.globalAlpha = a * 0.85;
+    ctx.beginPath();
+    const m = 9, rr2 = mulberry32(Math.floor(n.seed * 1000) + f);
+    for (let i = 0; i <= m; i++) { const x = -n.len / 2 + n.len * i / m, y = (i % 2 ? -1 : 1) * (8 + 18 * rr2()); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.strokeStyle = rgb(WHITE); ctx.lineWidth = 3.5; ctx.lineJoin = 'round'; ctx.stroke(); ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------- layer 2: the diagrams
+function drawDiagrams(c, t) {
+  c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, W, H);
+  const g = c.createRadialGradient(360, 640, 40, 360, 640, 760);
+  g.addColorStop(0, '#141924'); g.addColorStop(1, '#06070a'); c.fillStyle = g; c.fillRect(0, 0, W, H);
+  const wB = sstep(T.s2, T.s2 + 0.4, t) * (1 - sstep(T.s3 - 0.1, T.s3 + 0.35, t));
+  const wHP = sstep(T.s3 - 0.1, T.s3 + 0.35, t) * (1 - sstep(T.s5 - 0.1, T.s5 + 0.35, t));
+  const wW = sstep(T.s5 - 0.1, T.s5 + 0.35, t);
+
+  // B: one clean sound wave, and the air it pushes together and apart
+  if (wB > 0) {
+    c.save(); c.globalAlpha = wB;
+    const k = TAU / 260, w = TAU * 0.55, reveal = lerp(40, 690, E.io(inv(T.s2 + 0.1, T.s2 + 0.9, t)));
+    strokeWave(c, x => 560 - 110 * Math.sin(k * x - w * t), 30, reveal, WHITE, 5, 12);
+    c.strokeStyle = 'rgba(200,204,212,0.18)'; c.lineWidth = 2; c.beginPath(); c.moveTo(30, 560); c.lineTo(690, 560); c.stroke();
+    for (let row = 0; row < 5; row++) for (let x0 = 30; x0 <= 690; x0 += 20) {
+      const x = x0 + 9 * Math.sin(k * x0 - w * t - PI / 2) * (0.8 + 0.2 * Math.sin(row));
+      const dens = 0.5 + 0.5 * Math.sin(k * x0 - w * t);
+      c.beginPath(); c.arc(x, 820 + row * 30, 3.4, 0, TAU); c.fillStyle = rgb(mixc([120, 126, 138], WHITE, dens), 0.85); c.fill();
+    }
+    mono(c, 'AIR', 40, 790, 18, 'rgba(170,176,188,0.9)', 'left');
+    c.restore();
+  }
+  // C + D: a big head with the ear cup; the mic listens, the chip answers with the opposite wave
+  if (wHP > 0) {
+    c.save(); c.globalAlpha = wHP;
+    const H0x = 530, H0y = 620, HR = 175;
+    // head (house style) and the headband
+    c.beginPath(); c.arc(H0x, H0y, HR + 6, 0, TAU); c.fillStyle = INK; c.fill();
+    c.beginPath(); c.arc(H0x, H0y, HR, 0, TAU); c.fillStyle = rgb([244, 244, 240]); c.fill();
+    c.lineCap = 'round'; c.strokeStyle = INK; c.lineWidth = 34; c.beginPath(); c.moveTo(H0x - 10, H0y - 80); c.quadraticCurveTo(H0x - 40, H0y - HR - 70, H0x + 70, H0y - HR - 14); c.stroke();
+    c.strokeStyle = '#5a5d65'; c.lineWidth = 24; c.stroke();
+    // the cup (cut open once the chip appears)
+    const cut = sstep(T.s4, T.s4 + 0.5, t);
+    c.save(); c.translate(H0x - 10, H0y + 30);
+    c.beginPath(); c.ellipse(0, 0, 82, 112, 0, 0, TAU); c.fillStyle = INK; c.fill();
+    c.beginPath(); c.ellipse(0, 0, 75, 105, 0, 0, TAU); c.fillStyle = rgb(mixc([88, 91, 99], [24, 28, 38], cut)); c.fill();
+    if (cut > 0) { c.setLineDash([10, 8]); c.strokeStyle = rgb([150, 156, 168], 0.6 * cut); c.lineWidth = 3; c.stroke(); c.setLineDash([]); }
+    c.restore();
+    // mic: a dot on the outside of the cup that lights up
+    const mic = [H0x - 86, H0y - 20], ml = sstep(T.s3 + 0.5, T.s3 + 0.9, t);
+    c.beginPath(); c.arc(mic[0], mic[1], 13, 0, TAU); c.fillStyle = INK; c.fill();
+    c.beginPath(); c.arc(mic[0], mic[1], 9, 0, TAU); c.fillStyle = rgb(mixc([120, 124, 132], [255, 255, 255], ml)); c.fill();
+    if (ml > 0) { const gg = c.createRadialGradient(mic[0], mic[1], 2, mic[0], mic[1], 60); gg.addColorStop(0, rgb(WHITE, 0.6 * ml * (0.8 + 0.2 * Math.sin(t * 12)))); gg.addColorStop(1, rgb(WHITE, 0)); c.fillStyle = gg; c.fillRect(mic[0] - 60, mic[1] - 60, 120, 120); }
+    mono(c, 'MIC', mic[0] - 34, mic[1] - 40, 18, 'rgba(210,214,222,0.9)', 'center');
+    // the noise wave is pulled into the mic
+    const k = TAU / 200, w = TAU * 0.6;
+    const into = x => sstep(mic[0] - 220, mic[0], x);
+    const noiseY = x => lerp(500 - 70 * Math.sin(k * x - w * t), mic[1], into(x));
+    const nrev = lerp(0, mic[0], E.io(inv(T.s3 + 0.2, T.s3 + 1.0, t)));
+    if (nrev > 4) strokeWave(c, x => lerp(noiseY(x), 500, 0), 0, nrev, WHITE, 5, 10);
+    // the chip, and the blue opposite wave coming out of it
+    if (cut > 0) {
+      const cx = H0x - 10, cy = H0y + 44, cw = 76, ch = 50, ca = cut;
+      c.save(); c.globalAlpha *= ca;
+      c.strokeStyle = rgb([170, 176, 188]); c.lineWidth = 4;
+      for (let i = 0; i < 5; i++) { const x = cx - cw / 2 + 12 + i * (cw - 24) / 4; c.beginPath(); c.moveTo(x, cy - ch / 2 - 12); c.lineTo(x, cy + ch / 2 + 12); c.stroke(); }
+      const chg = sstep(T.s4 + 0.6, T.s4 + 1.0, t);
+      c.fillStyle = '#121620'; c.fillRect(cx - cw / 2, cy - ch / 2, cw, ch);
+      c.strokeStyle = rgb(mixc([170, 176, 188], BLUE, chg)); c.lineWidth = 4; c.strokeRect(cx - cw / 2, cy - ch / 2, cw, ch);
+      if (chg > 0) { c.shadowColor = rgb(BLUE); c.shadowBlur = 18 * chg; c.strokeRect(cx - cw / 2, cy - ch / 2, cw, ch); c.shadowBlur = 0; }
+      mono(c, 'CHIP', cx, cy, 16, rgb(mixc([200, 204, 212], BLUE2, chg)));
+      c.restore();
+      const out = x => sstep(cx - cw / 2 - 160, cx - cw / 2, x);
+      const antiY = x => lerp(800 + 70 * Math.sin(k * x - w * t), cy, out(x));
+      const brev = lerp(cx - cw / 2, 0, E.io(inv(T.s4 + 0.6, T.s4 + 1.6, t)));
+      if (cx - cw / 2 - brev > 4) strokeWave(c, antiY, brev, cx - cw / 2, BLUE, 5, 14);
+      // the same wave, mirrored: a dashed guide from crest to trough
+      const ga = sstep(T.s4 + 1.8, T.s4 + 2.3, t);
+      if (ga > 0) { c.save(); c.globalAlpha *= ga; c.setLineDash([6, 8]); c.strokeStyle = 'rgba(200,204,212,0.5)'; c.lineWidth = 2;
+        const xg = ((w * t + PI / 2) / k) % 200 + 40; c.beginPath(); c.moveTo(xg, 430); c.lineTo(xg, 870); c.stroke(); c.restore(); }
+    }
+    c.restore();
+  }
+  // E + F: both waves stacked, up / down, then they crash and cancel to a flat line
+  if (wW > 0) {
+    c.save(); c.globalAlpha = wW;
+    const k = TAU / 300, drift = 0.25 * (t - T.s5), crestX = 360;
+    const conv = E.io(inv(T.s6, T.crash, t));                      // stacked -> on top of each other
+    const amp = 95 * (1 - E.in2(inv(T.crash + 0.3, T.cancel, t)));  // cancel out
+    const baseW = lerp(500, 640, conv), baseB = lerp(800, 640, conv);
+    const ph = x => k * (x - crestX) - drift;
+    const flat = sstep(T.cancel - 0.1, T.cancel + 0.05, t);
+    if (flat < 1) {
+      c.save(); c.globalAlpha *= 1 - flat;
+      strokeWave(c, x => baseW - amp * Math.cos(ph(x)), 20, 700, WHITE, 5, 10);
+      strokeWave(c, x => baseB + amp * Math.cos(ph(x)), 20, 700, BLUE, 5, 14);
+      c.restore();
+    }
+    if (flat > 0) {
+      // one calm flat line: a short bright flash runs along it
+      strokeWave(c, () => 640, 20, 700, mixc(WHITE, BLUE2, 0.4), 5, 10);
+      const u = inv(T.cancel, T.cancel + 0.5, t);
+      if (u > 0 && u < 1) { const fx = lerp(-100, 820, u), fg = c.createRadialGradient(fx, 640, 0, fx, 640, 160);
+        fg.addColorStop(0, `rgba(255,255,255,${0.9 * (1 - u * 0.5)})`); fg.addColorStop(1, 'rgba(255,255,255,0)');
+        c.save(); c.globalCompositeOperation = 'lighter'; c.fillStyle = fg; c.fillRect(fx - 160, 480, 320, 320); c.restore(); }
+    }
+    const cx = crestX + drift / k;
+    arrow(c, cx, baseW - 110, baseW - 210, WHITE, sstep(T.up - 0.15, T.up + 0.1, t) * (1 - sstep(T.s6, T.s6 + 0.3, t)));
+    arrow(c, cx, baseB + 110, baseB + 210, BLUE, sstep(T.down - 0.15, T.down + 0.1, t) * (1 - sstep(T.s6, T.s6 + 0.3, t)));
+    mono(c, 'NOISE', 40, baseW - 140, 18, rgb([200, 204, 212], 0.9 * (1 - conv)), 'left');
+    mono(c, 'ANTI-NOISE', 40, baseB + 140, 18, rgb(BLUE2, 0.9 * (1 - conv)), 'left');
+    c.restore();
+  }
+}
+
+// ---------------------------------------------------------------- drawing: street <-> diagrams with a zoom
+function draw(t) {
+  const inD = sstep(T.s2, T.s2 + 0.6, t) * (1 - sstep(T.s7, T.s7 + 0.6, t));     // 0 = street, 1 = diagrams
+  const PIV = [190, 330];                                                           // we zoom into a noise wave up left
+  ctx.fillStyle = '#06070a'; ctx.fillRect(0, 0, W, H);
+  if (inD < 1) {
+    const S = 1 + 2.4 * E.in2(inD);
+    ctx.save(); ctx.setTransform(S, 0, 0, S, PIV[0] * (1 - S), PIV[1] * (1 - S));
+    drawStreet(t); ctx.restore();
+  }
+  if (inD > 0) {
+    drawDiagrams(dctx, t);
+    const S = 0.55 + 0.45 * E.out2(inD);
+    ctx.save(); ctx.globalAlpha = inD; ctx.setTransform(S, 0, 0, S, PIV[0] * (1 - S), PIV[1] * (1 - S));
+    ctx.drawImage(DG, 0, 0); ctx.restore();
+  }
+  vignette(0.6);
+  // labels (top)
+  const lab = (txt, t0, t1, col) => captionAt(t, txt, t0, t1, 40, 9, 118, col);
+  if (t < T.s2) captionAt(t + 1, 'DELETE SOUND?', 0, T.s2 + 1, 46, 11, 118);
+  lab('SOUND = WAVE', T.s2 + 0.3, T.s3);
+  lab('MIC LISTENS', T.s3 + 0.3, T.s4);
+  lab('ANTI-NOISE', T.s4 + 0.3, T.s5, BLUE2);
+  lab('UP ↑  DOWN ↓', T.s5 + 0.3, T.s6);
+  lab('CANCEL OUT', T.s6 + 0.3, T.s7);
+  lab('2 SOUNDS = 0 NOISE', T.s7 + 0.3, T.s8);
+  if (t >= T.s8) captionAt(t, 'FOLLOW FOR MORE', T.s8, T.end + 1, 44, 10, 118);
+  // subtitles (bottom)
+  let cur = null;
+  for (const s of SUBS) if (t >= s[0]) cur = s;
+  const gap = SUB_END.find(([a, b]) => t >= a && t < b);
+  if (cur && !gap) {
+    const a = sstep(cur[0], cur[0] + 0.08, t);
+    ctx.save(); ctx.font = '800 30px "JetBrains Mono", "DejaVu Sans Mono", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const w = ctx.measureText(cur[1]).width + 30;
+    ctx.fillStyle = `rgba(0,0,0,${0.55 * a})`; ctx.beginPath(); ctx.roundRect(360 - w / 2, 1172, w, 50, 10); ctx.fill();
+    ctx.fillStyle = `rgba(250,250,250,${a})`; ctx.fillText(cur[1], 360, 1198); ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(f => [f, 0, T.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  // no fade at either end: frame 0 is the hook, and the last frame cuts straight back to it (seamless loop)
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
