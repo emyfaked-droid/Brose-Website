@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>last-bus-2</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  body.render canvas { height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<script src="engine.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   TEMPLATE for a new film. `npm run new -- <name>` copies this to <name>.html
+   and sounds/<name>.js. Replace the story, set and figures; keep the
+   "checks, render, cues" block at the bottom as it is (the scripts need it).
+   ===================================================================== */
+
+// ---------------------------------------------------------------- story (all times in seconds; the voice track sets them)
+const T = {
+  close: 0.05,                                              // A closes his eyes (head down, shoulders up)
+  beats: [3.27, 4.53],                                      // "One..." "Two...": a lamp sweeps through, the bus dips
+  black0: 5.54, black1: 6.14, day: 6.84,                    // fade to black, then hard cut to cold daylight
+  pull0: 8.10, pull1: 10.7,                                 // camera pulls back: the bus is a wreck in a depot
+  stand0: 15.11, stand1: 16.1,                              // A stands up and walks to the window side
+  plaque: 17.16, lines: [17.16, 18.40, 20.57, 22.10],       // zoom on the plaque, one line per spoken phrase
+  look: 23.87,                                              // A turns his head to the window, camera on the reflection
+  ghosts: 25.31, smile: 27.98,                              // the passengers are in the reflection; their heads turn to A
+  empty: 29.49,                                             // pan in the reflection to where A should stand: nobody
+  down: 31.53,                                              // A looks down at himself, steps back, fades to 60 %
+  flick: 33.60,                                             // neon flicker in daylight; A flickers with it
+  out0: 35.34,                                              // fade to dark, "PART 3?"
+  end: 37.9,
+  stills: [0.0, 12.0, 19.5, 24.6, 28.6, 30.5],
+};
+const SUBS = [
+  [0.00, 1.20, 'YOU CLOSE YOUR EYES.'], [1.65, 2.76, 'YOU COUNT THE STOPS.'],
+  [3.27, 3.95, 'ONE...'], [4.53, 5.20, 'TWO...'],
+  [5.54, 6.38, 'WHEN YOU OPEN THEM...'], [6.84, 7.64, "IT'S DAYLIGHT."],
+  [8.10, 9.20, 'THE BUS IS STANDING'], [9.20, 10.29, 'IN AN OLD DEPOT.'],
+  [10.80, 11.40, 'RUSTED.'], [11.72, 12.65, 'BROKEN WINDOWS.'], [13.00, 14.58, 'DUST ON EVERY SEAT.'],
+  [15.11, 15.90, 'ON THE WALL...'], [16.11, 16.67, 'A PLAQUE.'],
+  [17.16, 18.40, 'IN MEMORY OF'], [18.40, 20.05, 'THE PASSENGERS'], [20.57, 21.77, 'OF NIGHT LINE 13.'], [22.10, 23.22, 'OCTOBER 27TH, 2006.'],
+  [23.87, 24.30, 'YOU LOOK'], [24.30, 24.78, 'AT THE WINDOW.'],
+  [25.31, 26.40, 'EVERY PASSENGER IS THERE'], [26.40, 27.48, 'IN THE REFLECTION...'], [27.98, 28.84, 'SMILING AT YOU.'],
+  [29.49, 30.00, 'EXCEPT...'], [30.58, 31.10, 'YOU.'],
+  [31.53, 32.10, "YOU'RE NOT"], [32.10, 33.03, 'IN THE REFLECTION.'], [33.60, 34.60, 'YOU NEVER WERE.'],
+  [35.34, 36.06, 'WANT PART THREE?'], [36.43, 37.83, 'COMMENT RIDE.'],
+];
+const PLAQUE_LINES = ['IN MEMORY OF', 'THE PASSENGERS OF', 'NIGHT LINE 13', 'OCT 27, 2006'];
+
+// ---------------------------------------------------------------- set (same bus as part 1)
+const WALL = 110;
+const CEIL = 470, NEAR = -200;
+const SEAT_Z = 88, BACK_Z = 166;
+const FD = 55;
+const SEATS = [345, 495, 645, 795, 945];
+const PF = -86, SIT_Z = SEAT_Z + 5;
+const PANES = [
+  [-5, 165, 175, 410], [188, 252, 34, 402], [262, 328, 34, 402], [345, 705, 175, 410], [725, 1085, 175, 410],
+];
+const POLES = [178, 476, 776];
+const POLE_TILT = [14, -22, 9];           // in the depot the poles lean (top offset in x)
+const RDX = 75, RDZ = 55;
+const ACC = [255, 206, 108], NEON = [214, 228, 255], DAYL = [196, 202, 208];
+const PLAQUE = { x: 600, d: 360, z: 300, w: 176, h: 104 };   // on the depot wall, seen through the big window
+const ASTAND = [285, 88];                 // where A stands, at the window side
+const grey = (v, a = 1) => rgb([v, v, v], a);
+const sgn = side => side === 'R' ? 1 : -1;
+const isDay = t => t >= T.day;
+
+// night: the bus still drives (it dips at each counted stop)
+const V = 340, DT = 1 / 240;
+const beat = t => T.beats.reduce((s, b) => s + Math.exp(-(((t - b - 0.25) / 0.3) ** 2)), 0);
+const speed = t => t >= T.black0 + 0.6 ? 0 : V * (1 - 0.4 * beat(t));
+const DIST = [0];
+for (let i = 1; i * DT <= T.end + 1; i++) DIST.push(DIST[i - 1] + speed((i - 0.5) * DT) * DT);
+const dist = t => { const f = clamp(t / DT, 0, DIST.length - 1.001), i = Math.floor(f); return lerp(DIST[i], DIST[i + 1], f - i); };
+const LSP = 560, LAMP_D = 300;
+const LAMP_PH = 90;
+
+// the tube: dark in the depot, except for one short flicker
+const FLICK = [[33.60, 33.66, 0.9], [33.66, 33.74, 0], [33.74, 33.80, 0.6], [33.80, 33.92, 0], [33.92, 33.97, 1], [33.97, 34.10, 0.15]];
+function neonI(t) {
+  if (!isDay(t)) return 1 - 0.035 * (0.5 + 0.5 * Math.sin(TAU * 6.1 * t)) * (0.5 + 0.5 * Math.sin(TAU * 0.37 * t + 1));
+  for (const [a, b, v] of FLICK) if (t >= a && t < b) return v;
+  return 0;
+}
+// A fades to 60 % and flickers with the tube
+function aAlpha(t) {
+  let a = 1 - 0.4 * E.io(inv(T.down, T.down + 2.4, t));
+  if (t >= T.flick && t < 34.1) a *= 0.35 + 0.65 * neonI(t);
+  return a;
+}
+
+// ---------------------------------------------------------------- figures
+function seated(F, o = {}) {
+  const tr = F.tr;
+  tr.pf.v0 = PF; tr.pz.v0 = SIT_Z - H0;
+  tr.lean.v0 = o.lean ?? 14; tr.slump.v0 = o.slump ?? 6; tr.head.v0 = o.head ?? 12; tr.shDrop.v0 = o.shDrop ?? 3;
+  tr.idle.v0 = o.idle ?? 0.5; tr.breath.v0 = o.breath ?? 1.0;
+  return F;
+}
+const onKnee = side => (t, J) => add(J.knee[side], add(mul(J.Ft, 4), [0, 0, 7]));
+const elbowOut = side => (t, J) => add(J.knee[side], add(add(mul(J.Rt, sgn(side) * 22), mul(J.Ft, -24)), [0, 0, 50]));
+function handsOnKnees(F) { const g = {}; for (const side of ['L', 'R']) { g[side] = F.goal(side, onKnee(side), elbowOut(side)); g[side].v0 = 1; } return g; }
+
+// A starts exactly as part 1 ended: slumped, frozen, only breathing
+const A = seated(new Fig('A', { x: SEATS[0], d: FD, yaw: 180, seed: 1.3 }), { lean: 18, slump: 16, head: 30, shDrop: 4, idle: 0, breath: 1.9 });
+const aKnee = handsOnKnees(A);
+(function story() {
+  const tr = A.tr;
+  // eyes shut: head forward, shoulders up
+  tr.head.to(T.close, T.close + 0.5, 42, E.io); tr.shDrop.to(T.close, T.close + 0.5, -7, E.io);
+  tr.slump.to(T.close, T.close + 0.5, 19, E.io);
+  // each counted stop: the body swings forward a little
+  for (const b of T.beats) tr.lean.to(b, b + 0.3, 24, E.io).to(b + 0.35, b + 0.8, 18, E.io);
+  // daylight: the head comes up
+  tr.idle.to(T.day, T.day + 0.4, 0.5, E.io); tr.breath.to(T.day, T.day + 1, 1.3, E.io);
+  tr.head.to(T.day + 0.1, T.day + 0.9, 8, E.io); tr.shDrop.to(T.day + 0.1, T.day + 0.9, 2, E.io);
+  tr.slump.to(T.day + 0.1, T.day + 0.9, 8, E.io); tr.lean.to(T.day + 0.1, T.day + 0.9, 14, E.io);
+  // stands up (hands push off the knees), then a few heavy steps to the window side
+  const k0 = T.stand0;
+  for (const side of ['L', 'R']) aKnee[side].to(k0 + 0.45, k0 + 1.0, 0, E.io);
+  tr.lean.to(k0, k0 + 0.35, 34, E.io).to(k0 + 0.45, T.stand1, 5, E.io2);
+  tr.pf.to(k0 + 0.25, T.stand1, 0, E.io2);
+  tr.pz.to(k0 + 0.3, T.stand1, -3, E.io2);
+  tr.slump.to(k0 + 0.4, T.stand1, 6, E.io2); tr.head.to(k0 + 0.4, T.stand1, 6, E.io2);
+  T.walk1 = A.walk(T.stand1 + 0.1, ASTAND, MOOD.heavy, 'L');
+  A.turn(T.walk1 + 0.05, T.walk1 + 0.8, 40, { steps: 3, lift: 4 });
+  tr.head.to(T.walk1, T.walk1 + 0.6, -4, E.io);                             // looks out at the plaque
+  // to the window right beside him (his reflection should be there)
+  tr.hyaw.to(T.look, T.look + 0.7, 38, E.io); tr.head.to(T.look, T.look + 0.7, 2, E.io);
+  // looks down at himself, one step back
+  tr.hyaw.to(T.down, T.down + 0.5, 0, E.io); tr.head.to(T.down, T.down + 0.5, 40, E.io);
+  tr.slump.to(T.down, T.down + 0.5, 12, E.io);
+  T.backEnd = A.walk(T.down + 0.45, [ASTAND[0] - 26, ASTAND[1] - 30], MOOD.back, 'R', { back: true });
+  tr.breath.to(T.down, T.down + 0.6, 1.8, E.io);
+})();
+
+// B, the driver (only in the reflection now; the seat in the room is empty)
+const BYAW = 150, BF = [72, 82];
+const fwdB = [Math.cos(BYAW * D2R), Math.sin(BYAW * D2R)], rgtB = [fwdB[1], -fwdB[0]];
+const B = seated(new Fig('B', { x: BF[0], d: BF[1], yaw: BYAW, seed: 2.6 }), { lean: 16, slump: 5, head: 4, shDrop: -3 });
+const BPEL = [BF[0] + fwdB[0] * PF, BF[1] + fwdB[1] * PF];
+const WHEEL = [BPEL[0] + fwdB[0] * 84, BPEL[1] + fwdB[1] * 84, 138];
+const WU = [rgtB[0], rgtB[1], 0], WV = norm([-fwdB[0] * 0.8, -fwdB[1] * 0.8, 0.6]);
+for (const side of ['L', 'R']) {
+  const s = sgn(side) * 0.82;
+  B.goal(side, () => add(WHEEL, add(mul(WU, s * 31), mul(WV, 14))),
+    (t, J) => add(J.sh[side], [-fwdB[0] * 10 + rgtB[0] * sgn(side) * 30, -fwdB[1] * 10 + rgtB[1] * sgn(side) * 30, -50])).v0 = 1;
+}
+B.tr.idle.v0 = 0;
+
+// the passengers of part 1
+const GHOSTS = SEATS.slice(1).map((x, i) => {
+  const G = seated(new Fig('G' + i, { x, d: FD, yaw: 180, seed: 4 + i }), { lean: 6, slump: 2, head: 14, idle: 0, breath: 0, shDrop: 0 });
+  handsOnKnees(G);
+  // in the depot: all heads turn slowly to A at the same time
+  G.tr.head.to(T.ghosts + 0.8, T.smile, 0, E.io);
+  G.tr.twist.to(T.ghosts + 0.8, T.smile + 0.4, -30, E.io);
+  G.tr.hyaw.to(T.ghosts + 0.8, T.smile + 0.4, -50, E.io);
+  return G;
+});
+// the one behind A still has its hand on A's shoulder (as part 1 ended)
+const G1 = GHOSTS[0];
+const nearSide = J => J.sh.L[1] < J.sh.R[1] ? 'L' : 'R';
+const TOUCH_SIDE = nearSide(G1.pose(0));
+G1.tr.lean.v0 = 34;
+G1.goals[TOUCH_SIDE].length = 0;
+const touchW = G1.goal(TOUCH_SIDE, (t, J) => {
+  const JA = A.pose(Math.min(t, T.black1)), sh = JA.sh[nearSide(JA)];
+  return add(sh, [6, -4, 9]);
+}, (t, J) => add(J.sh[TOUCH_SIDE], [-40, -20, 30]));
+touchW.v0 = 1; touchW.to(T.day - 0.2, T.day - 0.1, 0, E.io);
+G1.tr.lean.to(T.day - 0.2, T.day - 0.1, 6, E.io);
+const ghostA = t => {
+  if (!isDay(t)) return 0.55;
+  return sstep(T.ghosts, T.ghosts + 0.7, t);
+};
+const FIGS = [A, B, ...GHOSTS];
+
+// ---------------------------------------------------------------- camera
+function shot(t) {
+  const end1 = { x: 480, zoom: 1.62, hy: 652 }, wide = { x: 372, zoom: 1.0, hy: 636 };
+  const L = (a, b, k) => ({ x: lerp(a.x, b.x, k), zoom: lerp(a.zoom, b.zoom, k), hy: lerp(a.hy, b.hy, k) });
+  if (t < T.pull0) return end1;
+  if (t < T.plaque) return L(L(end1, wide, E.io(inv(T.pull0, T.pull1, t))), { x: 372, zoom: 1.06, hy: 640 }, inv(T.pull1, T.plaque, t));
+  const pl = { x: PLAQUE.x, zoom: 3.6, hy: 725 };
+  if (t < T.look) return L({ x: 372, zoom: 1.06, hy: 640 }, pl, E.io(inv(T.plaque, T.plaque + 1.3, t)));
+  const mid = { x: 450, zoom: 1.3, hy: 640 }, refl = { x: 640, zoom: 1.5, hy: 668 }, spot = { x: 400, zoom: 1.62, hy: 668 };
+  if (t < T.ghosts) return L(mid, refl, 0.15 * inv(T.look, T.ghosts, t));
+  if (t < T.empty) return L(L(mid, refl, 0.15), refl, E.io(inv(T.ghosts, T.ghosts + 1.6, t)));
+  if (t < T.down) return L(refl, spot, E.io(inv(T.empty, T.empty + 1.5, t)));
+  return L(spot, { x: 380, zoom: 1.75, hy: 672 }, E.io(inv(T.down, T.out0, t)));
+}
+
+// ---------------------------------------------------------------- drawing helpers
+let REFL = false, DAY = false;
+const Q = p => REFL ? P([p[0] + RDX, 2 * WALL - p[1], p[2] + RDZ]) : P(p);
+function polyQ(c, pts) { c.beginPath(); pts.forEach((p, i) => { const q = Q(p); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }); c.closePath(); }
+function boxQ(c, b, col) {
+  const { x0, x1, d0, d1, z0, z1 } = b, df = REFL ? d1 : d0;
+  const cx = REFL ? cam.x - RDX : cam.x;
+  const sx = cx < x0 ? x0 : cx > x1 ? x1 : null;
+  if (sx !== null) { polyQ(c, [[sx, d0, z0], [sx, d1, z0], [sx, d1, z1], [sx, d0, z1]]); c.fillStyle = col.side; c.fill(); }
+  if (z1 < cam.h + (REFL ? RDZ : 0)) { polyQ(c, [[x0, d0, z1], [x1, d0, z1], [x1, d1, z1], [x0, d1, z1]]); c.fillStyle = col.top; c.fill(); }
+  polyQ(c, [[x0, df, z0], [x1, df, z0], [x1, df, z1], [x0, df, z1]]); c.fillStyle = col.front; c.fill();
+  c.lineWidth = 1.2; c.strokeStyle = col.edge || 'rgba(255,255,255,0.05)'; c.stroke();
+}
+function mirrorJ(J) {
+  const m = v => {
+    if (Array.isArray(v) && v.length === 3 && typeof v[0] === 'number') return [v[0] + RDX, 2 * WALL - v[1], v[2] + RDZ];
+    if (v && typeof v === 'object' && !Array.isArray(v)) { const o = {}; for (const k in v) o[k] = m(v[k]); return o; }
+    return v;
+  };
+  return m(J);
+}
+// night colours (part 1) and the depot: faded fabric with a thick layer of dust on top
+const SEATC = { front: rgb([40, 44, 56]), top: rgb([62, 67, 82]), side: rgb([30, 33, 42]), edge: 'rgba(200,215,255,0.08)' };
+const SEATC_R = { front: rgb([58, 64, 80]), top: rgb([80, 88, 106]), side: rgb([44, 49, 62]), edge: 'rgba(200,215,255,0.1)' };
+const SEATC_D = { front: rgb([58, 56, 54]), top: rgb([150, 147, 140]), side: rgb([44, 42, 40]), edge: 'rgba(230,225,215,0.12)' };
+const BASEC = () => DAY ? { front: rgb([40, 34, 30]), top: rgb([52, 44, 38]), side: rgb([32, 28, 25]) } : { front: rgb([16, 17, 22]), top: rgb([22, 24, 30]), side: rgb([14, 15, 19]) };
+function drawSeat(c, fx, col) {
+  boxQ(c, { x0: fx + 72, x1: fx + 98, d0: 40, d1: 70, z0: 0, z1: 66 }, BASEC());
+  boxQ(c, { x0: fx + 40, x1: fx + 122, d0: 18, d1: 92, z0: 66, z1: SEAT_Z }, col);
+  boxQ(c, { x0: fx + 112, x1: fx + 134, d0: 18, d1: 92, z0: SEAT_Z, z1: BACK_Z }, col);
+  boxQ(c, { x0: fx + 112, x1: fx + 132, d0: 30, d1: 36, z0: BACK_Z, z1: BACK_Z + 6 }, DAY ? { front: rgb([92, 70, 56]), top: rgb([110, 88, 70]), side: rgb([70, 54, 44]) } : { front: grey(120), top: grey(150), side: grey(90) });
+}
+function drawDriverSeat(c, col) {
+  const x = BPEL[0];
+  boxQ(c, { x0: x - 4, x1: x + 22, d0: 30, d1: 66, z0: 0, z1: 62 }, BASEC());
+  boxQ(c, { x0: x - 32, x1: x + 40, d0: 6, d1: 70, z0: 62, z1: SEAT_Z - 4 }, col);
+  boxQ(c, { x0: x + 34, x1: x + 50, d0: 6, d1: 70, z0: SEAT_Z - 4, z1: 238 }, col);
+}
+function drawWheel(c, col) {
+  const base = [WHEEL[0] - 36, WHEEL[1] - 6, 92];
+  const a = Q(base), b = Q(WHEEL);
+  c.lineCap = 'round';
+  c.strokeStyle = INK; c.lineWidth = 9 * b[2]; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  c.strokeStyle = col; c.lineWidth = 5 * b[2]; c.stroke();
+  c.beginPath();
+  for (let i = 0; i <= 40; i++) {
+    const an = i / 40 * TAU, q = Q(add(WHEEL, add(mul(WU, Math.cos(an) * 34), mul(WV, Math.sin(an) * 34))));
+    i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]);
+  }
+  c.strokeStyle = INK; c.lineWidth = 9 * b[2]; c.stroke(); c.strokeStyle = col; c.lineWidth = 5 * b[2]; c.stroke();
+}
+function drawDash(c) {
+  boxQ(c, { x0: -160, x1: WHEEL[0] - 30, d0: -40, d1: 104, z0: 0, z1: 100 }, DAY ? { front: rgb([46, 40, 36]), top: rgb([120, 116, 110]), side: rgb([36, 32, 29]) } : { front: rgb([20, 22, 28]), top: rgb([34, 37, 46]), side: rgb([16, 18, 23]) });
+}
+function drawPole(c, x, i, a = 1) {
+  const tilt = DAY ? POLE_TILT[i] : 0;
+  const p0 = Q([x, 10, 0]), p1 = Q([x + tilt, 10, CEIL]);
+  c.lineCap = 'butt';
+  c.strokeStyle = `rgba(6,6,8,${a})`; c.lineWidth = 9 * p0[2]; c.beginPath(); c.moveTo(p0[0], p0[1]); c.lineTo(p1[0], p1[1]); c.stroke();
+  const g = c.createLinearGradient(p0[0] - 3 * p0[2], 0, p0[0] + 3 * p0[2], 0);
+  if (DAY) { g.addColorStop(0, rgb([70, 50, 38], a)); g.addColorStop(0.4, rgb([150, 120, 96], a)); g.addColorStop(1, rgb([60, 44, 34], a)); }
+  else { g.addColorStop(0, grey(90, a)); g.addColorStop(0.4, grey(205, a)); g.addColorStop(1, grey(70, a)); }
+  c.strokeStyle = g; c.lineWidth = 5.5 * p0[2]; c.stroke();
+}
+function drawTube(c, I) {
+  const a = Q([-40, 70, CEIL - 6]), b = Q([1100, 70, CEIL - 6]);
+  c.lineCap = 'round';
+  c.strokeStyle = rgb([30, 32, 40]); c.lineWidth = 16 * a[2]; c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  c.strokeStyle = rgb(mixc([60, 64, 76], [236, 244, 255], I)); c.lineWidth = 8 * a[2]; c.stroke();
+}
+// rust: seeded dark brown blotches on the wall, the ceiling and the seats (daylight only)
+const RUST = (() => {
+  const r = mulberry32(31), out = [];
+  for (let i = 0; i < 46; i++) out.push({ x: -120 + r() * 1250, z: r() < 0.35 ? 10 + r() * 160 : 412 + r() * 54, rx: 10 + r() * 34, rz: 5 + r() * 14, a: 0.25 + r() * 0.35 });
+  return out;
+})();
+function drawRust(c) {
+  for (const s of RUST) {
+    const p = P([s.x, WALL - 1, s.z]);
+    const g = c.createRadialGradient(p[0], p[1], 0, p[0], p[1], s.rx * p[2]);
+    g.addColorStop(0, `rgba(58,34,20,${s.a})`); g.addColorStop(0.6, `rgba(70,42,24,${s.a * 0.5})`); g.addColorStop(1, 'rgba(70,42,24,0)');
+    c.save(); c.translate(p[0], p[1]); c.scale(1, s.rz / s.rx); c.translate(-p[0], -p[1]);
+    c.fillStyle = g; c.beginPath(); c.arc(p[0], p[1], s.rx * p[2], 0, TAU); c.fill(); c.restore();
+  }
+}
+// broken glass: crack patterns (thin lines) on some panes, one pane mostly gone
+const CRACKS = [[900, 300, 1], [220, 250, 0.8], [80, 330, 0.7], [640, 205, 0.45]].map(([x, z, s], n) => {
+  const r = mulberry32(50 + n), rays = [];
+  const k = 9 + Math.floor(r() * 5);
+  for (let i = 0; i < k; i++) {
+    const an = i / k * TAU + r() * 0.5, L = (60 + r() * 120) * s, pts = [[x, z]];
+    let px = x, pz = z;
+    for (let j = 0; j < 4; j++) { const a2 = an + (r() - 0.5) * 0.5; px += Math.cos(a2) * L / 4; pz += Math.sin(a2) * L / 4; pts.push([px, pz]); }
+    rays.push(pts);
+  }
+  const rings = [0.25, 0.5].map(f => { const pts = []; for (let i = 0; i <= k; i++) { const an = i / k * TAU; pts.push([x + Math.cos(an) * 60 * s * f * (0.8 + r() * 0.4), z + Math.sin(an) * 60 * s * f * (0.8 + r() * 0.4)]); } return pts; });
+  return { rays, rings };
+});
+function drawCracks(c) {
+  c.save(); c.lineWidth = 1.1; c.strokeStyle = 'rgba(225,230,235,0.55)'; c.lineJoin = 'round';
+  for (const cr of CRACKS) for (const line of [...cr.rays, ...cr.rings]) {
+    c.beginPath(); line.forEach(([x, z], i) => { const p = P([x, WALL - 0.5, z]); i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]); }); c.stroke();
+  }
+  c.restore();
+}
+// the interior that the glass reflects (everything but A)
+function drawReflected(c, t, poses) {
+  REFL = true;
+  if (!DAY) drawTube(c, neonI(t));
+  drawDash(c);
+  drawDriverSeat(c, DAY ? SEATC_D : SEATC_R);
+  SEATS.forEach(fx => drawSeat(c, fx, DAY ? SEATC_D : SEATC_R));
+  REFL = false;
+  const ga = ghostA(t);
+  if (!DAY || ga > 0.01) {
+    c.save(); c.globalAlpha = DAY ? ga : 1; if (DAY) c.filter = 'brightness(0.55) contrast(0.8)';
+    drawFigure(c, B, mirrorJ(poses[1]));
+    c.restore();
+  }
+  REFL = true;
+  drawWheel(c, DAY ? rgb([110, 96, 86]) : grey(150));
+  REFL = false;
+  if (ga > 0.01) GHOSTS.forEach((G, i) => {
+    c.save(); c.globalAlpha = ga; c.filter = DAY ? 'brightness(0.55) contrast(0.8)' : 'brightness(0.42) contrast(0.75)';
+    drawFigure(c, G, mirrorJ(poses[2 + i]));
+    c.restore();
+  });
+  REFL = true;
+  POLES.forEach((x, i) => drawPole(c, x, i));
+  REFL = false;
+}
+const rcv = document.createElement('canvas'); rcv.width = W; rcv.height = H;
+const rctx = rcv.getContext('2d');
+const acv = document.createElement('canvas'); acv.width = W; acv.height = H;   // A alone (for his transparency)
+const actx = acv.getContext('2d');
+function panePath(c) {
+  c.beginPath();
+  for (const [x0, x1, z0, z1] of PANES) {
+    const a = P([x0, WALL, z1]), b = P([x1, WALL, z0]);
+    c.rect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  }
+}
+function drawNightOutside(t) {
+  const top = P([0, WALL, 420])[1], bot = P([0, WALL, 20])[1];
+  let g = ctx.createLinearGradient(0, top, 0, bot);
+  g.addColorStop(0, rgb([7, 9, 16])); g.addColorStop(1, rgb([14, 17, 27]));
+  ctx.fillStyle = g; ctx.fillRect(-50, top - 300, W + 100, bot - top + 600);
+  const s = dist(t);
+  const rnd = mulberry32(77);
+  for (let i = 0; i < 46; i++) {
+    const bx = rnd() * 2600, z = 150 + rnd() * 140, warm = rnd() < 0.3;
+    const x = ((bx + s * 0.18) % 2600) - 700;
+    const p = P([x, 1600, z]);
+    ctx.fillStyle = warm ? rgb(ACC, 0.35) : rgb([150, 170, 210], 0.22);
+    ctx.fillRect(p[0], p[1], 2.2, 2.2);
+  }
+  for (let i = -2; i < 5; i++) {
+    const x = LAMP_PH + i * LSP + (s % LSP);
+    const base = P([x, LAMP_D, 0]), head = P([x, LAMP_D, 560]);
+    ctx.strokeStyle = rgb([24, 26, 32]); ctx.lineWidth = 9 * base[2];
+    ctx.beginPath(); ctx.moveTo(base[0], base[1]); ctx.lineTo(head[0], head[1]); ctx.stroke();
+    g = ctx.createRadialGradient(head[0], head[1], 0, head[0], head[1], 260 * head[2]);
+    g.addColorStop(0, rgb(ACC, 0.55)); g.addColorStop(0.3, rgb(ACC, 0.16)); g.addColorStop(1, rgb(ACC, 0));
+    ctx.fillStyle = g; ctx.fillRect(head[0] - 300, head[1] - 300, 600, 600);
+    ctx.fillStyle = rgb(ACC, 0.10);
+    ctx.beginPath(); ctx.moveTo(head[0] - 8, head[1]); ctx.lineTo(head[0] + 8, head[1]);
+    ctx.lineTo(base[0] + 130 * base[2], base[1]); ctx.lineTo(base[0] - 130 * base[2], base[1]); ctx.closePath(); ctx.fill();
+  }
+}
+// the depot hall: concrete wall, steel columns, high windows, the plaque
+function drawDepot(t) {
+  const HD = 380, top = P([0, HD, 900])[1], bot = P([0, HD, 0])[1];
+  let g = ctx.createLinearGradient(0, top, 0, bot);
+  g.addColorStop(0, rgb([96, 99, 102])); g.addColorStop(0.55, rgb([74, 76, 78])); g.addColorStop(1, rgb([52, 52, 52]));
+  ctx.fillStyle = g; ctx.fillRect(-50, top - 400, W + 100, bot - top + 800);
+  // concrete panel seams and stains
+  ctx.strokeStyle = 'rgba(30,30,30,0.35)'; ctx.lineWidth = 1.5;
+  for (let x = -400; x < 1500; x += 230) { const a = P([x, HD, 0]), b = P([x, HD, 800]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+  for (const z of [140, 470]) { const a = P([-400, HD, z]), b = P([1500, HD, z]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+  // high windows of the hall (the daylight comes from there)
+  for (let x = -300; x < 1400; x += 330) {
+    const a = P([x, HD + 2, 640]), b = P([x + 220, HD + 2, 500]);
+    ctx.fillStyle = rgb([210, 214, 218], 0.85); ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+    ctx.strokeStyle = 'rgba(40,40,42,0.8)'; ctx.lineWidth = 2;
+    for (let j = 1; j < 4; j++) { const m = P([x + j * 55, HD + 2, 640]), n = P([x + j * 55, HD + 2, 500]); ctx.beginPath(); ctx.moveTo(m[0], m[1]); ctx.lineTo(n[0], n[1]); ctx.stroke(); }
+  }
+  // steel columns (in front of the wall)
+  for (const x of [-60, 300, 760, 1150]) {
+    const a = P([x, 330, 900]), b = P([x + 26, 330, 0]);
+    ctx.fillStyle = rgb([38, 38, 40]); ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  }
+  // the plaque: a bolted metal plate, lines appear one by one
+  const { x, d, z, w, h } = PLAQUE;
+  const a = P([x - w / 2, d, z + h / 2]), b = P([x + w / 2, d, z - h / 2]), k = a[2];
+  g = ctx.createLinearGradient(a[0], a[1], b[0], b[1]);
+  g.addColorStop(0, rgb([150, 154, 158])); g.addColorStop(0.5, rgb([118, 122, 126])); g.addColorStop(1, rgb([96, 99, 102]));
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(a[0] + 3 * k, a[1] + 4 * k, b[0] - a[0], b[1] - a[1]);
+  ctx.fillStyle = g; ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  ctx.strokeStyle = rgb([60, 62, 64]); ctx.lineWidth = 2 * k; ctx.strokeRect(a[0] + 5 * k, a[1] + 5 * k, b[0] - a[0] - 10 * k, b[1] - a[1] - 10 * k);
+  ctx.fillStyle = rgb([70, 72, 74]);
+  for (const [u, v] of [[0, 0], [1, 0], [0, 1], [1, 1]]) { ctx.beginPath(); ctx.arc(lerp(a[0] + 10 * k, b[0] - 10 * k, u), lerp(a[1] + 10 * k, b[1] - 10 * k, v), 2.4 * k, 0, TAU); ctx.fill(); }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  PLAQUE_LINES.forEach((line, i) => {
+    const la = sstep(T.lines[i], T.lines[i] + 0.35, t);
+    if (la <= 0) return;
+    const last = i === PLAQUE_LINES.length - 1, y = lerp(a[1], b[1], [0.22, 0.4, 0.58, 0.8][i]);
+    ctx.font = `800 ${(last ? 15 : 12.5) * k}px ${MONO}`;
+    if (last) {
+      // the year in the accent colour
+      const pre = 'OCT 27, ', yr = '2006', wPre = ctx.measureText(pre).width, wYr = ctx.measureText(yr).width, x0 = (a[0] + b[0]) / 2 - (wPre + wYr) / 2;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = rgb([34, 36, 38], la); ctx.fillText(pre, x0, y);
+      ctx.fillStyle = rgb(ACC, la); ctx.shadowColor = rgb(ACC, 0.5 * la); ctx.shadowBlur = 6 * k; ctx.fillText(yr, x0 + wPre, y); ctx.shadowBlur = 0;
+      ctx.textAlign = 'center';
+    } else { ctx.fillStyle = rgb([34, 36, 38], la); ctx.fillText(line, (a[0] + b[0]) / 2, y); }
+  });
+  ctx.textAlign = 'left';
+}
+const lampSweep = t => T.beats.map(b => inv(b - 0.15, b + 0.75, t)).filter(k => k > 0 && k < 1);
+function reflAlpha(t) {
+  if (!DAY) return 0.22;
+  return 0.2 + 0.14 * sstep(T.ghosts, T.ghosts + 1.2, t);
+}
+
+// ---------------------------------------------------------------- the frame
+function scene(t) {
+  DAY = isDay(t);
+  const sh = shot(t);
+  cam.x = sh.x; cam.zoom = sh.zoom; cam.hy = sh.hy; cam.h = 270;
+  const I = neonI(t);
+  const poses = FIGS.map(f => f.pose(t));
+
+  // the window wall
+  const wTop = P([0, WALL, CEIL]), wBot = P([0, WALL, 0]);
+  let g = ctx.createLinearGradient(0, wTop[1], 0, wBot[1]);
+  if (DAY) { g.addColorStop(0, rgb([70, 68, 64])); g.addColorStop(0.5, rgb([58, 55, 51])); g.addColorStop(1, rgb([40, 37, 34])); }
+  else { g.addColorStop(0, rgb([34, 38, 48])); g.addColorStop(0.5, rgb([26, 29, 37])); g.addColorStop(1, rgb([18, 20, 26])); }
+  ctx.fillStyle = g; ctx.fillRect(-60, wTop[1], W + 120, wBot[1] - wTop[1]);
+  if (DAY) drawRust(ctx);
+  // glass: outside, then the reflection of the inside
+  ctx.save(); panePath(ctx); ctx.clip();
+  if (DAY) drawDepot(t); else drawNightOutside(t);
+  rctx.setTransform(1, 0, 0, 1, 0, 0); rctx.clearRect(0, 0, W, H);
+  drawReflected(rctx, t, poses);
+  rctx.globalCompositeOperation = 'source-atop'; rctx.fillStyle = DAY ? 'rgba(150,170,210,0.3)' : 'rgba(110,150,255,0.35)'; rctx.fillRect(0, 0, W, H);
+  rctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = reflAlpha(t); ctx.filter = 'blur(0.8px)'; ctx.drawImage(rcv, 0, 0); ctx.filter = 'none'; ctx.globalAlpha = 1;
+  if (DAY) { ctx.fillStyle = 'rgba(150,145,135,0.12)'; ctx.fillRect(0, 0, W, H); drawCracks(ctx); }   // dirty glass
+  ctx.restore();
+  ctx.strokeStyle = DAY ? rgb([34, 26, 22]) : rgb([10, 11, 14]); ctx.lineWidth = 7 * wTop[2];
+  for (const [x0, x1, z0, z1] of PANES) {
+    const a = P([x0, WALL, z1]), b = P([x1, WALL, z0]);
+    ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  }
+  // ceiling and floor
+  const cB = P([-400, NEAR, CEIL]), cA = P([-400, WALL, CEIL]);
+  g = ctx.createLinearGradient(0, cB[1], 0, cA[1]);
+  g.addColorStop(0, rgb(DAY ? [30, 28, 26] : [18, 20, 26])); g.addColorStop(1, rgb(DAY ? [62, 58, 54] : [44, 48, 60]));
+  ctx.fillStyle = g; poly(ctx, [[-600, WALL, CEIL], [1600, WALL, CEIL], [1600, NEAR, CEIL], [-600, NEAR, CEIL]]); ctx.fill();
+  const fA = P([0, WALL, 0]), fB = P([0, NEAR, 0]);
+  g = ctx.createLinearGradient(0, fA[1], 0, fB[1]);
+  g.addColorStop(0, rgb(DAY ? [70, 66, 60] : [30, 33, 41])); g.addColorStop(1, rgb(DAY ? [30, 28, 26] : [13, 14, 18]));
+  ctx.fillStyle = g; poly(ctx, [[-600, WALL, 0], [1600, WALL, 0], [1600, NEAR, 0], [-600, NEAR, 0]]); ctx.fill();
+  ctx.fillStyle = rgb(DAY ? [34, 28, 24] : [22, 24, 30]);
+  poly(ctx, [[-600, NEAR, CEIL], [1600, NEAR, CEIL], [1600, NEAR, CEIL + 34], [-600, NEAR, CEIL + 34]]); ctx.fill();
+  poly(ctx, [[-600, NEAR, -40], [1600, NEAR, -40], [1600, NEAR, 0], [-600, NEAR, 0]]); ctx.fill();
+  if (!DAY) {
+    const tp = P([400, 70, CEIL - 6]);
+    g = ctx.createRadialGradient(tp[0], tp[1] + 60, 10, tp[0], tp[1] + 60, 700);
+    g.addColorStop(0, rgb(NEON, 0.16 * I)); g.addColorStop(1, rgb(NEON, 0));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    reflection(c => FIGS.slice(0, 2).forEach((f, i) => drawFigure(c, f, poses[i])), fA[1], 0.18);
+  }
+
+  drawDash(ctx);
+  drawDriverSeat(ctx, DAY ? SEATC_D : SEATC);
+  SEATS.forEach(fx => drawSeat(ctx, fx, DAY ? SEATC_D : SEATC));
+  if (!DAY) {                                        // the driver only drives at night
+    contactShadow(ctx, poses[1], 0.5, 1);
+    drawFigure(ctx, B, poses[1]);
+  }
+  drawWheel(ctx, DAY ? rgb([120, 104, 92]) : grey(170));
+  // A, on his own layer so he can fade
+  actx.setTransform(1, 0, 0, 1, 0, 0); actx.clearRect(0, 0, W, H);
+  actx.setTransform(ctx.getTransform());
+  contactShadow(actx, poses[0], DAY ? 0.4 : 0.5, 1);
+  drawFigure(actx, A, poses[0]);
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = aAlpha(t); ctx.drawImage(acv, 0, 0); ctx.restore();
+  // night: the grey hand still on his shoulder
+  if (!DAY && t < T.black1) {
+    const J = poses[2], side = TOUCH_SIDE, sh = J.sh[side];
+    strokeLimb(ctx, [sh, J.el[side], J.hand[side]], grey(128), P(J.el[side])[2]);
+    dotJoint(ctx, J.hand[side], grey(128), DIM.limbW * 0.5);
+    const ps = P(sh);
+    g = ctx.createRadialGradient(ps[0], ps[1], 0, ps[0], ps[1], 120 * ps[2]);
+    g.addColorStop(0, 'rgba(2,2,4,0.97)'); g.addColorStop(0.45, 'rgba(2,2,4,0.8)'); g.addColorStop(1, 'rgba(2,2,4,0)');
+    ctx.fillStyle = g; ctx.fillRect(ps[0] - 140 * ps[2], ps[1] - 140 * ps[2], 280 * ps[2], 280 * ps[2]);
+  }
+  POLES.forEach((x, i) => drawPole(ctx, x, i));
+  drawTube(ctx, I);
+
+  if (!DAY) {
+    // one lamp sweeps through the bus at each counted stop
+    const sw = lampSweep(t);
+    softLayer(30, 'screen', c => {
+      for (const k of sw) {
+        const x = lerp(-200, W + 200, k), a = Math.sin(PI * k);
+        const gg = c.createLinearGradient(x - 140, 0, x + 140, 0);
+        gg.addColorStop(0, rgb(ACC, 0)); gg.addColorStop(0.5, rgb(ACC, 0.32 * a)); gg.addColorStop(1, rgb(ACC, 0));
+        c.fillStyle = gg; c.fillRect(x - 140, wTop[1], 280, fB[1] - wTop[1]);
+      }
+    });
+  } else {
+    // hard, cold daylight from the left, dust in the air
+    softLayer(40, 'screen', c => {
+      const gg = c.createLinearGradient(0, 0, W, 0);
+      gg.addColorStop(0, rgb(DAYL, 0.34)); gg.addColorStop(0.55, rgb(DAYL, 0.1)); gg.addColorStop(1, rgb(DAYL, 0.02));
+      c.fillStyle = gg; c.fillRect(0, 0, W, H);
+      c.fillStyle = rgb(DAYL, 0.12);
+      for (const o of [0, 260]) { c.beginPath(); c.moveTo(-100 + o, wTop[1] - 80); c.lineTo(80 + o, wTop[1] - 80); c.lineTo(520 + o, fB[1]); c.lineTo(260 + o, fB[1]); c.closePath(); c.fill(); }
+    });
+    const r = mulberry32(9);
+    ctx.save();
+    const yTop = P([0, NEAR, CEIL])[1], yBot = P([0, NEAR, 0])[1];
+    ctx.beginPath(); ctx.rect(-50, yTop, W + 100, yBot - yTop); ctx.clip();
+    for (let i = 0; i < 90; i++) {
+      const x0 = r() * W, y0 = r() * H, sp = 6 + r() * 14, ph = r() * TAU;
+      const x = (x0 + t * sp + 12 * Math.sin(t * 0.6 + ph)) % W, y = (y0 - t * sp * 0.4 + 8 * Math.sin(t * 0.9 + ph * 2) + H) % H;
+      const a = (0.25 + 0.5 * r()) * (1 - x / W * 0.7);
+      ctx.fillStyle = rgb([230, 228, 220], a); ctx.beginPath(); ctx.arc(x, y, 0.8 + r() * 1.4, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+  if (!DAY) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const ta2 = P([-40, 70, CEIL - 6]), tb2 = P([1100, 70, CEIL - 6]);
+    g = ctx.createLinearGradient(0, ta2[1] - 40 * ta2[2], 0, ta2[1] + 80 * ta2[2]);
+    g.addColorStop(0, rgb(NEON, 0)); g.addColorStop(0.35, rgb(NEON, 0.22 * I)); g.addColorStop(1, rgb(NEON, 0));
+    ctx.fillStyle = g; ctx.fillRect(ta2[0], ta2[1] - 40 * ta2[2], tb2[0] - ta2[0], 120 * ta2[2]);
+    ctx.restore();
+  } else if (I > 0.01) {
+    // the dead tube flickers in daylight
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = rgb(NEON, 0.14 * I); ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+}
+
+function draw(t) {
+  const mv = speed(t) / V;
+  const dy = t < T.black1 ? (1.1 * Math.sin(TAU * 1.7 * t) + 0.5 * Math.sin(TAU * 4.3 * t + 1)) * (0.25 + 0.75 * mv) : 0;
+  const tilt = -0.9 * beat(t);                       // a small nose-down dip at each counted stop
+  ctx.save();
+  ctx.translate(W / 2, H * 0.62 + dy); ctx.rotate(tilt * D2R); ctx.translate(-W / 2, -H * 0.62);
+  ctx.scale(1.006, 1.006);
+  scene(t);
+  ctx.restore();
+  vignette(isDay(t) ? 0.7 : 0.8);
+  // black: fade down at "when you open them", hard cut to day
+  const blk = t < T.day ? sstep(T.black0, T.black1, t) : 0;
+  const out = sstep(T.out0, T.out0 + 0.6, t) * 0.92;
+  const dk = Math.max(blk, out);
+  if (dk > 0) { ctx.fillStyle = `rgba(0,0,0,${dk})`; ctx.fillRect(0, 0, W, H); }
+  texts(t);
+}
+
+// ---------------------------------------------------------------- text
+const MONO = '"JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", monospace';
+function spaced(text, x, y, size, sp, col, a, weight = 800, accent = null, shadow = 14) {
+  ctx.save();
+  ctx.font = `${weight} ${size}px ${MONO}`; ctx.textBaseline = 'middle';
+  const cw = ctx.measureText('M').width, total = text.length * cw + (text.length - 1) * sp;
+  let cx = x - total / 2;
+  ctx.shadowColor = 'rgba(0,0,0,0.9)'; ctx.shadowBlur = shadow; ctx.shadowOffsetY = 2;
+  [...text].forEach((ch, i) => { ctx.fillStyle = rgb(accent && i >= accent[0] && i < accent[1] ? ACC : col, a); ctx.fillText(ch, cx, y); cx += cw + sp; });
+  ctx.restore();
+}
+function texts(t) {
+  const ha = 1 - sstep(4.6, 5.2, t);
+  if (ha > 0) spaced('LAST BUS · PART 2', W / 2, 250, 40, 9, [246, 244, 238], ha);
+  for (const [a, b, s] of SUBS) {
+    if (t < a || t >= b) continue;
+    const al = sstep(a, a + 0.06, t) * (1 - sstep(b - 0.06, b, t));
+    spaced(s, W / 2, 1085, s.length > 20 ? 30 : 34, 3, [252, 252, 250], al, 800, null, 8);
+  }
+  const p = sstep(T.out0 + 0.3, T.out0 + 0.6, t);
+  if (p > 0) spaced('PART 3?', W / 2, 590, 76, 10, [248, 246, 240], p);
+  const c = sstep(36.43, 36.7, t);
+  if (c > 0) spaced("COMMENT 'RIDE'", W / 2, 690, 32, 7, [236, 236, 240], c, 800, [9, 13]);
+}
+
+// ---------------------------------------------------------------- checks, render, cues (keep as is)
+const CHECK_FIGS = FIGS.map(f => [f, 0, T.end]);
+window.footCheck = () => footCheckFor(CHECK_FIGS);
+window.popCheck = () => popCheckFor(CHECK_FIGS);
+
+function render(t) {
+  t = Math.max(0, t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (TEST) { WALKTEST.draw(Math.min(t, WALKTEST.dur)); return; }
+  draw(Math.min(t, T.end - 1e-4));
+  grain(t, 0.06);
+  // no fade at either end: frame 0 is the hook, and the last frame cuts straight back to it (seamless loop)
+}
+function getCues() {
+  const steps = [];
+  for (const f of FIGS) for (const c of f.cues) steps.push(c);
+  steps.forEach(c => { c.frame = Math.round(c.t * FPS); });
+  return { story: { ...T }, steps: steps.sort((a, b) => a.t - b.t), ticks: [], fps: FPS, duration: T.end };
+}
+window.FPS = FPS;
+window.DURATION = TEST ? WALKTEST.dur : T.end;
+window.render = render;
+window.getCues = getCues;
+window.STORY = T;
+
+const qs = new URLSearchParams(location.search);
+if (qs.has('render')) document.body.classList.add('render');
+else {
+  const t0 = performance.now();
+  const startAt = parseFloat(qs.get('t') || '0');
+  const loop = () => { render((startAt + (performance.now() - t0) / 1000) % window.DURATION); requestAnimationFrame(loop); };
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(loop);
+}
+</script>
+</body>
+</html>
